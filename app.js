@@ -1312,7 +1312,7 @@
 
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        const safeName = state.projectName.replace(/[<>:"\/\\|?*]/g, '_').trim() || 'export';
+        const safeName = state.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_').trim() || 'export';
         a.download = `${safeName}_tl.epub`;
         a.click();
         flashHint("Berhasil mengekspor EPUB!");
@@ -1344,7 +1344,7 @@
         const b = await zip.generateAsync({ type: "blob" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(b);
-        const safeName = state.projectName.replace(/[<>:"\/\\|?*]/g, '_').trim() || 'export';
+        const safeName = state.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_').trim() || 'export';
         a.download = `${safeName}_export.zip`;
         a.click();
       } else {
