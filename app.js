@@ -430,7 +430,7 @@
     const b = new Blob([strData], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(b);
-    const safeName = name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const safeName = name.replace(/[^\p{L}\p{N}_\-\.]/gu, '_').trim();
     a.download = `${safeName}_backup${PROJECT_EXT}`;
     a.click();
   }
