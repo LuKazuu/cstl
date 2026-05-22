@@ -1,7 +1,17 @@
 const CONFIG = Object.freeze({
   APP_VERSION: 6,
   PROJECT_EXT: ".cstl",
-  DEFAULT_PROMPT_HEADER: `Rewrite entire text to Native Indonesian. Do not change prefix number. Euphemism prohibited. Use of "Bahasa Jakarta Selatan" is prohibited. Put results inside plaintext block.`
+  DEFAULT_PROMPT_HEADER: `Rewrite entire text to Native Indonesian. Do not change prefix number. Euphemism prohibited. Use of "Bahasa Jakarta Selatan" is prohibited. Put results inside plaintext block.`,
+  DEFAULT_EPUB_TAGS: "p",
+  SCROLLER_MAIN_HEIGHT: 85,
+  SCROLLER_PROOFREAD_HEIGHT: 90,
+  SCROLLER_BUFFER: 15,
+  ENCODINGS: ["utf-8", "shift_jis"],
+  TOAST_DURATION: 4000,
+  AUTOSAVE_DELAY: 1000,
+  DEBOUNCE_DELAY: 250,
+  FALLBACK_FILENAME: "unknown",
+  PROJECT_TYPE_UNINITIALIZED: "uninitialized"
 });
 
 class UI {
@@ -40,7 +50,7 @@ class UI {
         if (UI.hintToken === currentToken) {
           UI.el.copyStatus.classList.add("empty");
         }
-      }, 4000);
+      }, CONFIG.TOAST_DURATION);
     }
   }
 
@@ -105,8 +115,8 @@ class StorageManager {
 class AppState {
   static currentProjectId = null;
   static projectName = "";
-  static projectType = "";
-  static epubTags = "p";
+  static projectType = CONFIG.PROJECT_TYPE_UNINITIALIZED;
+  static epubTags = CONFIG.DEFAULT_EPUB_TAGS;
   static epubSourceId = null;
   static lines = [];
   static importedFiles = [];
@@ -169,7 +179,7 @@ class AppState {
       await StorageManager.saveProject(AppState.currentProjectId, data);
       UI.el.statusBar.textContent = UI.el.statusBar.textContent.replace(" | Tersimpan!", "") + " | Tersimpan!";
       setTimeout(() => AppController.updateStatusBar(), 2000);
-    }, 1000);
+    }, CONFIG.AUTOSAVE_DELAY);
   }
 }
 
@@ -255,7 +265,7 @@ class VirtualScroller {
       this.container.innerHTML = "";
       return;
     }
-    const buffer = 15;
+    const buffer = CONFIG.SCROLLER_BUFFER;
     let targetStart = Math.max(0, this.findStartIndex() - Math.floor(buffer / 2));
     let end = targetStart;
     let currentHeight = 0;
@@ -318,8 +328,7 @@ class VirtualScroller {
 
 class Importer {
   static decodeBuffer(buffer) {
-    const encodings = ["utf-8", "shift_jis", "windows-31j"];
-    for (const enc of encodings) {
+    for (const enc of CONFIG.ENCODINGS) {
       try { return new TextDecoder(enc, { fatal: true }).decode(buffer); }
       catch (_) {}
     }
@@ -361,6 +370,7 @@ class Importer {
       const skippedFiles = [];
 
       if (isZip && filesObj instanceof File && window.JSZip) {
+        if (AppState.projectType === CONFIG.PROJECT_TYPE_UNINITIALIZED) AppState.projectType = "json";
         const zip = new window.JSZip();
         await zip.loadAsync(filesObj);
         const names = Object.keys(zip.files).filter(n => n.endsWith(".json")).sort();
@@ -379,11 +389,11 @@ class Importer {
         const files = Array.from(filesObj).sort((a,b) => a.name.localeCompare(b.name));
         for (const f of files) {
           if (f.name.toLowerCase().endsWith(".epub")) {
-            if (AppState.lines.length > 0 && AppState.projectType === "epub") {
+            if (AppState.projectType === "epub" && AppState.epubSourceId) {
               alert("Proyek ini sudah memuat file EPUB. Buat proyek baru untuk mengimpor EPUB lain.");
               continue;
             }
-            if (AppState.lines.length === 0) {
+            if (AppState.projectType === CONFIG.PROJECT_TYPE_UNINITIALIZED) {
               AppState.projectType = "epub";
               AppState.epubSourceId = "epub_" + Date.now() + ".epub";
             }
@@ -409,7 +419,7 @@ class Importer {
               const idref = ref.getAttribute("idref");
               return manifest[idref] ? opfDir + manifest[idref] : null;
             }).filter(Boolean);
-            const tagsSelector = AppState.epubTags || "p";
+            const tagsSelector = AppState.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
             for (const href of spineHrefs) {
               if (existingFiles.has(href)) { skippedFiles.push(href); continue; }
               const fileEntry = zip.file(href);
@@ -432,6 +442,7 @@ class Importer {
               await new Promise(r => setTimeout(r, 0));
             }
           } else if (f.name.toLowerCase().endsWith(".json")) {
+            if (AppState.projectType === CONFIG.PROJECT_TYPE_UNINITIALIZED) AppState.projectType = "json";
             const baseName = Importer.getBaseName(f.name);
             if (existingFiles.has(baseName)) { skippedFiles.push(baseName); continue; }
             const content = JSON.parse(Importer.decodeBuffer(await f.arrayBuffer()));
@@ -481,7 +492,7 @@ class Exporter {
           if (!linesByFile[l.file]) linesByFile[l.file] = [];
           linesByFile[l.file].push(l);
         });
-        const tagsSelector = AppState.epubTags || "p";
+        const tagsSelector = AppState.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
         for (const [href, fLines] of Object.entries(linesByFile)) {
           const zf = zip.file(href);
           if (!zf) continue;
@@ -559,9 +570,9 @@ class AppController {
       UI.el.projectList.innerHTML = `<p class="hint" style="grid-column: 1/-1; color: var(--danger);">Browser tidak mendukung OPFS.</p>`;
       return;
     }
-    AppController.mainScroller = new VirtualScroller(UI.el.previewViewport, UI.el.previewContainer, 85, AppController.renderMainRow);
+    AppController.mainScroller = new VirtualScroller(UI.el.previewViewport, UI.el.previewContainer, CONFIG.SCROLLER_MAIN_HEIGHT, AppController.renderMainRow);
     const prViewport = UI.el.proofreadContainer.closest('.proofread-results-wrap');
-    AppController.proofreadScroller = new VirtualScroller(prViewport, UI.el.proofreadContainer, 90, AppController.renderProofreadRow);
+    AppController.proofreadScroller = new VirtualScroller(prViewport, UI.el.proofreadContainer, CONFIG.SCROLLER_PROOFREAD_HEIGHT, AppController.renderProofreadRow);
     AppController.bindEvents();
     await AppController.loadDashboard();
   }
@@ -622,20 +633,20 @@ class AppController {
     
     UI.el.btnSettings.addEventListener("click", () => {
       UI.el.settingsPromptInput.value = AppState.aiInstructionHeader;
-      UI.el.settingsEpubTagsInput.value = AppState.epubTags || "p";
+      UI.el.settingsEpubTagsInput.value = AppState.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
       UI.toggleModal(UI.el.settingsModal, true);
     });
     
     UI.el.btnSettingsReset.addEventListener("click", () => {
       UI.el.settingsPromptInput.value = CONFIG.DEFAULT_PROMPT_HEADER;
-      UI.el.settingsEpubTagsInput.value = "p";
+      UI.el.settingsEpubTagsInput.value = CONFIG.DEFAULT_EPUB_TAGS;
     });
     
     UI.el.btnSettingsCancel.addEventListener("click", () => UI.toggleModal(UI.el.settingsModal, false));
     
     UI.el.btnSettingsSave.addEventListener("click", () => {
       AppState.aiInstructionHeader = UI.el.settingsPromptInput.value.trim();
-      AppState.epubTags = UI.el.settingsEpubTagsInput.value.trim() || "p";
+      AppState.epubTags = UI.el.settingsEpubTagsInput.value.trim() || CONFIG.DEFAULT_EPUB_TAGS;
       UI.toggleModal(UI.el.settingsModal, false);
       AppState.queueAutoSave();
     });
@@ -654,7 +665,7 @@ class AppController {
     
     UI.el.btnProofreadReplaceAll.addEventListener("click", AppController.execReplaceAll);
     
-    const debouncedSearch = AppController.debounce(AppController.renderProofread, 250);
+    const debouncedSearch = AppController.debounce(AppController.renderProofread, CONFIG.DEBOUNCE_DELAY);
     UI.el.proofreadSearchInput.addEventListener("input", debouncedSearch);
     UI.el.proofreadScope.addEventListener("change", AppController.renderProofread);
     UI.el.proofreadRegexCheck.addEventListener("change", AppController.renderProofread);
@@ -791,7 +802,7 @@ class AppController {
 
       const importedSet = new Set((p.imported_files || []).map(file => `[${file}]`));
       const reconstructedLines = [];
-      let currentFile = "unknown", lineNum = 1;
+      let currentFile = CONFIG.FALLBACK_FILENAME, lineNum = 1;
 
       for (let i = 0; i < origLines.length; i++) {
         const o = origLines[i], t = transLines[i], n = nameLines[i];
@@ -835,8 +846,8 @@ class AppController {
       const data = {
         version: CONFIG.APP_VERSION,
         projectName: name,
-        projectType: p.projectType || "json",
-        epubTags: p.epubTags || "p",
+        projectType: p.projectType || CONFIG.PROJECT_TYPE_UNINITIALIZED,
+        epubTags: p.epubTags || CONFIG.DEFAULT_EPUB_TAGS,
         epubSourceId: p.epubSourceId || null,
         updatedAt: Date.now(),
         imported_files: p.imported_files || [],
@@ -860,7 +871,7 @@ class AppController {
     if (!name || !name.trim()) return;
     const id = "proj_" + Date.now() + CONFIG.PROJECT_EXT;
     const initialData = {
-      version: CONFIG.APP_VERSION, projectName: name.trim(), projectType: "json", epubTags: "p", epubSourceId: null,
+      version: CONFIG.APP_VERSION, projectName: name.trim(), projectType: CONFIG.PROJECT_TYPE_UNINITIALIZED, epubTags: CONFIG.DEFAULT_EPUB_TAGS, epubSourceId: null,
       updatedAt: Date.now(), imported_files: [], lines: [], prompt_header: CONFIG.DEFAULT_PROMPT_HEADER
     };
     await StorageManager.saveProject(id, initialData);
@@ -870,8 +881,8 @@ class AppController {
   static openProject(id, data) {
     AppState.currentProjectId = id;
     AppState.projectName = data.projectName || "Unknown Project";
-    AppState.projectType = data.projectType || "json";
-    AppState.epubTags = data.epubTags || "p";
+    AppState.projectType = data.projectType || CONFIG.PROJECT_TYPE_UNINITIALIZED;
+    AppState.epubTags = data.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
     AppState.epubSourceId = data.epubSourceId || null;
     AppState.lines = (data.lines || []).map(AppState.normalizeLine);
     AppState.importedFiles = data.imported_files || [];
@@ -932,7 +943,7 @@ class AppController {
     const total = AppState.lines.length;
     const trans = AppState.lines.filter(AppState.isTranslated).length;
     const perc = total ? Math.floor((trans / total) * 100) : 0;
-    const mode = AppState.importedFiles.length > 0 ? (AppState.projectType === "epub" ? "EPUB" : "JSON-VNTP") : "-";
+    const mode = AppState.projectType === CONFIG.PROJECT_TYPE_UNINITIALIZED ? "-" : (AppState.projectType === "epub" ? "EPUB" : "JSON-VNTP");
     const files = AppState.importedFiles.length > 1 ? `${AppState.importedFiles.length} file` : (AppState.importedFiles[0] || '-');
     UI.el.statusBar.textContent = `Mode: ${mode} | File: ${files} | Baris: ${total} | TL: ${trans}/${total} (${perc}%)`;
     UI.el.progressFill.style.width = `${perc}%`;
