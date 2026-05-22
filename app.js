@@ -255,7 +255,7 @@ class VirtualScroller {
       this.container.innerHTML = "";
       return;
     }
-    const buffer = 15; 
+    const buffer = 15;
     let targetStart = Math.max(0, this.findStartIndex() - Math.floor(buffer / 2));
     let end = targetStart;
     let currentHeight = 0;
@@ -533,7 +533,7 @@ class Exporter {
       if (window.JSZip && res.length > 1) {
         const zip = new window.JSZip();
         res.forEach(f => zip.file(f.fn, f.content));
-        const blob = await zip.generateAsync({ type: "blob" });
+        const blob = await zip.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } });
         const a = UI.createDomNode("a", null, { href: URL.createObjectURL(blob), download: `${AppState.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_export.zip` });
         a.click();
       } else {
@@ -699,9 +699,54 @@ class AppController {
             AppController.loadDashboard();
           }
         });
-        card.querySelector(".btn-backup").addEventListener("click", () => {
-          const a = UI.createDomNode("a", null, { href: URL.createObjectURL(new Blob([JSON.stringify(p.data)], { type: "application/json" })), download: `${p.name.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_backup${CONFIG.PROJECT_EXT}` });
-          a.click();
+        card.querySelector(".btn-backup").addEventListener("click", async () => {
+          try {
+            document.body.style.cursor = "wait";
+            const zip = new window.JSZip();
+            const meta = {
+              version: p.data.version,
+              projectName: p.data.projectName,
+              projectType: p.data.projectType,
+              epubTags: p.data.epubTags,
+              epubSourceId: p.data.epubSourceId,
+              updatedAt: p.data.updatedAt,
+              imported_files: p.data.imported_files,
+              prompt_header: p.data.prompt_header
+            };
+            zip.file("metadata.json", JSON.stringify(meta));
+            
+            let origStr = "", transStr = "", nameStr = "";
+            for (const file of p.data.imported_files) {
+              origStr += `[${file}]\n`;
+              transStr += `[${file}]\n`;
+              nameStr += `[${file}]\n`;
+              const fileLines = p.data.lines.filter(l => l.file === file);
+              for (const l of fileLines) {
+                origStr += `${l.message || ""}\n`;
+                transStr += `${l.trans_message || ""}\n`;
+                const n1 = l.name || "";
+                const n2 = l.trans_name || "";
+                nameStr += (n1 || n2) ? `${n1} | ${n2}\n` : `\n`;
+              }
+            }
+            zip.file("original.txt", origStr);
+            zip.file("translated.txt", transStr);
+            zip.file("names.txt", nameStr);
+
+            if (p.data.projectType === "epub" && p.data.epubSourceId) {
+              const root = await StorageManager.getRoot();
+              const fh = await root.getFileHandle(p.data.epubSourceId);
+              const file = await fh.getFile();
+              zip.file(p.data.epubSourceId, file);
+            }
+            const blob = await zip.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } });
+            const a = UI.createDomNode("a", null, { href: URL.createObjectURL(blob), download: `${p.name.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_backup${CONFIG.PROJECT_EXT}` });
+            a.click();
+          } catch (err) {
+            alert("Gagal membuat backup: " + err.message);
+          } finally {
+            document.body.style.cursor = "default";
+          }
         });
         card.querySelector(".btn-delete").addEventListener("click", async () => {
           if (confirm("Hapus permanen?")) {
@@ -716,6 +761,100 @@ class AppController {
     }
   }
 
+  static async restoreProject(ev) {
+    const f = ev.target.files?.[0];
+    if (!f) return;
+    try {
+      document.body.style.cursor = "wait";
+      const zip = new window.JSZip();
+      await zip.loadAsync(f);
+
+      const metaFile = zip.file("metadata.json");
+      const origFile = zip.file("original.txt");
+      const transFile = zip.file("translated.txt");
+      const nameFile = zip.file("names.txt");
+
+      if (!metaFile || !origFile || !transFile || !nameFile) throw new Error("Format arsip tidak valid atau korup.");
+
+      const p = JSON.parse(await metaFile.async("text"));
+      const origLines = (await origFile.async("text")).split(/\r?\n/);
+      const transLines = (await transFile.async("text")).split(/\r?\n/);
+      const nameLines = (await nameFile.async("text")).split(/\r?\n/);
+
+      if (origLines[origLines.length - 1] === "") origLines.pop();
+      if (transLines[transLines.length - 1] === "") transLines.pop();
+      if (nameLines[nameLines.length - 1] === "") nameLines.pop();
+
+      if (origLines.length !== transLines.length || origLines.length !== nameLines.length) {
+        throw new Error("Berkas korup: Jumlah baris tidak sinkron.");
+      }
+
+      const importedSet = new Set((p.imported_files || []).map(file => `[${file}]`));
+      const reconstructedLines = [];
+      let currentFile = "unknown", lineNum = 1;
+
+      for (let i = 0; i < origLines.length; i++) {
+        const o = origLines[i], t = transLines[i], n = nameLines[i];
+        if (importedSet.has(o)) {
+          if (t !== o || n !== o) throw new Error("Berkas korup: Header file tidak sinkron.");
+          currentFile = o.substring(1, o.length - 1);
+        } else {
+          let oName = null, tName = null;
+          if (n.trim()) {
+            const parts = n.split(" | ");
+            oName = parts[0]?.trim() || null;
+            tName = parts[1]?.trim() || null;
+          }
+          reconstructedLines.push({
+            line_num: lineNum++,
+            file: currentFile,
+            name: oName,
+            message: o,
+            trans_name: tName,
+            trans_message: t || null,
+            is_translated: !!(t && t.trim())
+          });
+        }
+      }
+
+      const name = p.projectName || f.name.replace(CONFIG.PROJECT_EXT, '');
+
+      if (p.projectType === "epub" && p.epubSourceId) {
+        const epubFile = zip.file(p.epubSourceId);
+        if (epubFile) {
+          const newEpubId = "epub_" + Date.now() + ".epub";
+          const root = await StorageManager.getRoot();
+          const fh = await root.getFileHandle(newEpubId, { create: true });
+          const writable = await fh.createWritable();
+          await writable.write(await epubFile.async("blob"));
+          await writable.close();
+          p.epubSourceId = newEpubId;
+        }
+      }
+
+      const data = {
+        version: CONFIG.APP_VERSION,
+        projectName: name,
+        projectType: p.projectType || "json",
+        epubTags: p.epubTags || "p",
+        epubSourceId: p.epubSourceId || null,
+        updatedAt: Date.now(),
+        imported_files: p.imported_files || [],
+        lines: reconstructedLines.map(AppState.normalizeLine),
+        prompt_header: p.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER
+      };
+
+      await StorageManager.saveProject("proj_" + Date.now() + CONFIG.PROJECT_EXT, data);
+      await AppController.loadDashboard();
+      alert(`Proyek "${name}" berhasil dipulihkan!`);
+    } catch (e) {
+      alert("File backup korup atau tidak valid: " + e.message);
+    } finally {
+      document.body.style.cursor = "default";
+      ev.target.value = "";
+    }
+  }
+
   static async createNewProject() {
     const name = prompt("Masukkan nama proyek baru:");
     if (!name || !name.trim()) return;
@@ -726,27 +865,6 @@ class AppController {
     };
     await StorageManager.saveProject(id, initialData);
     AppController.openProject(id, initialData);
-  }
-
-  static async restoreProject(ev) {
-    const f = ev.target.files?.[0];
-    if (!f) return;
-    try {
-      const p = JSON.parse(await f.text());
-      const name = p.projectName || f.name.replace(CONFIG.PROJECT_EXT, '');
-      const data = {
-        version: CONFIG.APP_VERSION, projectName: name, projectType: p.projectType || "json", epubTags: p.epubTags || "p",
-        epubSourceId: p.epubSourceId || null, updatedAt: Date.now(), imported_files: p.imported_files || [],
-        lines: (p.lines || []).map(AppState.normalizeLine), prompt_header: p.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER
-      };
-      await StorageManager.saveProject("proj_" + Date.now() + CONFIG.PROJECT_EXT, data);
-      AppController.loadDashboard();
-      alert(`Proyek "${name}" berhasil dipulihkan!`);
-    } catch (e) {
-      alert("File backup korup atau tidak valid: " + e.message);
-    } finally {
-      ev.target.value = "";
-    }
   }
 
   static openProject(id, data) {
