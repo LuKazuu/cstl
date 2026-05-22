@@ -6,7 +6,7 @@ const CONFIG = Object.freeze({
   SCROLLER_MAIN_HEIGHT: 85,
   SCROLLER_PROOFREAD_HEIGHT: 90,
   SCROLLER_BUFFER: 15,
-  ENCODINGS: ["utf-8", "shift_jis", "windows-31j"],
+  ENCODINGS: ["utf-8", "shift_jis", "windows-31j", "cp932"],
   TOAST_DURATION: 4000,
   AUTOSAVE_DELAY: 1000,
   DEBOUNCE_DELAY: 250,
