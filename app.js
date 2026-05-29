@@ -3,13 +3,14 @@ const CONFIG = Object.freeze({
   PROJECT_EXT: ".cstl",
   DEFAULT_PROMPT_HEADER: `Rewrite entire text to Native Indonesian. Do not change prefix number. Euphemism prohibited. Use of "Bahasa Jakarta Selatan" is prohibited. Put results inside plaintext block.`,
   DEFAULT_EPUB_TAGS: "p",
-  SCROLLER_MAIN_HEIGHT: 85,
+  DEFAULT_IGNORE_NAME_TL: false,
+  SCROLLER_MAIN_HEIGHT: 90,
   SCROLLER_PROOFREAD_HEIGHT: 90,
-  SCROLLER_BUFFER: 15,
+  SCROLLER_BUFFER: 20,
   ENCODINGS: ["utf-8", "shift_jis", "windows-31j", "cp932"],
-  TOAST_DURATION: 4000,
-  AUTOSAVE_DELAY: 1000,
-  DEBOUNCE_DELAY: 250,
+  TOAST_DURATION: 3000,
+  AUTOSAVE_DELAY: 500,
+  DEBOUNCE_DELAY: 200,
   FALLBACK_FILENAME: "unknown",
   PROJECT_TYPE_UNINITIALIZED: "uninitialized"
 });
@@ -26,7 +27,7 @@ class UI {
       "previewViewport", "previewContainer", "progressFill", "progressText", "btnSelectAll",
       "btnClearSelection", "copyCount", "btnCopyForAi", "copyStatus", "pasteArea", "btnApply",
       "btnUndo", "nameTableBody", "statusBar", "importFileInput", "importFolderInput",
-      "importZipInput", "settingsModal", "settingsPromptInput", "settingsEpubTagsInput",
+      "importZipInput", "settingsModal", "settingsIgnoreNameCheck", "settingsPromptInput", "settingsEpubTagsInput",
       "btnSettingsReset", "btnSettingsCancel", "btnSettingsSave", "lineEditorModal", "lineEditorTitle",
       "lineOriginalView", "lineNameWrap", "lineNameInput", "lineMessageInput", "lineTranslatedCheck",
       "btnLineCancel", "btnLineSave", "proofreadModal", "proofreadSearchInput", "proofreadScope",
@@ -121,6 +122,7 @@ class AppState {
   static lines = [];
   static importedFiles = [];
   static aiInstructionHeader = CONFIG.DEFAULT_PROMPT_HEADER;
+  static ignoreNameTranslation = CONFIG.DEFAULT_IGNORE_NAME_TL;
   static undoSnapshot = null;
   static selectedLines = new Set();
   static displayRows = [];
@@ -174,7 +176,8 @@ class AppState {
         epubSourceId: AppState.epubSourceId,
         imported_files: AppState.importedFiles,
         lines: AppState.lines,
-        prompt_header: AppState.aiInstructionHeader
+        prompt_header: AppState.aiInstructionHeader,
+        ignoreNameTranslation: AppState.ignoreNameTranslation
       };
       await StorageManager.saveProject(AppState.currentProjectId, data);
       UI.el.statusBar.textContent = UI.el.statusBar.textContent.replace(" | Tersimpan!", "") + " | Tersimpan!";
@@ -632,12 +635,14 @@ class AppController {
     UI.el.btnSelectRange.addEventListener("click", AppController.selectRange);
     
     UI.el.btnSettings.addEventListener("click", () => {
+      UI.el.settingsIgnoreNameCheck.checked = AppState.ignoreNameTranslation;
       UI.el.settingsPromptInput.value = AppState.aiInstructionHeader;
       UI.el.settingsEpubTagsInput.value = AppState.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
       UI.toggleModal(UI.el.settingsModal, true);
     });
     
     UI.el.btnSettingsReset.addEventListener("click", () => {
+      UI.el.settingsIgnoreNameCheck.checked = CONFIG.DEFAULT_IGNORE_NAME_TL;
       UI.el.settingsPromptInput.value = CONFIG.DEFAULT_PROMPT_HEADER;
       UI.el.settingsEpubTagsInput.value = CONFIG.DEFAULT_EPUB_TAGS;
     });
@@ -645,6 +650,7 @@ class AppController {
     UI.el.btnSettingsCancel.addEventListener("click", () => UI.toggleModal(UI.el.settingsModal, false));
     
     UI.el.btnSettingsSave.addEventListener("click", () => {
+      AppState.ignoreNameTranslation = UI.el.settingsIgnoreNameCheck.checked;
       AppState.aiInstructionHeader = UI.el.settingsPromptInput.value.trim();
       AppState.epubTags = UI.el.settingsEpubTagsInput.value.trim() || CONFIG.DEFAULT_EPUB_TAGS;
       UI.toggleModal(UI.el.settingsModal, false);
@@ -722,7 +728,8 @@ class AppController {
               epubSourceId: p.data.epubSourceId,
               updatedAt: p.data.updatedAt,
               imported_files: p.data.imported_files,
-              prompt_header: p.data.prompt_header
+              prompt_header: p.data.prompt_header,
+              ignoreNameTranslation: p.data.ignoreNameTranslation
             };
             zip.file("metadata.json", JSON.stringify(meta));
             
@@ -852,7 +859,8 @@ class AppController {
         updatedAt: Date.now(),
         imported_files: p.imported_files || [],
         lines: reconstructedLines.map(AppState.normalizeLine),
-        prompt_header: p.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER
+        prompt_header: p.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER,
+        ignoreNameTranslation: p.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL
       };
 
       await StorageManager.saveProject("proj_" + Date.now() + CONFIG.PROJECT_EXT, data);
@@ -872,7 +880,7 @@ class AppController {
     const id = "proj_" + Date.now() + CONFIG.PROJECT_EXT;
     const initialData = {
       version: CONFIG.APP_VERSION, projectName: name.trim(), projectType: CONFIG.PROJECT_TYPE_UNINITIALIZED, epubTags: CONFIG.DEFAULT_EPUB_TAGS, epubSourceId: null,
-      updatedAt: Date.now(), imported_files: [], lines: [], prompt_header: CONFIG.DEFAULT_PROMPT_HEADER
+      updatedAt: Date.now(), imported_files: [], lines: [], prompt_header: CONFIG.DEFAULT_PROMPT_HEADER, ignoreNameTranslation: CONFIG.DEFAULT_IGNORE_NAME_TL
     };
     await StorageManager.saveProject(id, initialData);
     AppController.openProject(id, initialData);
@@ -887,6 +895,7 @@ class AppController {
     AppState.lines = (data.lines || []).map(AppState.normalizeLine);
     AppState.importedFiles = data.imported_files || [];
     AppState.aiInstructionHeader = data.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER;
+    AppState.ignoreNameTranslation = data.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL;
     AppState.selectedLines.clear();
     AppState.undoSnapshot = null;
     UI.el.projectNameDisplay.textContent = AppState.projectName;
@@ -901,7 +910,7 @@ class AppController {
       const data = {
         version: CONFIG.APP_VERSION, projectName: AppState.projectName, projectType: AppState.projectType,
         epubTags: AppState.epubTags, epubSourceId: AppState.epubSourceId, imported_files: AppState.importedFiles,
-        lines: AppState.lines, prompt_header: AppState.aiInstructionHeader
+        lines: AppState.lines, prompt_header: AppState.aiInstructionHeader, ignoreNameTranslation: AppState.ignoreNameTranslation
       };
       StorageManager.saveProject(AppState.currentProjectId, data).then(AppController.finishClose);
     } else {
@@ -1098,6 +1107,11 @@ class AppController {
     for (const it of parsed) {
       const l = AppState.lineByNum.get(it.num);
       if (!l) { errors.push(`[Baris ${it.num}] Tidak ada di JSON.`); continue; }
+      
+      if (AppState.ignoreNameTranslation && l.name) {
+        it.name = l.name;
+      }
+      
       const oN = !!(l.name || "").trim();
       let tN = !!(it.name || "").trim();
       if (!oN && tN) { it.msg = it.rawMsg; it.name = null; tN = false; }
@@ -1112,7 +1126,7 @@ class AppController {
     for (const {l, it} of updates) {
       l.trans_message = it.msg;
       l.is_translated = true;
-      if (it.name) l.trans_name = it.name;
+      if (it.name) l.trans_name = AppState.ignoreNameTranslation ? null : it.name;
       AppState.selectedLines.delete(l.line_num);
     }
     UI.el.pasteArea.value = "";
