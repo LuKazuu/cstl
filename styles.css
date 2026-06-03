@@ -199,7 +199,8 @@ input, textarea, button, select {
 
 .preview-row {
   display: flex; flex-direction: column; background: rgba(30, 41, 59, 0.3); 
-  border: 1px solid var(--line); border-radius: 8px; padding: 10px; transition: all 0.2s;
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px; 
+  transition: background-color 0.2s, border-color 0.2s;
 }
 .preview-row:hover { background: rgba(255, 255, 255, 0.05); }
 .preview-row.row-selected { background: rgba(59, 130, 246, 0.1) !important; border-color: var(--primary); }

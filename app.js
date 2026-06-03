@@ -141,7 +141,7 @@ class AppState {
   static saveTimeout = null;
 
   static isTranslated(line) {
-    return !!line.is_translated && !!String(line.trans_message).trim();
+    return !!line.is_translated;
   }
 
   static normalizeLine(line) {
@@ -287,43 +287,50 @@ class VirtualScroller {
   render(force = false) {
     const viewportHeight = this.viewport.clientHeight || 800;
     const total = this.items.length;
+    
     if (!total) {
-      this.container.innerHTML = "";
+      this.container.replaceChildren();
       return;
     }
+
     const buffer = CONFIG.SCROLLER_BUFFER;
-    let targetStart = Math.max(0, this.findStartIndex() - Math.floor(buffer / 2));
-    let end = targetStart;
-    let currentHeight = 0;
-    while (end < total && currentHeight < viewportHeight + (buffer * this.estimatedHeight)) {
-      currentHeight += this.heights[end];
+    const viewIndex = this.findStartIndex();
+    
+    let targetStart = Math.max(0, viewIndex - Math.floor(buffer / 2));
+    let end = viewIndex;
+    let visibleHeight = 0;
+    
+    while (end < total && visibleHeight < viewportHeight) {
+      visibleHeight += this.heights[end];
       end++;
     }
-    end = Math.min(total, end);
+    
+    end = Math.min(total, end + Math.floor(buffer / 2));
+
     if (!force && this.lastStart === targetStart && this.lastEnd === end) return;
     this.lastStart = targetStart;
     this.lastEnd = end;
+    
     const topPad = this.positions[targetStart];
     const bottomPad = end < total ? this.totalHeight - this.positions[end] : 0;
-    this.container.innerHTML = "";
     
     const topSpacer = UI.createDomNode("div");
     topSpacer.style.height = `${topPad}px`;
-    this.container.appendChild(topSpacer);
 
     const frag = document.createDocumentFragment();
     const rowElements = [];
+    
     for (let i = targetStart; i < end; i++) {
       const el = this.renderItem(this.items[i]);
       el.dataset.vindex = i;
       frag.appendChild(el);
       rowElements.push(el);
     }
-    this.container.appendChild(frag);
 
     const bottomSpacer = UI.createDomNode("div");
     bottomSpacer.style.height = `${bottomPad}px`;
-    this.container.appendChild(bottomSpacer);
+
+    this.container.replaceChildren(topSpacer, frag, bottomSpacer);
 
     window.requestAnimationFrame(() => {
       let changed = false;
@@ -595,6 +602,7 @@ class AppController {
   static mainScroller = null;
   static proofreadScroller = null;
   static activeEditorLineNum = null;
+  static currentHighlightRegex = null;
 
   static async init() {
     UI.cache();
@@ -819,6 +827,18 @@ class AppController {
         const numData = content.dataset.num;
         if (numData) {
           AppController.openLineEditor(Number(numData));
+        }
+      }
+    });
+
+    UI.el.nameTableBody.addEventListener("click", async (e) => {
+      if (e.target.tagName === "TD") {
+        const n = e.target.textContent;
+        try { 
+          await navigator.clipboard.writeText(n); 
+          UI.flashMessage(`Nama "${n}" disalin!`); 
+        } catch (err) { 
+          alert(`Clipboard diblokir oleh browser untuk teks:\n${n}`);
         }
       }
     });
@@ -1079,7 +1099,31 @@ class AppController {
 
   static finishClose() {
     AppState.currentProjectId = null;
+    AppState.projectName = "";
+    AppState.epubSourceId = null;
+    
     AppState.lines = [];
+    AppState.importedFiles = [];
+    AppState.displayRows = [];
+    AppState.proofreadMatches = [];
+    AppState.selectedLines.clear();
+    
+    AppState.lineByNum.clear();
+    AppState.filesLinesCache.clear();
+    
+    AppState.undoSnapshot = null;
+
+    if (AppController.mainScroller) {
+      AppController.mainScroller.setItems([]);
+    }
+    if (AppController.proofreadScroller) {
+      AppController.proofreadScroller.setItems([]);
+    }
+
+    UI.el.nameTableBody.replaceChildren();
+    UI.el.pasteArea.value = "";
+    UI.el.copyStatus.classList.add("empty");
+
     UI.el.workspaceView.style.display = "none";
     UI.el.dashboardView.classList.add("open");
     AppController.loadDashboard();
@@ -1168,7 +1212,7 @@ class AppController {
   }
 
   static syncCheckboxes() {
-    document.querySelectorAll('.preview-row.separator input[type="checkbox"]').forEach(cb => {
+    UI.el.previewContainer.querySelectorAll('.preview-row.separator input[type="checkbox"]').forEach(cb => {
       const fileLines = AppState.filesLinesCache.get(cb.dataset.file) || [];
       let allChecked = true;
       let hasUntranslated = false;
@@ -1183,7 +1227,7 @@ class AppController {
       }
       cb.checked = hasUntranslated && allChecked;
     });
-    document.querySelectorAll('.preview-row:not(.separator) input[type="checkbox"]').forEach(cb => {
+    UI.el.previewContainer.querySelectorAll('.preview-row:not(.separator) input[type="checkbox"]').forEach(cb => {
       const num = Number(cb.dataset.num);
       cb.checked = AppState.selectedLines.has(num);
       cb.checked ? cb.closest('.preview-row').classList.add('row-selected') : cb.closest('.preview-row').classList.remove('row-selected');
@@ -1193,19 +1237,11 @@ class AppController {
 
   static renderNameTable() {
     const names = Array.from(new Set(AppState.lines.map(l => l.name).filter(Boolean))).sort();
-    UI.el.nameTableBody.innerHTML = "";
+    UI.el.nameTableBody.replaceChildren();
     const frag = document.createDocumentFragment();
     for (const n of names) {
       const tr = UI.createDomNode("tr");
       const td = UI.createDomNode("td", "mono", { textContent: n, title: "Klik untuk copy" });
-      td.addEventListener("click", async () => {
-        try { 
-          await navigator.clipboard.writeText(n); 
-          UI.flashMessage(`Nama "${n}" disalin!`); 
-        } catch (e) { 
-          alert(`Clipboard diblokir oleh browser untuk teks:\n${n}`);
-        }
-      });
       tr.appendChild(td);
       frag.appendChild(tr);
     }
@@ -1373,14 +1409,8 @@ class AppController {
     AppState.queueAutoSave();
   }
 
-  static createHighlight(text, query, isRegex, isCase, isExact) {
-    if (!query) return document.createTextNode(text);
-    let regex;
-    try {
-      let rStr = isRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (isExact) rStr = `(?<![\\p{L}\\p{N}_])${rStr}(?![\\p{L}\\p{N}_])`;
-      regex = new RegExp(`(${rStr})`, isCase ? 'gu' : 'giu');
-    } catch (e) { return document.createTextNode(text); }
+  static createHighlight(text, regex) {
+    if (!regex) return document.createTextNode(text);
     const frag = document.createDocumentFragment();
     const parts = text.split(regex);
     for (let i = 0; i < parts.length; i++) {
@@ -1400,25 +1430,30 @@ class AppController {
     const q = UI.el.proofreadSearchInput.value, isReg = UI.el.proofreadRegexCheck.checked;
     const isC = UI.el.proofreadCaseCheck.checked, isEx = UI.el.proofreadExactCheck.checked;
     const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked, scope = UI.el.proofreadScope.value;
-    let regex = null;
+    
+    let searchRegex = null;
+    AppController.currentHighlightRegex = null;
+    
     if (q) {
       try {
         let rStr = isReg ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         if (isEx) rStr = `(?<![\\p{L}\\p{N}_])${rStr}(?![\\p{L}\\p{N}_])`;
-        regex = new RegExp(rStr, isC ? "gu" : "giu");
+        searchRegex = new RegExp(rStr, isC ? "gu" : "giu");
+        AppController.currentHighlightRegex = new RegExp(`(${rStr})`, isC ? "gu" : "giu");
       } catch (e) { return; }
     }
+    
     AppState.proofreadMatches = [];
     for (const line of AppState.lines) {
       if (onlyT && !AppState.isTranslated(line)) continue;
       const dName = line.name || "", fName = AppState.isTranslated(line) ? (line.trans_name || "").trim() || line.name : null;
       const tMsg = onlyT ? line.trans_message : line.message, tName = onlyT ? fName : dName;
-      if (q && regex) {
+      if (q && searchRegex) {
         let match = false;
-        regex.lastIndex = 0;
-        if ((scope === 'all' || scope === 'message') && tMsg && regex.test(tMsg)) match = true;
-        regex.lastIndex = 0;
-        if (!match && (scope === 'all' || scope === 'name') && tName && regex.test(tName)) match = true;
+        searchRegex.lastIndex = 0;
+        if ((scope === 'all' || scope === 'message') && tMsg && searchRegex.test(tMsg)) match = true;
+        searchRegex.lastIndex = 0;
+        if (!match && (scope === 'all' || scope === 'name') && tName && searchRegex.test(tName)) match = true;
         if (!match) continue;
       }
       AppState.proofreadMatches.push({ num: line.line_num, file: line.file, origName: dName, origMsg: line.message, transName: fName, transMsg: line.trans_message, isTrans: AppState.isTranslated(line) });
@@ -1431,20 +1466,21 @@ class AppController {
     const row = UI.createDomNode("div", "preview-row");
     const wrap = UI.createDomNode("div", "text-content");
     wrap.dataset.num = r.num;
-    const q = UI.el.proofreadSearchInput.value, isReg = UI.el.proofreadRegexCheck.checked;
-    const isC = UI.el.proofreadCaseCheck.checked, isEx = UI.el.proofreadExactCheck.checked;
     const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked, scope = UI.el.proofreadScope.value;
+    
     const build = (n, m, hl) => {
       const f = document.createDocumentFragment();
       if (n) {
-        f.appendChild((hl && (scope === 'all' || scope === 'name')) ? AppController.createHighlight(n, q, isReg, isC, isEx) : document.createTextNode(n));
+        f.appendChild((hl && (scope === 'all' || scope === 'name')) ? AppController.createHighlight(n, AppController.currentHighlightRegex) : document.createTextNode(n));
         f.appendChild(document.createTextNode(": "));
       }
-      f.appendChild((hl && (scope === 'all' || scope === 'message')) ? AppController.createHighlight(m, q, isReg, isC, isEx) : document.createTextNode(m));
+      f.appendChild((hl && (scope === 'all' || scope === 'message')) ? AppController.createHighlight(m, AppController.currentHighlightRegex) : document.createTextNode(m));
       return f;
     };
+    
     wrap.appendChild(UI.createDomNode("div", "file-meta", { textContent: `File: ${r.file} | Baris: ${r.num}` }));
     const orig = UI.createDomNode("div", "original"), trans = UI.createDomNode("div", "translated");
+    
     if (!r.isTrans) trans.classList.add("cell-muted");
     if (onlyT) {
       orig.textContent = r.origName ? `${r.origName}: ${r.origMsg}` : r.origMsg;
@@ -1453,6 +1489,7 @@ class AppController {
       orig.appendChild(build(r.origName, r.origMsg, true));
       trans.textContent = r.isTrans ? (r.transName ? `${r.transName}: ${r.transMsg}` : r.transMsg) : "——";
     }
+    
     wrap.append(orig, trans);
     row.appendChild(wrap);
     return row;
