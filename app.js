@@ -6,7 +6,7 @@ const CONFIG = Object.freeze({
   DEFAULT_IGNORE_NAME_TL: false,
   DEFAULT_PROMPT_ENABLED: true,
   DEFAULT_CONTEXT_ENABLED: false,
-  DEFAULT_CONTEXT_SIZE: 10,
+  DEFAULT_CONTEXT_SIZE: 5,
   SCROLLER_MAIN_HEIGHT: 90,
   SCROLLER_PROOFREAD_HEIGHT: 90,
   SCROLLER_BUFFER: 20,
@@ -624,7 +624,7 @@ class AppController {
       return;
     }
     const val = parseInt(UI.el.settingsContextInput.value);
-    if (isNaN(val) || val === AppState.contextSize || val > transCount || val < 1) {
+    if (isNaN(val) || val === AppState.contextSize || val > transCount || val < 5) {
       UI.el.btnSettingsContextApply.disabled = true;
     } else {
       UI.el.btnSettingsContextApply.disabled = false;
@@ -690,7 +690,7 @@ class AppController {
       
       UI.el.settingsContextWrap.style.opacity = AppState.contextEnabled ? "1" : "0.4";
       UI.el.settingsContextWrap.style.pointerEvents = AppState.contextEnabled ? "auto" : "none";
-      UI.el.settingsContextInput.disabled = !AppState.contextEnabled || (transCount < 10);
+      UI.el.settingsContextInput.disabled = !AppState.contextEnabled || (transCount < 5);
 
       AppController.evalContextApplyBtn(transCount);
       
@@ -708,7 +708,7 @@ class AppController {
         UI.el.settingsContextInput.disabled = true;
         UI.el.btnSettingsContextApply.disabled = true;
       } else {
-        UI.el.settingsContextInput.disabled = transCount < 10;
+        UI.el.settingsContextInput.disabled = transCount < 5;
         AppController.evalContextApplyBtn(transCount);
       }
     });
@@ -737,7 +737,7 @@ class AppController {
       const transCount = AppState.lines.filter(AppState.isTranslated).length;
       UI.el.settingsContextWrap.style.opacity = CONFIG.DEFAULT_CONTEXT_ENABLED ? "1" : "0.4";
       UI.el.settingsContextWrap.style.pointerEvents = CONFIG.DEFAULT_CONTEXT_ENABLED ? "auto" : "none";
-      UI.el.settingsContextInput.disabled = !CONFIG.DEFAULT_CONTEXT_ENABLED || (transCount < 10);
+      UI.el.settingsContextInput.disabled = !CONFIG.DEFAULT_CONTEXT_ENABLED || (transCount < 5);
       AppController.evalContextApplyBtn(transCount);
     });
 
@@ -834,7 +834,7 @@ class AppController {
       }
       for (const p of projects) {
         const card = UI.createDomNode("div", "project-card");
-        let badge = p.fileCount > 0 || p.lineCount > 0 ? (p.data.projectType === 'epub' ? `<span class="badge badge-epub">EPUB</span>` : `<span class="badge badge-json">JSON-VNTP</span>`) : '';
+        let badge = p.fileCount > 0 || p.lineCount > 0 ? (p.data.projectType === 'epub' ? `<span class="badge badge-epub">EPUB</span>` : (p.data.projectType === 'json' ? `<span class="badge badge-json">JSON-VNTP</span>` : '')) : '';
         card.innerHTML = `
           <div>
             <h3>${p.name}</h3>
@@ -1318,7 +1318,11 @@ class AppController {
     }
     if (errors.length) return alert("DITOLAK:\n" + errors.slice(0, 10).join("\n") + (errors.length > 10 ? `\n... (+${errors.length-10} lain)` : ""));
     
-    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)) };
+    AppState.undoSnapshot = { 
+      lines: JSON.parse(JSON.stringify(AppState.lines)),
+      selected: new Set(AppState.selectedLines)
+    };
+
     for (const {l, it} of updates) {
       l.trans_message = it.msg;
       l.is_translated = true;
@@ -1334,8 +1338,10 @@ class AppController {
   static undoTranslation() {
     if (!AppState.undoSnapshot) return;
     AppState.lines = AppState.undoSnapshot.lines.map(AppState.normalizeLine);
+    AppState.selectedLines = new Set(AppState.undoSnapshot.selected);
     AppState.undoSnapshot = null;
     AppController.refreshWorkspace();
+    AppController.syncCheckboxes();
     AppState.queueAutoSave();
   }
 
@@ -1372,8 +1378,8 @@ class AppController {
     let regex;
     try {
       let rStr = isRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (isExact) rStr = `\\b(?:${rStr})\\b`;
-      regex = new RegExp(`(${rStr})`, isCase ? 'g' : 'gi');
+      if (isExact) rStr = `(?<![\\p{L}\\p{N}_])${rStr}(?![\\p{L}\\p{N}_])`;
+      regex = new RegExp(`(${rStr})`, isCase ? 'gu' : 'giu');
     } catch (e) { return document.createTextNode(text); }
     const frag = document.createDocumentFragment();
     const parts = text.split(regex);
@@ -1398,8 +1404,8 @@ class AppController {
     if (q) {
       try {
         let rStr = isReg ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        if (isEx) rStr = `\\b(?:${rStr})\\b`;
-        regex = new RegExp(rStr, isC ? "g" : "gi");
+        if (isEx) rStr = `(?<![\\p{L}\\p{N}_])${rStr}(?![\\p{L}\\p{N}_])`;
+        regex = new RegExp(rStr, isC ? "gu" : "giu");
       } catch (e) { return; }
     }
     AppState.proofreadMatches = [];
@@ -1458,11 +1464,14 @@ class AppController {
     let regex;
     try {
       let rStr = UI.el.proofreadRegexCheck.checked ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (UI.el.proofreadExactCheck.checked) rStr = `\\b(?:${rStr})\\b`;
-      regex = new RegExp(rStr, UI.el.proofreadCaseCheck.checked ? 'g' : 'gi');
+      if (UI.el.proofreadExactCheck.checked) rStr = `(?<![\\p{L}\\p{N}_])${rStr}(?![\\p{L}\\p{N}_])`;
+      regex = new RegExp(rStr, UI.el.proofreadCaseCheck.checked ? 'gu' : 'giu');
     } catch (e) { return alert("Regex tidak valid."); }
     let count = 0;
-    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)) };
+    AppState.undoSnapshot = { 
+      lines: JSON.parse(JSON.stringify(AppState.lines)),
+      selected: new Set(AppState.selectedLines)
+    };
     const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked, scope = UI.el.proofreadScope.value;
     for (const line of AppState.lines) {
       if (onlyT && !AppState.isTranslated(line)) continue;
