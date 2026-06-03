@@ -117,7 +117,6 @@ input, textarea, button, select {
 
 .project-card {
   background: rgba(30, 41, 59, 0.4); 
-  backdrop-filter: blur(10px); 
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 16px; 
   padding: 24px; 
@@ -189,8 +188,9 @@ input, textarea, button, select {
 .panel { display: flex; flex-direction: column; padding: var(--gap); overflow-y: auto; }
 .panel-left { border-bottom: 1px solid var(--line); background: #0b1120; }
 @media (min-width: 1024px) { .panel-left { border-bottom: none; border-right: 1px solid var(--line); } }
-.panel-header { display: flex; justify-content: space-between; align-items: center; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .panel-title { margin: 0 0 16px 0; font-size: 16px; font-weight: 600; color: var(--text); }
+.panel-header .panel-title { margin: 0; }
 .section-label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
 .section-label-lg { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 20px; }
 
@@ -263,7 +263,7 @@ input, textarea, button, select {
 
 .modal-backdrop { 
   position: fixed; inset: 0; display: none; align-items: center; justify-content: center; 
-  background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(4px); 
+  background: rgba(15, 23, 42, 0.95);
 }
 .modal-backdrop.open { display: flex; }
 #settingsModal { z-index: 60; }
@@ -279,7 +279,18 @@ input, textarea, button, select {
 .modal-xl { width: min(1100px, 96vw); max-height: 92dvh; }
 .modal h3 { margin: 0 0 16px 0; font-size: 20px; font-weight: 600; }
 .modal-actions { display: flex; align-items: center; gap: 10px; margin-top: 20px; flex-wrap: wrap; flex-shrink: 0; }
-.checkbox-line { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.checkbox-line { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; user-select: none; }
+.checkbox-line input[type="checkbox"] { margin: 0; width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); flex-shrink: 0; }
+
+.settings-nested-box {
+  border-left: 2px solid var(--line);
+  padding-left: 14px;
+  margin-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: opacity 0.2s ease;
+}
 
 @media (max-width: 768px) {
   .desktop-only { display: none; }

@@ -1,9 +1,12 @@
 const CONFIG = Object.freeze({
-  APP_VERSION: 6,
+  APP_VERSION: 7,
   PROJECT_EXT: ".cstl",
   DEFAULT_PROMPT_HEADER: `Rewrite entire text to Native Indonesian. Do not change prefix number. Euphemism prohibited. Use of "Bahasa Jakarta Selatan" is prohibited. Put results inside plaintext block.`,
   DEFAULT_EPUB_TAGS: "p",
   DEFAULT_IGNORE_NAME_TL: false,
+  DEFAULT_PROMPT_ENABLED: true,
+  DEFAULT_CONTEXT_ENABLED: false,
+  DEFAULT_CONTEXT_SIZE: 10,
   SCROLLER_MAIN_HEIGHT: 90,
   SCROLLER_PROOFREAD_HEIGHT: 90,
   SCROLLER_BUFFER: 20,
@@ -27,8 +30,11 @@ class UI {
       "previewViewport", "previewContainer", "progressFill", "progressText", "btnSelectAll",
       "btnClearSelection", "copyCount", "btnCopyForAi", "copyStatus", "pasteArea", "btnApply",
       "btnUndo", "nameTableBody", "statusBar", "importFileInput", "importFolderInput",
-      "importZipInput", "settingsModal", "settingsIgnoreNameCheck", "settingsPromptInput", "settingsEpubTagsInput",
-      "btnSettingsReset", "btnSettingsCancel", "btnSettingsSave", "lineEditorModal", "lineEditorTitle",
+      "importZipInput", "settingsModal", "settingsIgnoreNameCheck", "settingsPromptCheck", "settingsContextCheck", 
+      "settingsContextWrap", "settingsContextInput", "btnSettingsContextApply", "maxContextDisplay",
+      "settingsPromptInput", "settingsEpubTagsInput",
+      "btnSettingsDasarReset", "btnSettingsPromptReset", "btnSettingsEpubReset", "btnSettingsCancel", "btnSettingsSave", 
+      "lineEditorModal", "lineEditorTitle",
       "lineOriginalView", "lineNameWrap", "lineNameInput", "lineMessageInput", "lineTranslatedCheck",
       "btnLineCancel", "btnLineSave", "proofreadModal", "proofreadSearchInput", "proofreadScope",
       "proofreadRegexCheck", "proofreadCaseCheck", "proofreadExactCheck", "proofreadTranslatedOnlyCheck",
@@ -123,10 +129,14 @@ class AppState {
   static importedFiles = [];
   static aiInstructionHeader = CONFIG.DEFAULT_PROMPT_HEADER;
   static ignoreNameTranslation = CONFIG.DEFAULT_IGNORE_NAME_TL;
+  static aiPromptEnabled = CONFIG.DEFAULT_PROMPT_ENABLED;
+  static contextEnabled = CONFIG.DEFAULT_CONTEXT_ENABLED;
+  static contextSize = CONFIG.DEFAULT_CONTEXT_SIZE;
   static undoSnapshot = null;
   static selectedLines = new Set();
   static displayRows = [];
   static lineByNum = new Map();
+  static filesLinesCache = new Map();
   static proofreadMatches = [];
   static saveTimeout = null;
 
@@ -148,6 +158,7 @@ class AppState {
 
   static rebuildCache() {
     AppState.lineByNum.clear();
+    AppState.filesLinesCache.clear();
     const grouped = new Map(AppState.importedFiles.map(f => [f, []]));
     for (const line of AppState.lines) {
       AppState.lineByNum.set(line.line_num, line);
@@ -156,6 +167,7 @@ class AppState {
     }
     AppState.displayRows = [];
     for (const [fileName, rows] of grouped.entries()) {
+      AppState.filesLinesCache.set(fileName, rows);
       if (!rows.length) continue;
       AppState.displayRows.push({ type: "separator", file: fileName });
       for (const line of rows) {
@@ -167,22 +179,33 @@ class AppState {
   static queueAutoSave() {
     if (!AppState.currentProjectId) return;
     clearTimeout(AppState.saveTimeout);
-    AppState.saveTimeout = setTimeout(async () => {
-      const data = {
-        version: CONFIG.APP_VERSION,
-        projectName: AppState.projectName,
-        projectType: AppState.projectType,
-        epubTags: AppState.epubTags,
-        epubSourceId: AppState.epubSourceId,
-        imported_files: AppState.importedFiles,
-        lines: AppState.lines,
-        prompt_header: AppState.aiInstructionHeader,
-        ignoreNameTranslation: AppState.ignoreNameTranslation
-      };
-      await StorageManager.saveProject(AppState.currentProjectId, data);
-      UI.el.statusBar.textContent = UI.el.statusBar.textContent.replace(" | Tersimpan!", "") + " | Tersimpan!";
-      setTimeout(() => AppController.updateStatusBar(), 2000);
+    AppState.saveTimeout = setTimeout(() => {
+      if (window.requestIdleCallback) {
+        window.requestIdleCallback(AppState.executeAutoSave);
+      } else {
+        setTimeout(AppState.executeAutoSave, 0);
+      }
     }, CONFIG.AUTOSAVE_DELAY);
+  }
+
+  static async executeAutoSave() {
+    const data = {
+      version: CONFIG.APP_VERSION,
+      projectName: AppState.projectName,
+      projectType: AppState.projectType,
+      epubTags: AppState.epubTags,
+      epubSourceId: AppState.epubSourceId,
+      imported_files: AppState.importedFiles,
+      lines: AppState.lines,
+      prompt_header: AppState.aiInstructionHeader,
+      ignoreNameTranslation: AppState.ignoreNameTranslation,
+      promptEnabled: AppState.aiPromptEnabled,
+      contextEnabled: AppState.contextEnabled,
+      contextSize: AppState.contextSize
+    };
+    await StorageManager.saveProject(AppState.currentProjectId, data);
+    UI.el.statusBar.textContent = UI.el.statusBar.textContent.replace(" | Tersimpan!", "") + " | Tersimpan!";
+    setTimeout(() => AppController.updateStatusBar(), 2000);
   }
 }
 
@@ -302,7 +325,7 @@ class VirtualScroller {
     bottomSpacer.style.height = `${bottomPad}px`;
     this.container.appendChild(bottomSpacer);
 
-    Promise.resolve().then(() => {
+    window.requestAnimationFrame(() => {
       let changed = false;
       for (const el of rowElements) {
         const idx = parseInt(el.dataset.vindex);
@@ -367,7 +390,7 @@ class Importer {
     document.body.style.cursor = "wait";
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     try {
-      let cur = AppState.lines.length > 0 ? Math.max(...AppState.lines.map(l => l.line_num)) + 1 : 1;
+      let cur = AppState.lines.length > 0 ? AppState.lines.reduce((max, l) => Math.max(max, l.line_num), 0) + 1 : 1;
       const lines = [];
       const existingFiles = new Set(AppState.importedFiles);
       const skippedFiles = [];
@@ -410,6 +433,7 @@ class Importer {
             await zip.loadAsync(f);
             const containerXml = await zip.file("META-INF/container.xml").async("text");
             const rootfile = new DOMParser().parseFromString(containerXml, "application/xml").querySelector("rootfile");
+            if (!rootfile) throw new Error("Format EPUB tidak valid atau korup.");
             const opfPath = decodeURIComponent(rootfile.getAttribute("full-path"));
             const opfDir = opfPath.includes("/") ? opfPath.substring(0, opfPath.lastIndexOf("/")) + "/" : "";
             const opfXml = await zip.file(opfPath).async("text");
@@ -519,8 +543,10 @@ class Exporter {
           zip.file("mimetype", mimeData, { compression: "STORE" });
         }
         const blob = await zip.generateAsync({ type: "blob", mimeType: "application/epub+zip", compression: "DEFLATE", compressionOptions: { level: 9 } });
-        const a = UI.createDomNode("a", null, { href: URL.createObjectURL(blob), download: `${AppState.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_tl.epub` });
+        const url = URL.createObjectURL(blob);
+        const a = UI.createDomNode("a", null, { href: url, download: `${AppState.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_tl.epub` });
         a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
         UI.flashMessage("Berhasil mengekspor EPUB!");
       } catch (err) {
         alert("Gagal mengekspor EPUB: " + err.message);
@@ -548,13 +574,17 @@ class Exporter {
         const zip = new window.JSZip();
         res.forEach(f => zip.file(f.fn, f.content));
         const blob = await zip.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } });
-        const a = UI.createDomNode("a", null, { href: URL.createObjectURL(blob), download: `${AppState.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_export.zip` });
+        const url = URL.createObjectURL(blob);
+        const a = UI.createDomNode("a", null, { href: url, download: `${AppState.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_export.zip` });
         a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
       } else {
         res.forEach(f => {
           const blob = new Blob([f.content], { type: "application/json" });
-          const a = UI.createDomNode("a", null, { href: URL.createObjectURL(blob), download: f.fn });
+          const url = URL.createObjectURL(blob);
+          const a = UI.createDomNode("a", null, { href: url, download: f.fn });
           a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
         });
       }
     }
@@ -586,6 +616,19 @@ class AppController {
       clearTimeout(timeout);
       timeout = setTimeout(() => func.apply(this, args), wait);
     };
+  }
+
+  static evalContextApplyBtn(transCount) {
+    if (!UI.el.settingsContextCheck.checked) {
+      UI.el.btnSettingsContextApply.disabled = true;
+      return;
+    }
+    const val = parseInt(UI.el.settingsContextInput.value);
+    if (isNaN(val) || val === AppState.contextSize || val > transCount || val < 1) {
+      UI.el.btnSettingsContextApply.disabled = true;
+    } else {
+      UI.el.btnSettingsContextApply.disabled = false;
+    }
   }
 
   static bindEvents() {
@@ -636,14 +679,73 @@ class AppController {
     
     UI.el.btnSettings.addEventListener("click", () => {
       UI.el.settingsIgnoreNameCheck.checked = AppState.ignoreNameTranslation;
+      UI.el.settingsPromptCheck.checked = AppState.aiPromptEnabled;
+      UI.el.settingsContextCheck.checked = AppState.contextEnabled;
       UI.el.settingsPromptInput.value = AppState.aiInstructionHeader;
       UI.el.settingsEpubTagsInput.value = AppState.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
+      
+      const transCount = AppState.lines.filter(AppState.isTranslated).length;
+      UI.el.maxContextDisplay.textContent = transCount;
+      UI.el.settingsContextInput.value = AppState.contextSize;
+      
+      UI.el.settingsContextWrap.style.opacity = AppState.contextEnabled ? "1" : "0.4";
+      UI.el.settingsContextWrap.style.pointerEvents = AppState.contextEnabled ? "auto" : "none";
+      UI.el.settingsContextInput.disabled = !AppState.contextEnabled || (transCount < 10);
+
+      AppController.evalContextApplyBtn(transCount);
+      
       UI.toggleModal(UI.el.settingsModal, true);
     });
+
+    UI.el.settingsContextCheck.addEventListener("change", (e) => {
+      const isChecked = e.target.checked;
+      const transCount = AppState.lines.filter(AppState.isTranslated).length;
+      
+      UI.el.settingsContextWrap.style.opacity = isChecked ? "1" : "0.4";
+      UI.el.settingsContextWrap.style.pointerEvents = isChecked ? "auto" : "none";
+      
+      if (!isChecked) {
+        UI.el.settingsContextInput.disabled = true;
+        UI.el.btnSettingsContextApply.disabled = true;
+      } else {
+        UI.el.settingsContextInput.disabled = transCount < 10;
+        AppController.evalContextApplyBtn(transCount);
+      }
+    });
+
+    UI.el.settingsContextInput.addEventListener("input", () => {
+      const transCount = AppState.lines.filter(AppState.isTranslated).length;
+      AppController.evalContextApplyBtn(transCount);
+    });
+
+    UI.el.btnSettingsContextApply.addEventListener("click", () => {
+      const val = parseInt(UI.el.settingsContextInput.value);
+      if (!isNaN(val)) {
+        AppState.contextSize = val;
+        AppState.queueAutoSave();
+        const transCount = AppState.lines.filter(AppState.isTranslated).length;
+        AppController.evalContextApplyBtn(transCount);
+      }
+    });
     
-    UI.el.btnSettingsReset.addEventListener("click", () => {
+    UI.el.btnSettingsDasarReset.addEventListener("click", () => {
       UI.el.settingsIgnoreNameCheck.checked = CONFIG.DEFAULT_IGNORE_NAME_TL;
+      UI.el.settingsPromptCheck.checked = CONFIG.DEFAULT_PROMPT_ENABLED;
+      UI.el.settingsContextCheck.checked = CONFIG.DEFAULT_CONTEXT_ENABLED;
+      UI.el.settingsContextInput.value = CONFIG.DEFAULT_CONTEXT_SIZE;
+      
+      const transCount = AppState.lines.filter(AppState.isTranslated).length;
+      UI.el.settingsContextWrap.style.opacity = CONFIG.DEFAULT_CONTEXT_ENABLED ? "1" : "0.4";
+      UI.el.settingsContextWrap.style.pointerEvents = CONFIG.DEFAULT_CONTEXT_ENABLED ? "auto" : "none";
+      UI.el.settingsContextInput.disabled = !CONFIG.DEFAULT_CONTEXT_ENABLED || (transCount < 10);
+      AppController.evalContextApplyBtn(transCount);
+    });
+
+    UI.el.btnSettingsPromptReset.addEventListener("click", () => {
       UI.el.settingsPromptInput.value = CONFIG.DEFAULT_PROMPT_HEADER;
+    });
+
+    UI.el.btnSettingsEpubReset.addEventListener("click", () => {
       UI.el.settingsEpubTagsInput.value = CONFIG.DEFAULT_EPUB_TAGS;
     });
     
@@ -651,6 +753,8 @@ class AppController {
     
     UI.el.btnSettingsSave.addEventListener("click", () => {
       AppState.ignoreNameTranslation = UI.el.settingsIgnoreNameCheck.checked;
+      AppState.aiPromptEnabled = UI.el.settingsPromptCheck.checked;
+      AppState.contextEnabled = UI.el.settingsContextCheck.checked;
       AppState.aiInstructionHeader = UI.el.settingsPromptInput.value.trim();
       AppState.epubTags = UI.el.settingsEpubTagsInput.value.trim() || CONFIG.DEFAULT_EPUB_TAGS;
       UI.toggleModal(UI.el.settingsModal, false);
@@ -678,6 +782,46 @@ class AppController {
     UI.el.proofreadCaseCheck.addEventListener("change", AppController.renderProofread);
     UI.el.proofreadExactCheck.addEventListener("change", AppController.renderProofread);
     UI.el.proofreadTranslatedOnlyCheck.addEventListener("change", AppController.renderProofread);
+
+    UI.el.previewContainer.addEventListener("change", (e) => {
+      if (e.target.matches('.preview-row.separator input[type="checkbox"]')) {
+        const file = e.target.dataset.file;
+        const fileLines = AppState.filesLinesCache.get(file) || [];
+        fileLines.forEach(l => {
+          if (!AppState.isTranslated(l)) {
+            e.target.checked ? AppState.selectedLines.add(l.line_num) : AppState.selectedLines.delete(l.line_num);
+          }
+        });
+        AppController.syncCheckboxes();
+      } else if (e.target.matches('.preview-row:not(.separator) input[type="checkbox"]')) {
+        const num = Number(e.target.dataset.num);
+        e.target.checked ? AppState.selectedLines.add(num) : AppState.selectedLines.delete(num);
+        AppController.syncCheckboxes();
+      }
+    });
+
+    UI.el.previewContainer.addEventListener("click", (e) => {
+      const content = e.target.closest('.text-content');
+      if (content) {
+        const row = content.closest('.preview-row');
+        if (row && !row.classList.contains('separator')) {
+          const cb = row.querySelector('input[type="checkbox"]');
+          if (cb && cb.dataset.num) {
+            AppController.openLineEditor(Number(cb.dataset.num));
+          }
+        }
+      }
+    });
+
+    UI.el.proofreadContainer.addEventListener("click", (e) => {
+      const content = e.target.closest('.text-content');
+      if (content) {
+        const numData = content.dataset.num;
+        if (numData) {
+          AppController.openLineEditor(Number(numData));
+        }
+      }
+    });
   }
 
   static async loadDashboard() {
@@ -729,22 +873,25 @@ class AppController {
               updatedAt: p.data.updatedAt,
               imported_files: p.data.imported_files,
               prompt_header: p.data.prompt_header,
-              ignoreNameTranslation: p.data.ignoreNameTranslation
+              ignoreNameTranslation: p.data.ignoreNameTranslation,
+              promptEnabled: p.data.promptEnabled,
+              contextEnabled: p.data.contextEnabled,
+              contextSize: p.data.contextSize
             };
             zip.file("metadata.json", JSON.stringify(meta));
             
             let origStr = "", transStr = "", nameStr = "";
             for (const file of p.data.imported_files) {
-              origStr += `[${file}]\n`;
-              transStr += `[${file}]\n`;
-              nameStr += `[${file}]\n`;
+              origStr += `>>> ${file} <<<\n`;
+              transStr += `>>> ${file} <<<\n`;
+              nameStr += `>>> ${file} <<<\n`;
               const fileLines = p.data.lines.filter(l => l.file === file);
               for (const l of fileLines) {
                 origStr += `${l.message || ""}\n`;
                 transStr += `${l.trans_message || ""}\n`;
                 const n1 = l.name || "";
                 const n2 = l.trans_name || "";
-                nameStr += (n1 || n2) ? `${n1} | ${n2}\n` : `\n`;
+                nameStr += (n1 || n2) ? `${n1} ||| ${n2}\n` : `\n`;
               }
             }
             zip.file("original.txt", origStr);
@@ -758,8 +905,10 @@ class AppController {
               zip.file(p.data.epubSourceId, file);
             }
             const blob = await zip.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } });
-            const a = UI.createDomNode("a", null, { href: URL.createObjectURL(blob), download: `${p.name.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_backup${CONFIG.PROJECT_EXT}` });
+            const url = URL.createObjectURL(blob);
+            const a = UI.createDomNode("a", null, { href: url, download: `${p.name.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_backup${CONFIG.PROJECT_EXT}` });
             a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
           } catch (err) {
             alert("Gagal membuat backup: " + err.message);
           } finally {
@@ -792,7 +941,7 @@ class AppController {
       const transFile = zip.file("translated.txt");
       const nameFile = zip.file("names.txt");
 
-      if (!metaFile || !origFile || !transFile || !nameFile) throw new Error("Format arsip tidak valid atau korup.");
+      if (!metaFile || !origFile || !transFile || !nameFile) throw new Error("Format arsip tidak valid.");
 
       const p = JSON.parse(await metaFile.async("text"));
       const origLines = (await origFile.async("text")).split(/\r?\n/);
@@ -807,19 +956,21 @@ class AppController {
         throw new Error("Berkas korup: Jumlah baris tidak sinkron.");
       }
 
-      const importedSet = new Set((p.imported_files || []).map(file => `[${file}]`));
+      const fileMarkerPrefix = ">>> ";
+      const fileMarkerSuffix = " <<<";
       const reconstructedLines = [];
       let currentFile = CONFIG.FALLBACK_FILENAME, lineNum = 1;
 
       for (let i = 0; i < origLines.length; i++) {
         const o = origLines[i], t = transLines[i], n = nameLines[i];
-        if (importedSet.has(o)) {
+        
+        if (o.startsWith(fileMarkerPrefix) && o.endsWith(fileMarkerSuffix)) {
           if (t !== o || n !== o) throw new Error("Berkas korup: Header file tidak sinkron.");
-          currentFile = o.substring(1, o.length - 1);
+          currentFile = o.substring(fileMarkerPrefix.length, o.length - fileMarkerSuffix.length);
         } else {
           let oName = null, tName = null;
           if (n.trim()) {
-            const parts = n.split(" | ");
+            const parts = n.split(" ||| ");
             oName = parts[0]?.trim() || null;
             tName = parts[1]?.trim() || null;
           }
@@ -860,7 +1011,10 @@ class AppController {
         imported_files: p.imported_files || [],
         lines: reconstructedLines.map(AppState.normalizeLine),
         prompt_header: p.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER,
-        ignoreNameTranslation: p.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL
+        ignoreNameTranslation: p.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL,
+        promptEnabled: p.promptEnabled ?? CONFIG.DEFAULT_PROMPT_ENABLED,
+        contextEnabled: p.contextEnabled ?? CONFIG.DEFAULT_CONTEXT_ENABLED,
+        contextSize: p.contextSize ?? CONFIG.DEFAULT_CONTEXT_SIZE
       };
 
       await StorageManager.saveProject("proj_" + Date.now() + CONFIG.PROJECT_EXT, data);
@@ -880,7 +1034,8 @@ class AppController {
     const id = "proj_" + Date.now() + CONFIG.PROJECT_EXT;
     const initialData = {
       version: CONFIG.APP_VERSION, projectName: name.trim(), projectType: CONFIG.PROJECT_TYPE_UNINITIALIZED, epubTags: CONFIG.DEFAULT_EPUB_TAGS, epubSourceId: null,
-      updatedAt: Date.now(), imported_files: [], lines: [], prompt_header: CONFIG.DEFAULT_PROMPT_HEADER, ignoreNameTranslation: CONFIG.DEFAULT_IGNORE_NAME_TL
+      updatedAt: Date.now(), imported_files: [], lines: [], prompt_header: CONFIG.DEFAULT_PROMPT_HEADER, ignoreNameTranslation: CONFIG.DEFAULT_IGNORE_NAME_TL,
+      promptEnabled: CONFIG.DEFAULT_PROMPT_ENABLED, contextEnabled: CONFIG.DEFAULT_CONTEXT_ENABLED, contextSize: CONFIG.DEFAULT_CONTEXT_SIZE
     };
     await StorageManager.saveProject(id, initialData);
     AppController.openProject(id, initialData);
@@ -896,6 +1051,9 @@ class AppController {
     AppState.importedFiles = data.imported_files || [];
     AppState.aiInstructionHeader = data.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER;
     AppState.ignoreNameTranslation = data.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL;
+    AppState.aiPromptEnabled = data.promptEnabled ?? CONFIG.DEFAULT_PROMPT_ENABLED;
+    AppState.contextEnabled = data.contextEnabled ?? CONFIG.DEFAULT_CONTEXT_ENABLED;
+    AppState.contextSize = data.contextSize ?? CONFIG.DEFAULT_CONTEXT_SIZE;
     AppState.selectedLines.clear();
     AppState.undoSnapshot = null;
     UI.el.projectNameDisplay.textContent = AppState.projectName;
@@ -910,7 +1068,8 @@ class AppController {
       const data = {
         version: CONFIG.APP_VERSION, projectName: AppState.projectName, projectType: AppState.projectType,
         epubTags: AppState.epubTags, epubSourceId: AppState.epubSourceId, imported_files: AppState.importedFiles,
-        lines: AppState.lines, prompt_header: AppState.aiInstructionHeader, ignoreNameTranslation: AppState.ignoreNameTranslation
+        lines: AppState.lines, prompt_header: AppState.aiInstructionHeader, ignoreNameTranslation: AppState.ignoreNameTranslation,
+        promptEnabled: AppState.aiPromptEnabled, contextEnabled: AppState.contextEnabled, contextSize: AppState.contextSize
       };
       StorageManager.saveProject(AppState.currentProjectId, data).then(AppController.finishClose);
     } else {
@@ -963,13 +1122,21 @@ class AppController {
     const row = UI.createDomNode("div", "preview-row");
     if (rowData.type === "separator") {
       row.classList.add("separator");
-      const fileLines = AppState.lines.filter(l => l.file === rowData.file && !AppState.isTranslated(l));
-      const cb = UI.createDomNode("input", null, { type: "checkbox", checked: fileLines.length > 0 && fileLines.every(l => AppState.selectedLines.has(l.line_num)) });
+      const cb = UI.createDomNode("input", null, { type: "checkbox" });
       cb.dataset.file = rowData.file;
-      cb.addEventListener("change", e => {
-        fileLines.forEach(l => e.target.checked ? AppState.selectedLines.add(l.line_num) : AppState.selectedLines.delete(l.line_num));
-        AppController.syncCheckboxes();
-      });
+      const fileLines = AppState.filesLinesCache.get(rowData.file) || [];
+      let allChecked = true;
+      let hasUntranslated = false;
+      for (const l of fileLines) {
+        if (!AppState.isTranslated(l)) {
+          hasUntranslated = true;
+          if (!AppState.selectedLines.has(l.line_num)) {
+            allChecked = false;
+            break;
+          }
+        }
+      }
+      cb.checked = hasUntranslated && allChecked;
       const lbl = UI.createDomNode("div", "mono grow");
       lbl.style.cssText = "font-weight:700; color:var(--primary);";
       lbl.textContent = `File: ${rowData.file}`;
@@ -982,10 +1149,6 @@ class AppController {
       const cbWrap = UI.createDomNode("div", "checkbox-cell");
       const cb = UI.createDomNode("input", null, { type: "checkbox", checked: isChecked, disabled: AppState.isTranslated(line) });
       cb.dataset.num = line.line_num;
-      cb.addEventListener("change", e => {
-        e.target.checked ? AppState.selectedLines.add(line.line_num) : AppState.selectedLines.delete(line.line_num);
-        AppController.syncCheckboxes();
-      });
       const content = UI.createDomNode("div", "text-content");
       const orig = UI.createDomNode("div", "original");
       orig.textContent = line.name ? `${line.line_num}. ${line.name}: ${line.message}` : `${line.line_num}. ${line.message}`;
@@ -1000,15 +1163,25 @@ class AppController {
       content.append(orig, trans);
       cbWrap.append(cb, content);
       row.appendChild(cbWrap);
-      content.addEventListener("click", () => AppController.openLineEditor(line.line_num));
     }
     return row;
   }
 
   static syncCheckboxes() {
     document.querySelectorAll('.preview-row.separator input[type="checkbox"]').forEach(cb => {
-      const fileLines = AppState.lines.filter(l => l.file === cb.dataset.file && !AppState.isTranslated(l));
-      cb.checked = fileLines.length > 0 && fileLines.every(l => AppState.selectedLines.has(l.line_num));
+      const fileLines = AppState.filesLinesCache.get(cb.dataset.file) || [];
+      let allChecked = true;
+      let hasUntranslated = false;
+      for (const l of fileLines) {
+        if (!AppState.isTranslated(l)) {
+          hasUntranslated = true;
+          if (!AppState.selectedLines.has(l.line_num)) {
+            allChecked = false;
+            break;
+          }
+        }
+      }
+      cb.checked = hasUntranslated && allChecked;
     });
     document.querySelectorAll('.preview-row:not(.separator) input[type="checkbox"]').forEach(cb => {
       const num = Number(cb.dataset.num);
@@ -1068,7 +1241,30 @@ class AppController {
   static async copyForAi() {
     const sel = AppState.lines.filter(l => AppState.selectedLines.has(l.line_num));
     const out = sel.map(l => l.name ? `${l.line_num}. ${l.name}: ${l.message}` : `${l.line_num}. ${l.message}`);
-    const p = `${(AppState.aiInstructionHeader || CONFIG.DEFAULT_PROMPT_HEADER).trim()}\n\n${out.join("\n")}\n`;
+    
+    let p = "";
+    if (AppState.aiPromptEnabled) {
+      p += `${(AppState.aiInstructionHeader || CONFIG.DEFAULT_PROMPT_HEADER).trim()}\n\n`;
+    }
+
+    if (AppState.contextEnabled) {
+      const minSelectedNum = Math.min(...Array.from(AppState.selectedLines));
+      const translatedBefore = AppState.lines.filter(l => l.line_num < minSelectedNum && AppState.isTranslated(l));
+      translatedBefore.sort((a, b) => b.line_num - a.line_num);
+      const contextLines = translatedBefore.slice(0, AppState.contextSize).reverse();
+      
+      if (contextLines.length > 0) {
+        p += `<context>\n`;
+        contextLines.forEach(l => {
+          const tName = l.trans_name || l.name;
+          p += tName ? `${l.line_num}. ${tName}: ${l.trans_message}\n` : `${l.line_num}. ${l.trans_message}\n`;
+        });
+        p += `</context>\n\n`;
+      }
+    }
+
+    p += `${out.join("\n")}\n`;
+
     try {
       await navigator.clipboard.writeText(p);
       UI.flashMessage(`Disalin ${sel.length} baris.`);
@@ -1228,6 +1424,7 @@ class AppController {
   static renderProofreadRow(r) {
     const row = UI.createDomNode("div", "preview-row");
     const wrap = UI.createDomNode("div", "text-content");
+    wrap.dataset.num = r.num;
     const q = UI.el.proofreadSearchInput.value, isReg = UI.el.proofreadRegexCheck.checked;
     const isC = UI.el.proofreadCaseCheck.checked, isEx = UI.el.proofreadExactCheck.checked;
     const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked, scope = UI.el.proofreadScope.value;
@@ -1252,7 +1449,6 @@ class AppController {
     }
     wrap.append(orig, trans);
     row.appendChild(wrap);
-    wrap.addEventListener("click", () => AppController.openLineEditor(r.num));
     return row;
   }
 
