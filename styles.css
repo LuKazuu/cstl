@@ -123,7 +123,7 @@ input, textarea, button, select {
   display: flex; 
   flex-direction: column; 
   gap: 16px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
 }
 
 .project-card:hover {
@@ -166,7 +166,7 @@ input, textarea, button, select {
 
 .btn {
   border: 1px solid var(--line); background: #273448; color: var(--text); border-radius: 8px;
-  padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: all 0.2s ease;
+  padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
 }
 
 .btn-sm { padding: 8px 10px; font-size: 13px; border-radius: 8px; }
@@ -194,13 +194,14 @@ input, textarea, button, select {
 .section-label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
 .section-label-lg { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 20px; }
 
-.preview-viewport { flex: 1; position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #0f172a; }
-.preview-container { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+.preview-viewport { flex: 1; position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #0f172a; -webkit-overflow-scrolling: touch; }
+.preview-container { position: relative; width: 100%; min-height: 100%; }
 
 .preview-row {
+  position: absolute; left: 0; right: 0; width: calc(100% - 16px); margin: 0 8px;
+  will-change: transform;
   display: flex; flex-direction: column; background: rgba(30, 41, 59, 0.3); 
   border: 1px solid var(--line); border-radius: 8px; padding: 10px; 
-  transition: background-color 0.2s, border-color 0.2s;
 }
 .preview-row:hover { background: rgba(255, 255, 255, 0.05); }
 .preview-row.row-selected { background: rgba(59, 130, 246, 0.1) !important; border-color: var(--primary); }
@@ -208,14 +209,14 @@ input, textarea, button, select {
 
 .preview-row.separator {
   flex-direction: row; align-items: center; background: transparent; border: none; 
-  border-bottom: 2px solid var(--line); border-radius: 0; padding: 16px 8px 8px 8px; gap: 12px;
+  border-bottom: 2px solid var(--line); border-radius: 0; padding: 16px 8px 8px 8px;
 }
 
-.checkbox-cell { display: flex; align-items: flex-start; gap: 12px; }
-.checkbox-cell input[type="checkbox"] { margin-top: 4px; width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
+.checkbox-cell { display: flex; align-items: flex-start; gap: 12px; width: 100%; }
+.checkbox-cell input[type="checkbox"], .sep-cb { margin-top: 4px; width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); flex-shrink: 0; }
 .checkbox-cell input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.4; }
 
-.text-content { flex: 1; display: flex; flex-direction: column; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 13px; cursor: pointer; }
+.text-content { flex: 1; display: flex; flex-direction: column; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 13px; cursor: pointer; min-width: 0; }
 .text-content .file-meta { color: var(--primary); font-size: 11px; font-weight: 700; margin-bottom: 2px; }
 .text-content .original { color: var(--muted); border-bottom: 1px dashed rgba(51, 65, 85, 0.5); padding-bottom: 6px; white-space: pre-wrap; word-break: break-word; }
 .text-content .translated { color: var(--text); white-space: pre-wrap; word-break: break-word; }
@@ -231,7 +232,7 @@ input, textarea, button, select {
 
 .text-input, input[type="number"], select {
   height: 36px; border-radius: 8px; border: 1px solid var(--line); background: #0f172a; 
-  color: var(--text); padding: 4px 10px; transition: border-color 0.2s;
+  color: var(--text); padding: 4px 10px; transition: border-color 0.2s ease;
 }
 .select-sm { height: 28px; padding: 0 8px; font-size: 12px; }
 .text-input:focus, input[type="number"]:focus, select:focus, .input-area:focus { outline: none; border-color: var(--primary); }
@@ -251,7 +252,8 @@ input, textarea, button, select {
 .status-toast.empty { opacity: 0; min-height: 0; height: 0; margin: 0; overflow: hidden; }
 
 .name-table-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #0f172a; min-height: 150px; }
-.proofread-results-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #0f172a; padding: 4px; min-height: 400px; }
+.proofread-results-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: #0f172a; padding: 0; min-height: 400px; position: relative; }
+#proofreadContainer { position: relative; width: 100%; min-height: 100%; }
 
 .name-table { width: 100%; border-collapse: collapse; }
 .name-table th, .name-table td { border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; text-align: center; }

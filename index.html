@@ -139,7 +139,7 @@
             <p class="hint m-0 mb-1">Jumlah baris konteks (Maks: <span id="maxContextDisplay">0</span>)</p>
             <div class="flex gap-10">
               <input id="settingsContextInput" type="number" class="text-input grow" placeholder="5" min="5" />
-              <button id="btnSettingsContextApply" class="btn btn-outline" style="padding: 0 16px; font-weight: bold; font-size: 15px;" title="Terapkan" disabled>✓</button>
+              <button id="btnSettingsContextApply" class="btn btn-outline" style="padding: 0 16px; font-weight: bold; font-size: 15px;" disabled>✓</button>
             </div>
           </div>
         </div>
@@ -242,7 +242,7 @@
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js');
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
       });
     }
   </script>

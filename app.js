@@ -7,9 +7,8 @@ const CONFIG = Object.freeze({
   DEFAULT_PROMPT_ENABLED: true,
   DEFAULT_CONTEXT_ENABLED: false,
   DEFAULT_CONTEXT_SIZE: 5,
-  SCROLLER_MAIN_HEIGHT: 90,
-  SCROLLER_PROOFREAD_HEIGHT: 90,
-  SCROLLER_BUFFER: 20,
+  EST_ROW_HEIGHT: 110,
+  POOL_SIZE: 35,
   ENCODINGS: ["utf-8", "shift_jis", "windows-31j", "cp932"],
   TOAST_DURATION: 3000,
   AUTOSAVE_DELAY: 500,
@@ -21,7 +20,6 @@ const CONFIG = Object.freeze({
 class UI {
   static el = {};
   static hintToken = 0;
-
   static cache() {
     const ids = [
       "dashboardView", "workspaceView", "projectList", "btnNewProject", "btnRestoreProject",
@@ -43,11 +41,9 @@ class UI {
     ];
     for (const id of ids) UI.el[id] = document.getElementById(id);
   }
-
   static toggleModal(element, state) {
     state ? element.classList.add("open") : element.classList.remove("open");
   }
-
   static flashMessage(msg, keepAlive = false) {
     UI.el.copyStatus.textContent = msg;
     UI.el.copyStatus.classList.remove("empty");
@@ -60,7 +56,6 @@ class UI {
       }, CONFIG.TOAST_DURATION);
     }
   }
-
   static createDomNode(tag, classNames, attributes = {}) {
     const node = document.createElement(tag);
     if (classNames) node.className = classNames;
@@ -70,10 +65,7 @@ class UI {
 }
 
 class StorageManager {
-  static async getRoot() {
-    return await navigator.storage.getDirectory();
-  }
-
+  static async getRoot() { return await navigator.storage.getDirectory(); }
   static async saveProject(id, dataObj) {
     try {
       dataObj.updatedAt = Date.now();
@@ -82,11 +74,8 @@ class StorageManager {
       const writable = await fileHandle.createWritable();
       await writable.write(JSON.stringify(dataObj));
       await writable.close();
-    } catch (e) {
-      UI.flashMessage("Gagal menyimpan ke storage!");
-    }
+    } catch (e) { UI.flashMessage("Gagal menyimpan ke storage!"); }
   }
-
   static async fetchProjects() {
     const root = await StorageManager.getRoot();
     const projects = [];
@@ -97,11 +86,9 @@ class StorageManager {
           const text = await file.text();
           const data = JSON.parse(text);
           projects.push({
-            id: name,
-            name: data.projectName || name.replace(CONFIG.PROJECT_EXT, ''),
+            id: name, name: data.projectName || name.replace(CONFIG.PROJECT_EXT, ''),
             updatedAt: data.updatedAt || file.lastModified,
-            fileCount: data.imported_files?.length || 0,
-            lineCount: data.lines?.length || 0,
+            fileCount: data.imported_files?.length || 0, lineCount: data.lines?.length || 0,
             data: data
           });
         } catch (e) { }
@@ -109,12 +96,9 @@ class StorageManager {
     }
     return projects.sort((a, b) => b.updatedAt - a.updatedAt);
   }
-
   static async removeProject(id, epubSourceId) {
     const root = await StorageManager.getRoot();
-    if (epubSourceId) {
-      try { await root.removeEntry(epubSourceId); } catch (e) { }
-    }
+    if (epubSourceId) { try { await root.removeEntry(epubSourceId); } catch (e) { } }
     await root.removeEntry(id);
   }
 }
@@ -139,15 +123,12 @@ class AppState {
   static filesLinesCache = new Map();
   static proofreadMatches = [];
   static saveTimeout = null;
+  static translatedCount = 0;
 
-  static isTranslated(line) {
-    return !!line.is_translated;
-  }
-
+  static isTranslated(line) { return !!line.is_translated; }
   static normalizeLine(line) {
     return {
-      line_num: Number(line.line_num),
-      file: String(line.file),
+      line_num: Number(line.line_num), file: String(line.file),
       name: line.name == null ? null : String(line.name).replace(/\r?\n/g, "\\n").trim(),
       message: String(line.message).replace(/\r?\n/g, "\\n").trim(),
       trans_name: line.trans_name == null ? null : String(line.trans_name).replace(/\r?\n/g, "\\n").trim(),
@@ -155,7 +136,13 @@ class AppState {
       is_translated: Boolean(line.is_translated),
     };
   }
-
+  static updateTranslatedCount() {
+    let count = 0;
+    for (let i = 0; i < AppState.lines.length; i++) {
+      if (AppState.lines[i].is_translated) count++;
+    }
+    AppState.translatedCount = count;
+  }
   static rebuildCache() {
     AppState.lineByNum.clear();
     AppState.filesLinesCache.clear();
@@ -170,38 +157,23 @@ class AppState {
       AppState.filesLinesCache.set(fileName, rows);
       if (!rows.length) continue;
       AppState.displayRows.push({ type: "separator", file: fileName });
-      for (const line of rows) {
-        AppState.displayRows.push({ type: "line", line });
-      }
+      for (const line of rows) { AppState.displayRows.push({ type: "line", line }); }
     }
   }
-
   static queueAutoSave() {
     if (!AppState.currentProjectId) return;
     clearTimeout(AppState.saveTimeout);
     AppState.saveTimeout = setTimeout(() => {
-      if (window.requestIdleCallback) {
-        window.requestIdleCallback(AppState.executeAutoSave);
-      } else {
-        setTimeout(AppState.executeAutoSave, 0);
-      }
+      if (window.requestIdleCallback) window.requestIdleCallback(AppState.executeAutoSave);
+      else setTimeout(AppState.executeAutoSave, 0);
     }, CONFIG.AUTOSAVE_DELAY);
   }
-
   static async executeAutoSave() {
     const data = {
-      version: CONFIG.APP_VERSION,
-      projectName: AppState.projectName,
-      projectType: AppState.projectType,
-      epubTags: AppState.epubTags,
-      epubSourceId: AppState.epubSourceId,
-      imported_files: AppState.importedFiles,
-      lines: AppState.lines,
-      prompt_header: AppState.aiInstructionHeader,
-      ignoreNameTranslation: AppState.ignoreNameTranslation,
-      promptEnabled: AppState.aiPromptEnabled,
-      contextEnabled: AppState.contextEnabled,
-      contextSize: AppState.contextSize
+      version: CONFIG.APP_VERSION, projectName: AppState.projectName, projectType: AppState.projectType,
+      epubTags: AppState.epubTags, epubSourceId: AppState.epubSourceId, imported_files: AppState.importedFiles,
+      lines: AppState.lines, prompt_header: AppState.aiInstructionHeader, ignoreNameTranslation: AppState.ignoreNameTranslation,
+      promptEnabled: AppState.aiPromptEnabled, contextEnabled: AppState.contextEnabled, contextSize: AppState.contextSize
     };
     await StorageManager.saveProject(AppState.currentProjectId, data);
     UI.el.statusBar.textContent = UI.el.statusBar.textContent.replace(" | Tersimpan!", "") + " | Tersimpan!";
@@ -209,153 +181,118 @@ class AppState {
   }
 }
 
-class VirtualScroller {
-  constructor(viewport, container, estimatedHeight, renderItem) {
+class FastVirtualScroller {
+  constructor(viewport, container, createFn, updateFn) {
     this.viewport = viewport;
     this.container = container;
-    this.estimatedHeight = estimatedHeight;
-    this.renderItem = renderItem;
+    this.createFn = createFn;
+    this.updateFn = updateFn;
     this.items = [];
-    this.heights = [];
     this.positions = [];
+    this.heights = [];
+    this.pool = [];
     this.totalHeight = 0;
     this.scrollTop = 0;
-    this.ticking = false;
-    this.lastStart = -1;
-    this.lastEnd = -1;
-    
-    this.onScroll = this.onScroll.bind(this);
-    this.viewport.addEventListener('scroll', this.onScroll, { passive: true });
-    if (window.ResizeObserver) {
-      new ResizeObserver(() => {
-        if (this.viewport.clientHeight > 0) this.render(true);
-      }).observe(this.viewport);
+    this.initPool();
+    this.viewport.addEventListener('scroll', () => requestAnimationFrame(() => this.onScroll()), { passive: true });
+  }
+  initPool() {
+    for (let i = 0; i < CONFIG.POOL_SIZE; i++) {
+      const el = this.createFn();
+      el.style.transform = 'translateY(-9999px)';
+      this.pool.push(el);
+      this.container.appendChild(el);
     }
   }
-
   setItems(items) {
     this.items = items;
-    this.heights = new Array(items.length).fill(this.estimatedHeight);
+    this.heights = new Float32Array(items.length);
+    this.positions = new Float32Array(items.length);
+    this.heights.fill(CONFIG.EST_ROW_HEIGHT);
     this.updatePositions();
     this.scrollTop = this.viewport.scrollTop = 0;
-    this.lastStart = -1;
-    this.lastEnd = -1;
     this.render(true);
   }
-
   updatePositions() {
-    let top = 0;
-    this.positions = new Array(this.items.length);
+    let t = 8;
     for (let i = 0; i < this.items.length; i++) {
-      this.positions[i] = top;
-      top += this.heights[i];
+      this.positions[i] = t;
+      t += this.heights[i];
     }
-    this.totalHeight = top;
+    this.totalHeight = t;
+    this.container.style.height = `${t + 8}px`;
   }
-
-  scrollToIndex(index) {
-    if (index < 0 || index >= this.items.length) return;
-    this.viewport.scrollTop = this.positions[index];
+  onScroll() {
+    this.scrollTop = this.viewport.scrollTop;
+    this.render();
+  }
+  findStart() {
+    let l = 0, r = this.items.length - 1;
+    while (l <= r) {
+      const m = Math.floor((l + r) / 2);
+      if (this.positions[m] <= this.scrollTop && this.positions[m] + this.heights[m] > this.scrollTop) return m;
+      if (this.positions[m] < this.scrollTop) l = m + 1;
+      else r = m - 1;
+    }
+    return Math.max(0, Math.min(l, this.items.length - 1));
+  }
+  render(force = false) {
+    if (!this.items.length) {
+      this.pool.forEach(el => el.style.transform = 'translateY(-9999px)');
+      this.container.style.height = '0px';
+      return;
+    }
+    const vh = this.viewport.clientHeight || 800;
+    let start = this.findStart();
+    start = Math.max(0, start - 4);
+    let end = start;
+    let visibleH = 0;
+    while (end < this.items.length && visibleH < vh + (CONFIG.EST_ROW_HEIGHT * 8)) {
+      visibleH += this.heights[end];
+      end++;
+    }
+    end = Math.min(this.items.length, start + CONFIG.POOL_SIZE);
+    
+    for (let i = 0; i < CONFIG.POOL_SIZE; i++) {
+      const dataIdx = start + i;
+      const el = this.pool[i];
+      if (dataIdx < end && dataIdx < this.items.length) {
+        this.updateFn(el, this.items[dataIdx], dataIdx);
+      } else {
+        el.style.transform = 'translateY(-9999px)';
+      }
+    }
+    
+    let changed = false;
+    for (let i = 0; i < CONFIG.POOL_SIZE; i++) {
+      const dataIdx = start + i;
+      if (dataIdx < end && dataIdx < this.items.length) {
+        const el = this.pool[i];
+        const h = el.offsetHeight;
+        if (h && Math.abs(h + 8 - this.heights[dataIdx]) > 1) {
+          this.heights[dataIdx] = h + 8;
+          changed = true;
+        }
+      }
+    }
+    
+    if (changed) this.updatePositions();
+    
+    for (let i = 0; i < CONFIG.POOL_SIZE; i++) {
+      const dataIdx = start + i;
+      if (dataIdx < end && dataIdx < this.items.length) {
+        this.pool[i].style.transform = `translateY(${this.positions[dataIdx]}px)`;
+      }
+    }
+  }
+  scrollToIndex(idx) {
+    if (idx < 0 || idx >= this.items.length) return;
+    this.viewport.scrollTop = this.positions[idx] - (this.viewport.clientHeight / 2);
     this.scrollTop = this.viewport.scrollTop;
     this.render(true);
   }
-
-  onScroll() {
-    if (!this.ticking) {
-      window.requestAnimationFrame(() => {
-        this.scrollTop = this.viewport.scrollTop;
-        this.render();
-        this.ticking = false;
-      });
-      this.ticking = true;
-    }
-  }
-
-  findStartIndex() {
-    let low = 0, high = this.items.length - 1;
-    while (low <= high) {
-      const mid = Math.floor((low + high) / 2);
-      const midTop = this.positions[mid];
-      const midBottom = midTop + this.heights[mid];
-      if (this.scrollTop >= midTop && this.scrollTop < midBottom) return mid;
-      if (this.scrollTop < midTop) high = mid - 1;
-      else low = mid + 1;
-    }
-    return Math.max(0, Math.min(low, this.items.length - 1));
-  }
-
-  render(force = false) {
-    const viewportHeight = this.viewport.clientHeight || 800;
-    const total = this.items.length;
-    
-    if (!total) {
-      this.container.replaceChildren();
-      return;
-    }
-
-    const buffer = CONFIG.SCROLLER_BUFFER;
-    const viewIndex = this.findStartIndex();
-    
-    let targetStart = Math.max(0, viewIndex - Math.floor(buffer / 2));
-    let end = viewIndex;
-    let visibleHeight = 0;
-    
-    while (end < total && visibleHeight < viewportHeight) {
-      visibleHeight += this.heights[end];
-      end++;
-    }
-    
-    end = Math.min(total, end + Math.floor(buffer / 2));
-
-    if (!force && this.lastStart === targetStart && this.lastEnd === end) return;
-    this.lastStart = targetStart;
-    this.lastEnd = end;
-    
-    const topPad = this.positions[targetStart];
-    const bottomPad = end < total ? this.totalHeight - this.positions[end] : 0;
-    
-    const topSpacer = UI.createDomNode("div");
-    topSpacer.style.height = `${topPad}px`;
-
-    const frag = document.createDocumentFragment();
-    const rowElements = [];
-    
-    for (let i = targetStart; i < end; i++) {
-      const el = this.renderItem(this.items[i]);
-      el.dataset.vindex = i;
-      frag.appendChild(el);
-      rowElements.push(el);
-    }
-
-    const bottomSpacer = UI.createDomNode("div");
-    bottomSpacer.style.height = `${bottomPad}px`;
-
-    this.container.replaceChildren(topSpacer, frag, bottomSpacer);
-
-    window.requestAnimationFrame(() => {
-      let changed = false;
-      for (const el of rowElements) {
-        const idx = parseInt(el.dataset.vindex);
-        const rect = el.getBoundingClientRect();
-        if (rect.height > 0) {
-          const actualHeight = rect.height + 8;
-          if (Math.abs(actualHeight - this.heights[idx]) > 1) {
-            this.heights[idx] = actualHeight;
-            changed = true;
-          }
-        }
-      }
-      if (changed) {
-        this.updatePositions();
-        if (this.container.firstElementChild) {
-           this.container.firstElementChild.style.height = `${this.positions[this.lastStart]}px`;
-        }
-        if (this.container.lastElementChild) {
-           const updatedBottomPad = this.lastEnd < this.items.length ? this.totalHeight - this.positions[this.lastEnd] : 0;
-           this.container.lastElementChild.style.height = `${updatedBottomPad}px`;
-        }
-      }
-    });
+  forceUpdate() {
+    this.render(true);
   }
 }
 
@@ -367,12 +304,10 @@ class Importer {
     }
     return new TextDecoder("utf-8").decode(buffer);
   }
-
   static getBaseName(pathStr) {
     const normalized = String(pathStr || "").replace(/\\/g, "/");
     return (normalized.split("/").pop() || normalized).replace(/\.json$/i, "");
   }
-
   static parseJsonData(jsonArray, fileName, startLineNum) {
     if (!Array.isArray(jsonArray)) throw new Error(`File ${fileName} bukan array JSON.`);
     const lines = [];
@@ -380,18 +315,14 @@ class Importer {
     for (const entry of jsonArray) {
       if (!entry || typeof entry !== "object" || !Object.hasOwn(entry, "message")) continue;
       lines.push({
-        line_num: curLine++,
-        file: fileName,
+        line_num: curLine++, file: fileName,
         name: entry.name == null ? null : String(entry.name).replace(/\r?\n/g, "\\n").trim(),
         message: String(entry.message ?? "").replace(/\r?\n/g, "\\n").trim(),
-        trans_name: null,
-        trans_message: null,
-        is_translated: false,
+        trans_name: null, trans_message: null, is_translated: false,
       });
     }
     return lines;
   }
-
   static async processImport(filesObj, isZip = false) {
     UI.flashMessage("Memproses file... Mohon tunggu.", true);
     document.body.style.cursor = "wait";
@@ -401,7 +332,6 @@ class Importer {
       const lines = [];
       const existingFiles = new Set(AppState.importedFiles);
       const skippedFiles = [];
-
       if (isZip && filesObj instanceof File && window.JSZip) {
         if (AppState.projectType === CONFIG.PROJECT_TYPE_UNINITIALIZED) AppState.projectType = "json";
         const zip = new window.JSZip();
@@ -409,10 +339,7 @@ class Importer {
         const names = Object.keys(zip.files).filter(n => n.endsWith(".json")).sort();
         for (const n of names) {
           const baseName = Importer.getBaseName(n);
-          if (existingFiles.has(baseName)) {
-            skippedFiles.push(baseName);
-            continue;
-          }
+          if (existingFiles.has(baseName)) { skippedFiles.push(baseName); continue; }
           const jsonContent = JSON.parse(Importer.decodeBuffer(await zip.file(n).async("uint8array")));
           const p = Importer.parseJsonData(jsonContent, baseName, cur);
           if (p.length) { existingFiles.add(baseName); lines.push(...p); cur += p.length; }
@@ -435,7 +362,6 @@ class Importer {
             const writable = await fh.createWritable();
             await writable.write(f);
             await writable.close();
-            
             const zip = new window.JSZip();
             await zip.loadAsync(f);
             const containerXml = await zip.file("META-INF/container.xml").async("text");
@@ -555,11 +481,8 @@ class Exporter {
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 10000);
         UI.flashMessage("Berhasil mengekspor EPUB!");
-      } catch (err) {
-        alert("Gagal mengekspor EPUB: " + err.message);
-      } finally {
-        document.body.style.cursor = "default";
-      }
+      } catch (err) { alert("Gagal mengekspor EPUB: " + err.message); } 
+      finally { document.body.style.cursor = "default"; }
     } else {
       const g = new Map();
       for (const l of AppState.lines) {
@@ -611,13 +534,12 @@ class AppController {
       UI.el.projectList.innerHTML = `<p class="hint" style="grid-column: 1/-1; color: var(--danger);">Browser tidak mendukung OPFS.</p>`;
       return;
     }
-    AppController.mainScroller = new VirtualScroller(UI.el.previewViewport, UI.el.previewContainer, CONFIG.SCROLLER_MAIN_HEIGHT, AppController.renderMainRow);
+    AppController.mainScroller = new FastVirtualScroller(UI.el.previewViewport, UI.el.previewContainer, AppController.createMainRow, AppController.updateMainRow);
     const prViewport = UI.el.proofreadContainer.closest('.proofread-results-wrap');
-    AppController.proofreadScroller = new VirtualScroller(prViewport, UI.el.proofreadContainer, CONFIG.SCROLLER_PROOFREAD_HEIGHT, AppController.renderProofreadRow);
+    AppController.proofreadScroller = new FastVirtualScroller(prViewport, UI.el.proofreadContainer, AppController.createProofreadRow, AppController.updateProofreadRow);
     AppController.bindEvents();
     await AppController.loadDashboard();
   }
-
   static debounce(func, wait) {
     let timeout;
     return function (...args) {
@@ -625,140 +547,103 @@ class AppController {
       timeout = setTimeout(() => func.apply(this, args), wait);
     };
   }
-
-  static evalContextApplyBtn(transCount) {
+  static evalContextApplyBtn() {
     if (!UI.el.settingsContextCheck.checked) {
       UI.el.btnSettingsContextApply.disabled = true;
       return;
     }
     const val = parseInt(UI.el.settingsContextInput.value);
-    if (isNaN(val) || val === AppState.contextSize || val > transCount || val < 5) {
+    if (isNaN(val) || val === AppState.contextSize || val > AppState.translatedCount || val < 5) {
       UI.el.btnSettingsContextApply.disabled = true;
     } else {
       UI.el.btnSettingsContextApply.disabled = false;
     }
   }
-
   static bindEvents() {
     UI.el.btnNewProject.addEventListener("click", AppController.createNewProject);
     UI.el.btnBackToDashboard.addEventListener("click", AppController.closeProject);
     UI.el.btnRestoreProject.addEventListener("click", () => UI.el.restoreProjectInput.click());
-    
     UI.el.restoreProjectInput.addEventListener("change", AppController.restoreProject);
-    
     UI.el.btnImportFile.addEventListener("click", () => UI.el.importFileInput.click());
     UI.el.importFileInput.addEventListener("change", async e => {
       if (!e.target.files.length) return;
       await Importer.processImport(e.target.files);
       e.target.value = "";
     });
-
     UI.el.btnImportFolder.addEventListener("click", () => UI.el.importFolderInput.click());
     UI.el.importFolderInput.addEventListener("change", async e => {
       if (!e.target.files.length) return;
       await Importer.processImport(e.target.files);
       e.target.value = "";
     });
-
     UI.el.btnImportZip.addEventListener("click", () => UI.el.importZipInput.click());
     UI.el.importZipInput.addEventListener("change", async e => {
       if (!e.target.files.length) return;
       await Importer.processImport(e.target.files[0], true);
       e.target.value = "";
     });
-    
     UI.el.btnExport.addEventListener("click", Exporter.exportData);
     UI.el.btnCopyForAi.addEventListener("click", AppController.copyForAi);
     UI.el.btnApply.addEventListener("click", AppController.applyTranslation);
     UI.el.btnUndo.addEventListener("click", AppController.undoTranslation);
     UI.el.btnProofread.addEventListener("click", AppController.openProofread);
-    
     UI.el.btnSelectAll.addEventListener("click", () => {
       AppState.lines.forEach(l => { if (!AppState.isTranslated(l)) AppState.selectedLines.add(l.line_num); });
       AppController.syncCheckboxes();
     });
-    
     UI.el.btnClearSelection.addEventListener("click", () => {
       AppState.selectedLines.clear();
       AppController.syncCheckboxes();
     });
-    
     UI.el.btnSelectRange.addEventListener("click", AppController.selectRange);
-    
     UI.el.btnSettings.addEventListener("click", () => {
       UI.el.settingsIgnoreNameCheck.checked = AppState.ignoreNameTranslation;
       UI.el.settingsPromptCheck.checked = AppState.aiPromptEnabled;
       UI.el.settingsContextCheck.checked = AppState.contextEnabled;
       UI.el.settingsPromptInput.value = AppState.aiInstructionHeader;
       UI.el.settingsEpubTagsInput.value = AppState.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
-      
-      const transCount = AppState.lines.filter(AppState.isTranslated).length;
-      UI.el.maxContextDisplay.textContent = transCount;
+      UI.el.maxContextDisplay.textContent = AppState.translatedCount;
       UI.el.settingsContextInput.value = AppState.contextSize;
-      
       UI.el.settingsContextWrap.style.opacity = AppState.contextEnabled ? "1" : "0.4";
       UI.el.settingsContextWrap.style.pointerEvents = AppState.contextEnabled ? "auto" : "none";
-      UI.el.settingsContextInput.disabled = !AppState.contextEnabled || (transCount < 5);
-
-      AppController.evalContextApplyBtn(transCount);
-      
+      UI.el.settingsContextInput.disabled = !AppState.contextEnabled || (AppState.translatedCount < 5);
+      AppController.evalContextApplyBtn();
       UI.toggleModal(UI.el.settingsModal, true);
     });
-
     UI.el.settingsContextCheck.addEventListener("change", (e) => {
       const isChecked = e.target.checked;
-      const transCount = AppState.lines.filter(AppState.isTranslated).length;
-      
       UI.el.settingsContextWrap.style.opacity = isChecked ? "1" : "0.4";
       UI.el.settingsContextWrap.style.pointerEvents = isChecked ? "auto" : "none";
-      
       if (!isChecked) {
         UI.el.settingsContextInput.disabled = true;
         UI.el.btnSettingsContextApply.disabled = true;
       } else {
-        UI.el.settingsContextInput.disabled = transCount < 5;
-        AppController.evalContextApplyBtn(transCount);
+        UI.el.settingsContextInput.disabled = AppState.translatedCount < 5;
+        AppController.evalContextApplyBtn();
       }
     });
-
-    UI.el.settingsContextInput.addEventListener("input", () => {
-      const transCount = AppState.lines.filter(AppState.isTranslated).length;
-      AppController.evalContextApplyBtn(transCount);
-    });
-
+    UI.el.settingsContextInput.addEventListener("input", AppController.evalContextApplyBtn);
     UI.el.btnSettingsContextApply.addEventListener("click", () => {
       const val = parseInt(UI.el.settingsContextInput.value);
       if (!isNaN(val)) {
         AppState.contextSize = val;
         AppState.queueAutoSave();
-        const transCount = AppState.lines.filter(AppState.isTranslated).length;
-        AppController.evalContextApplyBtn(transCount);
+        AppController.evalContextApplyBtn();
       }
     });
-    
     UI.el.btnSettingsDasarReset.addEventListener("click", () => {
       UI.el.settingsIgnoreNameCheck.checked = CONFIG.DEFAULT_IGNORE_NAME_TL;
       UI.el.settingsPromptCheck.checked = CONFIG.DEFAULT_PROMPT_ENABLED;
       UI.el.settingsContextCheck.checked = CONFIG.DEFAULT_CONTEXT_ENABLED;
       UI.el.settingsContextInput.value = CONFIG.DEFAULT_CONTEXT_SIZE;
-      
-      const transCount = AppState.lines.filter(AppState.isTranslated).length;
       UI.el.settingsContextWrap.style.opacity = CONFIG.DEFAULT_CONTEXT_ENABLED ? "1" : "0.4";
       UI.el.settingsContextWrap.style.pointerEvents = CONFIG.DEFAULT_CONTEXT_ENABLED ? "auto" : "none";
-      UI.el.settingsContextInput.disabled = !CONFIG.DEFAULT_CONTEXT_ENABLED || (transCount < 5);
-      AppController.evalContextApplyBtn(transCount);
+      UI.el.settingsContextInput.disabled = !CONFIG.DEFAULT_CONTEXT_ENABLED || (AppState.translatedCount < 5);
+      AppController.evalContextApplyBtn();
     });
-
-    UI.el.btnSettingsPromptReset.addEventListener("click", () => {
-      UI.el.settingsPromptInput.value = CONFIG.DEFAULT_PROMPT_HEADER;
-    });
-
-    UI.el.btnSettingsEpubReset.addEventListener("click", () => {
-      UI.el.settingsEpubTagsInput.value = CONFIG.DEFAULT_EPUB_TAGS;
-    });
-    
+    UI.el.btnSettingsPromptReset.addEventListener("click", () => { UI.el.settingsPromptInput.value = CONFIG.DEFAULT_PROMPT_HEADER; });
+    UI.el.btnSettingsEpubReset.addEventListener("click", () => { UI.el.settingsEpubTagsInput.value = CONFIG.DEFAULT_EPUB_TAGS; });
     UI.el.btnSettingsCancel.addEventListener("click", () => UI.toggleModal(UI.el.settingsModal, false));
-    
     UI.el.btnSettingsSave.addEventListener("click", () => {
       AppState.ignoreNameTranslation = UI.el.settingsIgnoreNameCheck.checked;
       AppState.aiPromptEnabled = UI.el.settingsPromptCheck.checked;
@@ -768,11 +653,9 @@ class AppController {
       UI.toggleModal(UI.el.settingsModal, false);
       AppState.queueAutoSave();
     });
-    
     UI.el.btnLineCancel.addEventListener("click", () => UI.toggleModal(UI.el.lineEditorModal, false));
     UI.el.btnLineSave.addEventListener("click", AppController.saveLineEditor);
     UI.el.btnProofreadClose.addEventListener("click", () => UI.toggleModal(UI.el.proofreadModal, false));
-    
     UI.el.btnProofreadReset.addEventListener("click", () => {
       UI.el.proofreadSearchInput.value = ""; UI.el.proofreadReplaceInput.value = "";
       UI.el.proofreadScope.value = "all"; UI.el.proofreadRegexCheck.checked = false;
@@ -780,9 +663,7 @@ class AppController {
       UI.el.proofreadTranslatedOnlyCheck.checked = true;
       AppController.renderProofread();
     });
-    
     UI.el.btnProofreadReplaceAll.addEventListener("click", AppController.execReplaceAll);
-    
     const debouncedSearch = AppController.debounce(AppController.renderProofread, CONFIG.DEBOUNCE_DELAY);
     UI.el.proofreadSearchInput.addEventListener("input", debouncedSearch);
     UI.el.proofreadScope.addEventListener("change", AppController.renderProofread);
@@ -790,9 +671,9 @@ class AppController {
     UI.el.proofreadCaseCheck.addEventListener("change", AppController.renderProofread);
     UI.el.proofreadExactCheck.addEventListener("change", AppController.renderProofread);
     UI.el.proofreadTranslatedOnlyCheck.addEventListener("change", AppController.renderProofread);
-
+    
     UI.el.previewContainer.addEventListener("change", (e) => {
-      if (e.target.matches('.preview-row.separator input[type="checkbox"]')) {
+      if (e.target.classList.contains('sep-cb')) {
         const file = e.target.dataset.file;
         const fileLines = AppState.filesLinesCache.get(file) || [];
         fileLines.forEach(l => {
@@ -801,7 +682,7 @@ class AppController {
           }
         });
         AppController.syncCheckboxes();
-      } else if (e.target.matches('.preview-row:not(.separator) input[type="checkbox"]')) {
+      } else if (e.target.closest('.checkbox-cell') && e.target.type === 'checkbox') {
         const num = Number(e.target.dataset.num);
         e.target.checked ? AppState.selectedLines.add(num) : AppState.selectedLines.delete(num);
         AppController.syncCheckboxes();
@@ -814,21 +695,14 @@ class AppController {
         const row = content.closest('.preview-row');
         if (row && !row.classList.contains('separator')) {
           const cb = row.querySelector('input[type="checkbox"]');
-          if (cb && cb.dataset.num) {
-            AppController.openLineEditor(Number(cb.dataset.num));
-          }
+          if (cb && cb.dataset.num) AppController.openLineEditor(Number(cb.dataset.num));
         }
       }
     });
 
     UI.el.proofreadContainer.addEventListener("click", (e) => {
       const content = e.target.closest('.text-content');
-      if (content) {
-        const numData = content.dataset.num;
-        if (numData) {
-          AppController.openLineEditor(Number(numData));
-        }
-      }
+      if (content && content.dataset.num) AppController.openLineEditor(Number(content.dataset.num));
     });
 
     UI.el.nameTableBody.addEventListener("click", async (e) => {
@@ -837,9 +711,7 @@ class AppController {
         try { 
           await navigator.clipboard.writeText(n); 
           UI.flashMessage(`Nama "${n}" disalin!`); 
-        } catch (err) { 
-          alert(`Clipboard diblokir oleh browser untuk teks:\n${n}`);
-        }
+        } catch (err) { alert(`Clipboard diblokir oleh browser untuk teks:\n${n}`); }
       }
     });
   }
@@ -885,21 +757,13 @@ class AppController {
             document.body.style.cursor = "wait";
             const zip = new window.JSZip();
             const meta = {
-              version: p.data.version,
-              projectName: p.data.projectName,
-              projectType: p.data.projectType,
-              epubTags: p.data.epubTags,
-              epubSourceId: p.data.epubSourceId,
-              updatedAt: p.data.updatedAt,
-              imported_files: p.data.imported_files,
-              prompt_header: p.data.prompt_header,
-              ignoreNameTranslation: p.data.ignoreNameTranslation,
-              promptEnabled: p.data.promptEnabled,
-              contextEnabled: p.data.contextEnabled,
-              contextSize: p.data.contextSize
+              version: p.data.version, projectName: p.data.projectName, projectType: p.data.projectType,
+              epubTags: p.data.epubTags, epubSourceId: p.data.epubSourceId, updatedAt: p.data.updatedAt,
+              imported_files: p.data.imported_files, prompt_header: p.data.prompt_header,
+              ignoreNameTranslation: p.data.ignoreNameTranslation, promptEnabled: p.data.promptEnabled,
+              contextEnabled: p.data.contextEnabled, contextSize: p.data.contextSize
             };
             zip.file("metadata.json", JSON.stringify(meta));
-            
             let origStr = "", transStr = "", nameStr = "";
             for (const file of p.data.imported_files) {
               origStr += `>>> ${file} <<<\n`;
@@ -917,7 +781,6 @@ class AppController {
             zip.file("original.txt", origStr);
             zip.file("translated.txt", transStr);
             zip.file("names.txt", nameStr);
-
             if (p.data.projectType === "epub" && p.data.epubSourceId) {
               const root = await StorageManager.getRoot();
               const fh = await root.getFileHandle(p.data.epubSourceId);
@@ -929,11 +792,8 @@ class AppController {
             const a = UI.createDomNode("a", null, { href: url, download: `${p.name.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_backup${CONFIG.PROJECT_EXT}` });
             a.click();
             setTimeout(() => URL.revokeObjectURL(url), 10000);
-          } catch (err) {
-            alert("Gagal membuat backup: " + err.message);
-          } finally {
-            document.body.style.cursor = "default";
-          }
+          } catch (err) { alert("Gagal membuat backup: " + err.message); } 
+          finally { document.body.style.cursor = "default"; }
         });
         card.querySelector(".btn-delete").addEventListener("click", async () => {
           if (confirm("Hapus permanen?")) {
@@ -943,9 +803,7 @@ class AppController {
         });
         UI.el.projectList.appendChild(card);
       }
-    } catch (err) {
-      UI.el.projectList.innerHTML = `<p class="hint" style="color: var(--danger);">Gagal mengakses storage browser.</p>`;
-    }
+    } catch (err) { UI.el.projectList.innerHTML = `<p class="hint" style="color: var(--danger);">Gagal mengakses storage browser.</p>`; }
   }
 
   static async restoreProject(ev) {
@@ -955,35 +813,25 @@ class AppController {
       document.body.style.cursor = "wait";
       const zip = new window.JSZip();
       await zip.loadAsync(f);
-
       const metaFile = zip.file("metadata.json");
       const origFile = zip.file("original.txt");
       const transFile = zip.file("translated.txt");
       const nameFile = zip.file("names.txt");
-
       if (!metaFile || !origFile || !transFile || !nameFile) throw new Error("Format arsip tidak valid.");
-
       const p = JSON.parse(await metaFile.async("text"));
       const origLines = (await origFile.async("text")).split(/\r?\n/);
       const transLines = (await transFile.async("text")).split(/\r?\n/);
       const nameLines = (await nameFile.async("text")).split(/\r?\n/);
-
       if (origLines[origLines.length - 1] === "") origLines.pop();
       if (transLines[transLines.length - 1] === "") transLines.pop();
       if (nameLines[nameLines.length - 1] === "") nameLines.pop();
-
-      if (origLines.length !== transLines.length || origLines.length !== nameLines.length) {
-        throw new Error("Berkas korup: Jumlah baris tidak sinkron.");
-      }
-
+      if (origLines.length !== transLines.length || origLines.length !== nameLines.length) throw new Error("Berkas korup: Jumlah baris tidak sinkron.");
       const fileMarkerPrefix = ">>> ";
       const fileMarkerSuffix = " <<<";
       const reconstructedLines = [];
       let currentFile = CONFIG.FALLBACK_FILENAME, lineNum = 1;
-
       for (let i = 0; i < origLines.length; i++) {
         const o = origLines[i], t = transLines[i], n = nameLines[i];
-        
         if (o.startsWith(fileMarkerPrefix) && o.endsWith(fileMarkerSuffix)) {
           if (t !== o || n !== o) throw new Error("Berkas korup: Header file tidak sinkron.");
           currentFile = o.substring(fileMarkerPrefix.length, o.length - fileMarkerSuffix.length);
@@ -995,19 +843,12 @@ class AppController {
             tName = parts[1]?.trim() || null;
           }
           reconstructedLines.push({
-            line_num: lineNum++,
-            file: currentFile,
-            name: oName,
-            message: o,
-            trans_name: tName,
-            trans_message: t || null,
-            is_translated: !!(t && t.trim())
+            line_num: lineNum++, file: currentFile, name: oName, message: o,
+            trans_name: tName, trans_message: t || null, is_translated: !!(t && t.trim())
           });
         }
       }
-
       const name = p.projectName || f.name.replace(CONFIG.PROJECT_EXT, '');
-
       if (p.projectType === "epub" && p.epubSourceId) {
         const epubFile = zip.file(p.epubSourceId);
         if (epubFile) {
@@ -1020,32 +861,19 @@ class AppController {
           p.epubSourceId = newEpubId;
         }
       }
-
       const data = {
-        version: CONFIG.APP_VERSION,
-        projectName: name,
-        projectType: p.projectType || CONFIG.PROJECT_TYPE_UNINITIALIZED,
-        epubTags: p.epubTags || CONFIG.DEFAULT_EPUB_TAGS,
-        epubSourceId: p.epubSourceId || null,
-        updatedAt: Date.now(),
-        imported_files: p.imported_files || [],
-        lines: reconstructedLines.map(AppState.normalizeLine),
-        prompt_header: p.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER,
-        ignoreNameTranslation: p.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL,
-        promptEnabled: p.promptEnabled ?? CONFIG.DEFAULT_PROMPT_ENABLED,
-        contextEnabled: p.contextEnabled ?? CONFIG.DEFAULT_CONTEXT_ENABLED,
+        version: CONFIG.APP_VERSION, projectName: name, projectType: p.projectType || CONFIG.PROJECT_TYPE_UNINITIALIZED,
+        epubTags: p.epubTags || CONFIG.DEFAULT_EPUB_TAGS, epubSourceId: p.epubSourceId || null, updatedAt: Date.now(),
+        imported_files: p.imported_files || [], lines: reconstructedLines.map(AppState.normalizeLine),
+        prompt_header: p.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER, ignoreNameTranslation: p.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL,
+        promptEnabled: p.promptEnabled ?? CONFIG.DEFAULT_PROMPT_ENABLED, contextEnabled: p.contextEnabled ?? CONFIG.DEFAULT_CONTEXT_ENABLED,
         contextSize: p.contextSize ?? CONFIG.DEFAULT_CONTEXT_SIZE
       };
-
       await StorageManager.saveProject("proj_" + Date.now() + CONFIG.PROJECT_EXT, data);
       await AppController.loadDashboard();
       alert(`Proyek "${name}" berhasil dipulihkan!`);
-    } catch (e) {
-      alert("File backup korup atau tidak valid: " + e.message);
-    } finally {
-      document.body.style.cursor = "default";
-      ev.target.value = "";
-    }
+    } catch (e) { alert("File backup korup atau tidak valid: " + e.message); } 
+    finally { document.body.style.cursor = "default"; ev.target.value = ""; }
   }
 
   static async createNewProject() {
@@ -1062,20 +890,13 @@ class AppController {
   }
 
   static openProject(id, data) {
-    AppState.currentProjectId = id;
-    AppState.projectName = data.projectName || "Unknown Project";
-    AppState.projectType = data.projectType || CONFIG.PROJECT_TYPE_UNINITIALIZED;
-    AppState.epubTags = data.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
-    AppState.epubSourceId = data.epubSourceId || null;
-    AppState.lines = (data.lines || []).map(AppState.normalizeLine);
-    AppState.importedFiles = data.imported_files || [];
-    AppState.aiInstructionHeader = data.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER;
-    AppState.ignoreNameTranslation = data.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL;
-    AppState.aiPromptEnabled = data.promptEnabled ?? CONFIG.DEFAULT_PROMPT_ENABLED;
-    AppState.contextEnabled = data.contextEnabled ?? CONFIG.DEFAULT_CONTEXT_ENABLED;
-    AppState.contextSize = data.contextSize ?? CONFIG.DEFAULT_CONTEXT_SIZE;
-    AppState.selectedLines.clear();
-    AppState.undoSnapshot = null;
+    AppState.currentProjectId = id; AppState.projectName = data.projectName || "Unknown Project";
+    AppState.projectType = data.projectType || CONFIG.PROJECT_TYPE_UNINITIALIZED; AppState.epubTags = data.epubTags || CONFIG.DEFAULT_EPUB_TAGS;
+    AppState.epubSourceId = data.epubSourceId || null; AppState.lines = (data.lines || []).map(AppState.normalizeLine);
+    AppState.importedFiles = data.imported_files || []; AppState.aiInstructionHeader = data.prompt_header || CONFIG.DEFAULT_PROMPT_HEADER;
+    AppState.ignoreNameTranslation = data.ignoreNameTranslation ?? CONFIG.DEFAULT_IGNORE_NAME_TL; AppState.aiPromptEnabled = data.promptEnabled ?? CONFIG.DEFAULT_PROMPT_ENABLED;
+    AppState.contextEnabled = data.contextEnabled ?? CONFIG.DEFAULT_CONTEXT_ENABLED; AppState.contextSize = data.contextSize ?? CONFIG.DEFAULT_CONTEXT_SIZE;
+    AppState.selectedLines.clear(); AppState.undoSnapshot = null;
     UI.el.projectNameDisplay.textContent = AppState.projectName;
     UI.el.dashboardView.classList.remove("open");
     UI.el.workspaceView.style.display = "flex";
@@ -1092,51 +913,27 @@ class AppController {
         promptEnabled: AppState.aiPromptEnabled, contextEnabled: AppState.contextEnabled, contextSize: AppState.contextSize
       };
       StorageManager.saveProject(AppState.currentProjectId, data).then(AppController.finishClose);
-    } else {
-      AppController.finishClose();
-    }
+    } else { AppController.finishClose(); }
   }
 
   static finishClose() {
-    AppState.currentProjectId = null;
-    AppState.projectName = "";
-    AppState.epubSourceId = null;
-    
-    AppState.lines = [];
-    AppState.importedFiles = [];
-    AppState.displayRows = [];
-    AppState.proofreadMatches = [];
-    AppState.selectedLines.clear();
-    
-    AppState.lineByNum.clear();
-    AppState.filesLinesCache.clear();
-    
-    AppState.undoSnapshot = null;
-
-    if (AppController.mainScroller) {
-      AppController.mainScroller.setItems([]);
-    }
-    if (AppController.proofreadScroller) {
-      AppController.proofreadScroller.setItems([]);
-    }
-
+    AppState.currentProjectId = null; AppState.projectName = ""; AppState.epubSourceId = null;
+    AppState.lines = []; AppState.importedFiles = []; AppState.displayRows = []; AppState.proofreadMatches = []; AppState.selectedLines.clear();
+    AppState.lineByNum.clear(); AppState.filesLinesCache.clear(); AppState.undoSnapshot = null; AppState.translatedCount = 0;
+    if (AppController.mainScroller) AppController.mainScroller.setItems([]);
+    if (AppController.proofreadScroller) AppController.proofreadScroller.setItems([]);
     UI.el.nameTableBody.replaceChildren();
     UI.el.pasteArea.value = "";
     UI.el.copyStatus.classList.add("empty");
-
     UI.el.workspaceView.style.display = "none";
     UI.el.dashboardView.classList.add("open");
     AppController.loadDashboard();
   }
 
   static refreshWorkspace() {
+    AppState.updateTranslatedCount();
     AppState.rebuildCache();
-    if (AppController.mainScroller.items && AppController.mainScroller.items.length === AppState.displayRows.length && AppController.mainScroller.items.length > 0) {
-      AppController.mainScroller.items = AppState.displayRows;
-      AppController.mainScroller.render(true);
-    } else {
-      AppController.mainScroller.setItems(AppState.displayRows);
-    }
+    AppController.mainScroller.setItems(AppState.displayRows);
     AppController.updateButtons();
     AppController.renderNameTable();
     AppController.updateStatusBar();
@@ -1153,7 +950,7 @@ class AppController {
 
   static updateStatusBar() {
     const total = AppState.lines.length;
-    const trans = AppState.lines.filter(AppState.isTranslated).length;
+    const trans = AppState.translatedCount;
     const perc = total ? Math.floor((trans / total) * 100) : 0;
     const mode = AppState.projectType === CONFIG.PROJECT_TYPE_UNINITIALIZED ? "-" : (AppState.projectType === "epub" ? "EPUB" : "JSON-VNTP");
     const files = AppState.importedFiles.length > 1 ? `${AppState.importedFiles.length} file` : (AppState.importedFiles[0] || '-');
@@ -1162,76 +959,75 @@ class AppController {
     UI.el.progressText.textContent = `${trans}/${total}`;
   }
 
-  static renderMainRow(rowData) {
-    const row = UI.createDomNode("div", "preview-row");
-    if (rowData.type === "separator") {
-      row.classList.add("separator");
-      const cb = UI.createDomNode("input", null, { type: "checkbox" });
-      cb.dataset.file = rowData.file;
-      const fileLines = AppState.filesLinesCache.get(rowData.file) || [];
-      let allChecked = true;
-      let hasUntranslated = false;
-      for (const l of fileLines) {
-        if (!AppState.isTranslated(l)) {
-          hasUntranslated = true;
-          if (!AppState.selectedLines.has(l.line_num)) {
-            allChecked = false;
-            break;
-          }
-        }
-      }
-      cb.checked = hasUntranslated && allChecked;
-      const lbl = UI.createDomNode("div", "mono grow");
-      lbl.style.cssText = "font-weight:700; color:var(--primary);";
-      lbl.textContent = `File: ${rowData.file}`;
-      row.append(cb, lbl);
-    } else {
-      const line = rowData.line;
-      if (AppState.isTranslated(line)) row.classList.add("row-translated");
-      const isChecked = AppState.selectedLines.has(line.line_num);
-      if (isChecked) row.classList.add("row-selected");
-      const cbWrap = UI.createDomNode("div", "checkbox-cell");
-      const cb = UI.createDomNode("input", null, { type: "checkbox", checked: isChecked, disabled: AppState.isTranslated(line) });
-      cb.dataset.num = line.line_num;
-      const content = UI.createDomNode("div", "text-content");
-      const orig = UI.createDomNode("div", "original");
-      orig.textContent = line.name ? `${line.line_num}. ${line.name}: ${line.message}` : `${line.line_num}. ${line.message}`;
-      const trans = UI.createDomNode("div", "translated");
-      if (AppState.isTranslated(line)) {
-        const tName = line.trans_name || line.name;
-        trans.textContent = tName ? `${line.line_num}. ${tName}: ${line.trans_message}` : `${line.line_num}. ${line.trans_message}`;
-      } else {
-        trans.classList.add("cell-muted");
-        trans.textContent = "——";
-      }
-      content.append(orig, trans);
-      cbWrap.append(cb, content);
-      row.appendChild(cbWrap);
-    }
+  static createMainRow() {
+    const row = document.createElement("div");
+    row.className = "preview-row";
+    const cell = document.createElement("div");
+    cell.className = "checkbox-cell";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    const text = document.createElement("div");
+    text.className = "text-content";
+    const orig = document.createElement("div");
+    orig.className = "original";
+    const trans = document.createElement("div");
+    trans.className = "translated";
+    text.append(orig, trans);
+    cell.append(cb, text);
+    const sep = document.createElement("div");
+    sep.className = "sep-content";
+    sep.style.cssText = "display:none; align-items:center; gap:12px; width:100%;";
+    const sepCb = document.createElement("input");
+    sepCb.type = "checkbox";
+    sepCb.className = "sep-cb";
+    const sepLbl = document.createElement("div");
+    sepLbl.className = "mono grow";
+    sepLbl.style.cssText = "font-weight:700; color:var(--primary);";
+    sep.append(sepCb, sepLbl);
+    row.append(cell, sep);
+    row._cell = cell; row._cb = cb; row._orig = orig; row._trans = trans;
+    row._sep = sep; row._sepCb = sepCb; row._sepLbl = sepLbl;
     return row;
   }
 
-  static syncCheckboxes() {
-    UI.el.previewContainer.querySelectorAll('.preview-row.separator input[type="checkbox"]').forEach(cb => {
-      const fileLines = AppState.filesLinesCache.get(cb.dataset.file) || [];
-      let allChecked = true;
-      let hasUntranslated = false;
-      for (const l of fileLines) {
-        if (!AppState.isTranslated(l)) {
+  static updateMainRow(row, rowData) {
+    if (rowData.type === "separator") {
+      row.className = "preview-row separator";
+      row._cell.style.display = "none";
+      row._sep.style.display = "flex";
+      row._sepCb.dataset.file = rowData.file;
+      const fileLines = AppState.filesLinesCache.get(rowData.file) || [];
+      let allChecked = true, hasUntranslated = false;
+      for (let i=0; i<fileLines.length; i++) {
+        if (!AppState.isTranslated(fileLines[i])) {
           hasUntranslated = true;
-          if (!AppState.selectedLines.has(l.line_num)) {
-            allChecked = false;
-            break;
-          }
+          if (!AppState.selectedLines.has(fileLines[i].line_num)) { allChecked = false; break; }
         }
       }
-      cb.checked = hasUntranslated && allChecked;
-    });
-    UI.el.previewContainer.querySelectorAll('.preview-row:not(.separator) input[type="checkbox"]').forEach(cb => {
-      const num = Number(cb.dataset.num);
-      cb.checked = AppState.selectedLines.has(num);
-      cb.checked ? cb.closest('.preview-row').classList.add('row-selected') : cb.closest('.preview-row').classList.remove('row-selected');
-    });
+      row._sepCb.checked = hasUntranslated && allChecked;
+      row._sepLbl.textContent = `File: ${rowData.file}`;
+    } else {
+      const l = rowData.line;
+      row.className = "preview-row" + (AppState.isTranslated(l) ? " row-translated" : "") + (AppState.selectedLines.has(l.line_num) ? " row-selected" : "");
+      row._cell.style.display = "flex";
+      row._sep.style.display = "none";
+      row._cb.dataset.num = l.line_num;
+      row._cb.checked = AppState.selectedLines.has(l.line_num);
+      row._cb.disabled = AppState.isTranslated(l);
+      row._orig.textContent = l.name ? `${l.line_num}. ${l.name}: ${l.message}` : `${l.line_num}. ${l.message}`;
+      if (AppState.isTranslated(l)) {
+        row._trans.classList.remove("cell-muted");
+        const tName = l.trans_name || l.name;
+        row._trans.textContent = tName ? `${l.line_num}. ${tName}: ${l.trans_message}` : `${l.line_num}. ${l.trans_message}`;
+      } else {
+        row._trans.classList.add("cell-muted");
+        row._trans.textContent = "——";
+      }
+    }
+  }
+
+  static syncCheckboxes() {
+    AppController.mainScroller.forceUpdate();
     AppController.updateButtons();
   }
 
@@ -1262,9 +1058,8 @@ class AppController {
     if (idx !== -1) {
       AppController.mainScroller.scrollToIndex(idx);
       setTimeout(() => {
-        const rowEl = document.querySelector(`input[data-num="${f}"]`)?.closest('.preview-row');
+        const rowEl = UI.el.previewContainer.querySelector(`input[data-num="${f}"]`)?.closest('.preview-row');
         if (rowEl) {
-          rowEl.scrollIntoView({ behavior: "smooth", block: "center" });
           const bg = rowEl.style.backgroundColor;
           rowEl.style.transition = "background-color 0.3s ease";
           rowEl.style.backgroundColor = "rgba(59, 130, 246, 0.4)";
@@ -1277,18 +1072,13 @@ class AppController {
   static async copyForAi() {
     const sel = AppState.lines.filter(l => AppState.selectedLines.has(l.line_num));
     const out = sel.map(l => l.name ? `${l.line_num}. ${l.name}: ${l.message}` : `${l.line_num}. ${l.message}`);
-    
     let p = "";
-    if (AppState.aiPromptEnabled) {
-      p += `${(AppState.aiInstructionHeader || CONFIG.DEFAULT_PROMPT_HEADER).trim()}\n\n`;
-    }
-
+    if (AppState.aiPromptEnabled) p += `${(AppState.aiInstructionHeader || CONFIG.DEFAULT_PROMPT_HEADER).trim()}\n\n`;
     if (AppState.contextEnabled) {
       const minSelectedNum = Math.min(...Array.from(AppState.selectedLines));
       const translatedBefore = AppState.lines.filter(l => l.line_num < minSelectedNum && AppState.isTranslated(l));
       translatedBefore.sort((a, b) => b.line_num - a.line_num);
       const contextLines = translatedBefore.slice(0, AppState.contextSize).reverse();
-      
       if (contextLines.length > 0) {
         p += `<context>\n`;
         contextLines.forEach(l => {
@@ -1298,9 +1088,7 @@ class AppController {
         p += `</context>\n\n`;
       }
     }
-
     p += `${out.join("\n")}\n`;
-
     try {
       await navigator.clipboard.writeText(p);
       UI.flashMessage(`Disalin ${sel.length} baris.`);
@@ -1334,16 +1122,11 @@ class AppController {
     if (parsed.length !== AppState.selectedLines.size) errors.push(`Jumlah baris tidak sesuai seleksi.`);
     for (const num of AppState.selectedLines) if (!seen.has(num)) errors.push(`[Baris ${num}] Hilang.`);
     for (const num of seen) if (!AppState.selectedLines.has(num)) errors.push(`[Baris ${num}] Tidak dicentang.`);
-    
     const updates = [];
     for (const it of parsed) {
       const l = AppState.lineByNum.get(it.num);
       if (!l) { errors.push(`[Baris ${it.num}] Tidak ada di JSON.`); continue; }
-      
-      if (AppState.ignoreNameTranslation && l.name) {
-        it.name = l.name;
-      }
-      
+      if (AppState.ignoreNameTranslation && l.name) it.name = l.name;
       const oN = !!(l.name || "").trim();
       let tN = !!(it.name || "").trim();
       if (!oN && tN) { it.msg = it.rawMsg; it.name = null; tN = false; }
@@ -1353,12 +1136,7 @@ class AppController {
       else updates.push({ l, it });
     }
     if (errors.length) return alert("DITOLAK:\n" + errors.slice(0, 10).join("\n") + (errors.length > 10 ? `\n... (+${errors.length-10} lain)` : ""));
-    
-    AppState.undoSnapshot = { 
-      lines: JSON.parse(JSON.stringify(AppState.lines)),
-      selected: new Set(AppState.selectedLines)
-    };
-
+    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
     for (const {l, it} of updates) {
       l.trans_message = it.msg;
       l.is_translated = true;
@@ -1377,7 +1155,6 @@ class AppController {
     AppState.selectedLines = new Set(AppState.undoSnapshot.selected);
     AppState.undoSnapshot = null;
     AppController.refreshWorkspace();
-    AppController.syncCheckboxes();
     AppState.queueAutoSave();
   }
 
@@ -1430,10 +1207,8 @@ class AppController {
     const q = UI.el.proofreadSearchInput.value, isReg = UI.el.proofreadRegexCheck.checked;
     const isC = UI.el.proofreadCaseCheck.checked, isEx = UI.el.proofreadExactCheck.checked;
     const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked, scope = UI.el.proofreadScope.value;
-    
     let searchRegex = null;
     AppController.currentHighlightRegex = null;
-    
     if (q) {
       try {
         let rStr = isReg ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1442,7 +1217,6 @@ class AppController {
         AppController.currentHighlightRegex = new RegExp(`(${rStr})`, isC ? "gu" : "giu");
       } catch (e) { return; }
     }
-    
     AppState.proofreadMatches = [];
     for (const line of AppState.lines) {
       if (onlyT && !AppState.isTranslated(line)) continue;
@@ -1462,12 +1236,30 @@ class AppController {
     AppController.proofreadScroller.setItems(AppState.proofreadMatches);
   }
 
-  static renderProofreadRow(r) {
-    const row = UI.createDomNode("div", "preview-row");
-    const wrap = UI.createDomNode("div", "text-content");
-    wrap.dataset.num = r.num;
-    const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked, scope = UI.el.proofreadScope.value;
-    
+  static createProofreadRow() {
+    const row = document.createElement("div");
+    row.className = "preview-row";
+    const wrap = document.createElement("div");
+    wrap.className = "text-content";
+    const meta = document.createElement("div");
+    meta.className = "file-meta";
+    const orig = document.createElement("div");
+    orig.className = "original";
+    const trans = document.createElement("div");
+    trans.className = "translated";
+    wrap.append(meta, orig, trans);
+    row.append(wrap);
+    row._wrap = wrap; row._meta = meta; row._orig = orig; row._trans = trans;
+    return row;
+  }
+
+  static updateProofreadRow(row, r) {
+    row._wrap.dataset.num = r.num;
+    row._meta.textContent = `File: ${r.file} | Baris: ${r.num}`;
+    row._orig.replaceChildren();
+    row._trans.replaceChildren();
+    const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked;
+    const scope = UI.el.proofreadScope.value;
     const build = (n, m, hl) => {
       const f = document.createDocumentFragment();
       if (n) {
@@ -1477,22 +1269,15 @@ class AppController {
       f.appendChild((hl && (scope === 'all' || scope === 'message')) ? AppController.createHighlight(m, AppController.currentHighlightRegex) : document.createTextNode(m));
       return f;
     };
-    
-    wrap.appendChild(UI.createDomNode("div", "file-meta", { textContent: `File: ${r.file} | Baris: ${r.num}` }));
-    const orig = UI.createDomNode("div", "original"), trans = UI.createDomNode("div", "translated");
-    
-    if (!r.isTrans) trans.classList.add("cell-muted");
+    if (!r.isTrans) row._trans.classList.add("cell-muted");
+    else row._trans.classList.remove("cell-muted");
     if (onlyT) {
-      orig.textContent = r.origName ? `${r.origName}: ${r.origMsg}` : r.origMsg;
-      r.isTrans ? trans.appendChild(build(r.transName, r.transMsg, true)) : trans.textContent = "——";
+      row._orig.textContent = r.origName ? `${r.origName}: ${r.origMsg}` : r.origMsg;
+      r.isTrans ? row._trans.appendChild(build(r.transName, r.transMsg, true)) : row._trans.textContent = "——";
     } else {
-      orig.appendChild(build(r.origName, r.origMsg, true));
-      trans.textContent = r.isTrans ? (r.transName ? `${r.transName}: ${r.transMsg}` : r.transMsg) : "——";
+      row._orig.appendChild(build(r.origName, r.origMsg, true));
+      row._trans.textContent = r.isTrans ? (r.transName ? `${r.transName}: ${r.transMsg}` : r.transMsg) : "——";
     }
-    
-    wrap.append(orig, trans);
-    row.appendChild(wrap);
-    return row;
   }
 
   static execReplaceAll() {
@@ -1505,10 +1290,7 @@ class AppController {
       regex = new RegExp(rStr, UI.el.proofreadCaseCheck.checked ? 'gu' : 'giu');
     } catch (e) { return alert("Regex tidak valid."); }
     let count = 0;
-    AppState.undoSnapshot = { 
-      lines: JSON.parse(JSON.stringify(AppState.lines)),
-      selected: new Set(AppState.selectedLines)
-    };
+    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
     const onlyT = UI.el.proofreadTranslatedOnlyCheck.checked, scope = UI.el.proofreadScope.value;
     for (const line of AppState.lines) {
       if (onlyT && !AppState.isTranslated(line)) continue;
