@@ -25,12 +25,12 @@
         </div>
       </div>
       <div class="actions">
-        <button id="btnNewProject" class="btn btn-primary">Buat Proyek Baru</button>
-        <button id="btnRestoreProject" class="btn btn-outline">Pulihkan Proyek</button>
+        <button id="btnNewProject" class="btn btn-primary">Buat Project Baru</button>
+        <button id="btnRestoreProject" class="btn btn-outline">Pulihkan Project</button>
       </div>
     </header>
     <main class="dashboard-content">
-      <div class="section-label section-label-lg">Proyek Tersimpan</div>
+      <div class="section-label section-label-lg">Project Tersimpan</div>
       <div id="projectList" class="project-grid"></div>
     </main>
   </div>
@@ -46,10 +46,12 @@
         <button id="btnExport" class="btn" disabled>Ekspor</button>
         <span class="toolbar-sep"></span>
         <button id="btnProofread" class="btn" disabled>Cari</button>
+        <span class="toolbar-sep"></span>
+        <button id="btnVndbSync" class="btn">VNDB</button>
         <button id="btnSettings" class="btn">Pengaturan</button>
       </div>
       <span class="grow"></span>
-      <span id="projectNameDisplay" class="toolbar-label toolbar-project-name desktop-only">Proyek Aktif</span>
+      <span id="projectNameDisplay" class="toolbar-label toolbar-project-name desktop-only">Project Aktif</span>
     </header>
     <main class="split-layout">
       <section class="panel panel-left">
@@ -235,6 +237,31 @@
       <div class="modal-actions">
         <span class="grow"></span>
         <button id="btnProofreadClose" class="btn btn-primary">Tutup</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="vndbModal" class="modal-backdrop" style="z-index: 80;">
+    <div class="modal">
+      <h3>Sinkronisasi VNDB</h3>
+      <p class="hint mb-2">Masukkan ID Visual Novel untuk mengambil database nama karakter.</p>
+      <div class="input-group mb-2">
+        <input id="vndbIdInput" type="text" class="text-input grow" placeholder="Contoh: v123456789" />
+        <button id="btnVndbFetch" class="btn btn-primary">Ambil Data</button>
+      </div>
+      <div id="vndbStatus" class="status-toast empty mb-2"></div>
+      <label class="section-label">Preview Nama</label>
+      <textarea id="vndbPreviewArea" class="mono input-area small mb-2" readonly></textarea>
+      <label class="section-label mt-2">Terapkan Pada</label>
+      <select id="vndbScope" class="text-input w-full mb-2">
+        <option value="all">All Text</option>
+        <option value="name">Name Only</option>
+        <option value="message">Message Only</option>
+      </select>
+      <div class="modal-actions mt-3">
+        <span class="grow"></span>
+        <button id="btnVndbCancel" class="btn btn-outline">Batal</button>
+        <button id="btnVndbApply" class="btn btn-success" disabled>Terapkan</button>
       </div>
     </div>
   </div>

@@ -1,38 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#60a5fa" />
-      <stop offset="100%" stop-color="#c084fc" />
-    </linearGradient>
+    <linearGradient id="bg-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F46E5" /> <stop offset="100%" stop-color="#2563EB" /> </linearGradient>
   </defs>
-  
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#bgGrad)" />
-  
-  <path d="M 32 48 Q 25 48 18 44 L 18 22 Q 25 26 32 26 Q 39 26 46 22 L 46 44 Q 39 48 32 48 Z" fill="#2e1a47" opacity="0.25"/>
-  
-  <path d="M 32 46 Q 25 46 18 42 L 18 18 Q 25 22 32 22 Q 39 22 46 18 L 46 42 Q 39 46 32 46 Z" fill="#f8fafc"/>
-  
-  <path d="M 32 46 Q 35 46 36 44.7 V 20.7 Q 35 22 32 22 Z" fill="#e2e8f0"/>
-  
-  <line x1="32" y1="22" x2="32" y2="46" stroke="#cbd5e1" stroke-width="1.2" stroke-linecap="round"/>
-  
-  <g stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round">
-    <line x1="21" y1="26" x2="29" y2="26"/>
-    <line x1="21" y1="30" x2="27" y2="30"/>
-    <line x1="21" y1="34" x2="28" y2="34"/>
-    <line x1="21" y1="38" x2="25" y2="38"/>
-    <line x1="21" y1="42" x2="29" y2="42"/>
-  </g>
-  
-  <g fill="#fbbf24">
-    <path d="M 39 24 Q 39 27 36 27 Q 39 27 39 30 Q 39 27 42 27 Q 39 27 39 24 Z"/>
-    <circle cx="35" cy="23.5" r="0.8"/>
-    <circle cx="42.5" cy="30" r="0.6"/>
-  </g>
-  
-  <g stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round">
-    <line x1="35" y1="34" x2="43" y2="34"/>
-    <line x1="35" y1="38" x2="40" y2="38"/>
-    <line x1="35" y1="42" x2="42" y2="42"/>
-  </g>
+
+  <rect width="512" height="512" rx="115" fill="url(#bg-gradient)" />
+
+  <rect x="180" y="140" width="160" height="232" rx="12" fill="#FFFFFF" />
+
+  <rect x="150" y="140" width="40" height="232" rx="12" fill="#1E3A8A" />
+
+  <rect x="210" y="180" width="100" height="14" rx="7" fill="#CBD5E1" />
+  <rect x="210" y="220" width="100" height="14" rx="7" fill="#CBD5E1" />
+  <rect x="210" y="260" width="60" height="14" rx="7" fill="#CBD5E1" />
+
+  <path d="M 270 140 h 26 v 64 l -13 -12 l -13 12 z" fill="#EF4444" />
 </svg>

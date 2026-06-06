@@ -37,7 +37,9 @@ class UI {
       "btnLineCancel", "btnLineSave", "proofreadModal", "proofreadSearchInput", "proofreadScope",
       "proofreadRegexCheck", "proofreadCaseCheck", "proofreadExactCheck", "proofreadTranslatedOnlyCheck",
       "btnProofreadReset", "proofreadStatus", "proofreadContainer", "btnProofreadClose",
-      "proofreadReplaceInput", "btnProofreadReplaceAll", "rangeFromInput", "rangeToInput", "btnSelectRange"
+      "proofreadReplaceInput", "btnProofreadReplaceAll", "rangeFromInput", "rangeToInput", "btnSelectRange",
+      "btnVndbSync", "vndbModal", "vndbIdInput", "btnVndbFetch", "vndbStatus",
+      "vndbPreviewArea", "vndbScope", "btnVndbCancel", "btnVndbApply"
     ];
     for (const id of ids) UI.el[id] = document.getElementById(id);
   }
@@ -124,6 +126,7 @@ class AppState {
   static proofreadMatches = [];
   static saveTimeout = null;
   static translatedCount = 0;
+  static currentVndbGlossary = [];
 
   static isTranslated(line) { return !!line.is_translated; }
   static normalizeLine(line) {
@@ -350,7 +353,7 @@ class Importer {
         for (const f of files) {
           if (f.name.toLowerCase().endsWith(".epub")) {
             if (AppState.projectType === "epub" && AppState.epubSourceId) {
-              alert("Proyek ini sudah memuat file EPUB. Buat proyek baru untuk mengimpor EPUB lain.");
+              alert("Project ini sudah memuat file EPUB. Buat proyek baru untuk mengimpor EPUB lain.");
               continue;
             }
             if (AppState.projectType === CONFIG.PROJECT_TYPE_UNINITIALIZED) {
@@ -518,6 +521,81 @@ class Exporter {
         });
       }
     }
+  }
+}
+
+class VndbService {
+  static isJapanese(text) {
+    return /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(text);
+  }
+
+  static async fetchCharacters(vnId) {
+    let allCharacters = [];
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const query = {
+        filters: ["vn", "=", ["id", "=", vnId]],
+        fields: "name, original, aliases",
+        results: 100,
+        page: page
+      };
+
+      const response = await fetch("https://api.vndb.org/kana/character", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(query)
+      });
+
+      if (!response.ok) throw new Error(`Status: ${response.status}`);
+
+      const data = await response.json();
+      if (data.results) allCharacters.push(...data.results);
+      
+      hasMore = data.more || false;
+      page++;
+    }
+    return allCharacters;
+  }
+
+  static buildGlossary(characters) {
+    const glossary = new Map();
+
+    const add = (jp, ro) => {
+      jp = (jp || "").trim();
+      ro = (ro || "").trim();
+      if (jp && ro && VndbService.isJapanese(jp) && !glossary.has(jp)) {
+        glossary.set(jp, ro);
+      }
+    };
+
+    for (const ch of characters) {
+      if (!ch.name || !ch.original) continue;
+
+      const romaji = ch.name;
+      const kanji = ch.original;
+
+      add(kanji, romaji);
+
+      if (kanji.includes(' ') && romaji.includes(' ')) {
+        const kp = kanji.split(' ');
+        const rp = romaji.split(' ');
+        if (kp.length === rp.length) {
+          kp.forEach((k, idx) => add(k, rp[idx]));
+        }
+      }
+
+      const jpAliases = (ch.aliases || []).filter(a => VndbService.isJapanese(a));
+      const roAliases = (ch.aliases || []).filter(a => !VndbService.isJapanese(a));
+      const fallback = romaji.split(' ').pop() || romaji;
+
+      jpAliases.forEach((jpAlias, i) => {
+        add(jpAlias, roAliases[i] || fallback);
+      });
+    }
+
+    return Array.from(glossary.entries()).sort((a, b) => b[0].length - a[0].length);
   }
 }
 
@@ -714,6 +792,51 @@ class AppController {
         } catch (err) { alert(`Clipboard diblokir oleh browser untuk teks:\n${n}`); }
       }
     });
+
+    UI.el.btnVndbSync.addEventListener("click", () => {
+      UI.el.vndbIdInput.value = "";
+      UI.el.vndbPreviewArea.value = "";
+      UI.el.vndbStatus.className = "status-toast empty mb-2";
+      UI.el.btnVndbApply.disabled = true;
+      UI.el.vndbScope.value = "all";
+      AppState.currentVndbGlossary = [];
+      UI.toggleModal(UI.el.vndbModal, true);
+    });
+
+    UI.el.btnVndbCancel.addEventListener("click", () => UI.toggleModal(UI.el.vndbModal, false));
+
+    UI.el.btnVndbFetch.addEventListener("click", async () => {
+      let vnId = UI.el.vndbIdInput.value.trim();
+      if (!vnId) return;
+      if (!vnId.startsWith("v")) vnId = "v" + vnId;
+
+      try {
+        UI.el.btnVndbFetch.disabled = true;
+        UI.el.vndbStatus.textContent = "Mengambil data...";
+        UI.el.vndbStatus.classList.remove("empty");
+        UI.el.vndbStatus.style.color = "var(--primary)";
+
+        const chars = await VndbService.fetchCharacters(vnId);
+        if (chars.length === 0) throw new Error("Karakter tidak ditemukan.");
+
+        const glossary = VndbService.buildGlossary(chars);
+        AppState.currentVndbGlossary = glossary;
+
+        UI.el.vndbPreviewArea.value = glossary.map(g => `${g[0]} -> ${g[1]}`).join("\n");
+        UI.el.btnVndbApply.disabled = false;
+
+        UI.el.vndbStatus.textContent = `Ditemukan ${glossary.length} entri.`;
+        UI.el.vndbStatus.style.color = "var(--success)";
+      } catch (err) {
+        UI.el.vndbStatus.textContent = err.message;
+        UI.el.vndbStatus.style.color = "var(--danger)";
+        UI.el.btnVndbApply.disabled = true;
+      } finally {
+        UI.el.btnVndbFetch.disabled = false;
+      }
+    });
+
+    UI.el.btnVndbApply.addEventListener("click", AppController.applyVndbGlossary);
   }
 
   static async loadDashboard() {
@@ -721,7 +844,7 @@ class AppController {
     try {
       const projects = await StorageManager.fetchProjects();
       if (projects.length === 0) {
-        UI.el.projectList.innerHTML = `<p class="hint" style="grid-column: 1/-1;">Belum ada proyek. Klik "Buat Proyek Baru" untuk memulai.</p>`;
+        UI.el.projectList.innerHTML = `<p class="hint" style="grid-column: 1/-1;">Belum ada proyek. Klik "Buat Project Baru" untuk memulai.</p>`;
         return;
       }
       for (const p of projects) {
@@ -871,7 +994,7 @@ class AppController {
       };
       await StorageManager.saveProject("proj_" + Date.now() + CONFIG.PROJECT_EXT, data);
       await AppController.loadDashboard();
-      alert(`Proyek "${name}" berhasil dipulihkan!`);
+      alert(`Project "${name}" berhasil dipulihkan!`);
     } catch (e) { alert("File backup korup atau tidak valid: " + e.message); } 
     finally { document.body.style.cursor = "default"; ev.target.value = ""; }
   }
@@ -1312,6 +1435,60 @@ class AppController {
       AppState.queueAutoSave();
       alert(`Berhasil replace pada ${count} baris.`);
     } else alert(`Tidak ada yang cocok.`);
+  }
+
+  static applyVndbGlossary() {
+    if (!AppState.currentVndbGlossary.length || !AppState.lines.length) return;
+
+    AppState.undoSnapshot = { 
+      lines: JSON.parse(JSON.stringify(AppState.lines)), 
+      selected: new Set(AppState.selectedLines) 
+    };
+
+    const scope = UI.el.vndbScope.value;
+    let nameCount = 0;
+    let msgCount = 0;
+
+    const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(AppState.currentVndbGlossary.map(g => escapeRegex(g[0])).join('|'), 'g');
+    const map = Object.fromEntries(AppState.currentVndbGlossary);
+
+    for (const line of AppState.lines) {
+      let nChanged = false;
+      let mChanged = false;
+
+      if ((scope === "all" || scope === "name") && line.name) {
+        if (map[line.name]) {
+          if (line.name !== map[line.name]) {
+            line.name = map[line.name];
+            nChanged = true;
+          }
+        } else {
+          const newName = line.name.replace(pattern, m => map[m]);
+          if (newName !== line.name) {
+            line.name = newName;
+            nChanged = true;
+          }
+        }
+      }
+
+      if ((scope === "all" || scope === "message") && line.message && !AppState.isTranslated(line)) {
+        const newMsg = line.message.replace(pattern, m => map[m]);
+        if (newMsg !== line.message) {
+          line.message = newMsg;
+          mChanged = true;
+        }
+      }
+
+      if (nChanged) nameCount++;
+      if (mChanged) msgCount++;
+    }
+
+    UI.toggleModal(UI.el.vndbModal, false);
+    AppController.refreshWorkspace();
+    AppState.queueAutoSave();
+    
+    alert(`Berhasil diterapkan pada ${nameCount + msgCount} teks.`);
   }
 }
 
