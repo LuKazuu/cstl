@@ -21,7 +21,7 @@
       <div class="hero-left">
         <div class="hero-title-wrap">
           <h1 class="hero-title">Copas Tool</h1>
-          <span class="hero-badge">v7</span>
+          <span class="hero-badge">v8</span>
         </div>
       </div>
       <div class="actions">
@@ -37,20 +37,28 @@
   
   <div id="workspaceView" class="app-shell" style="display: none;">
     <header class="toolbar">
-      <div class="toolbar-scroll">
-        <button id="btnBackToDashboard" class="btn btn-outline"><- Dashboard</button>
-        <span class="toolbar-sep"></span>
-        <button id="btnImportFile" class="btn">Impor File</button>
-        <button id="btnImportFolder" class="btn">Impor Folder</button>
-        <button id="btnImportZip" class="btn">Impor ZIP</button>
-        <button id="btnExport" class="btn" disabled>Ekspor</button>
-        <span class="toolbar-sep"></span>
-        <button id="btnProofread" class="btn" disabled>Cari</button>
-        <span class="toolbar-sep"></span>
-        <button id="btnVndbSync" class="btn">VNDB</button>
-        <button id="btnSettings" class="btn">Pengaturan</button>
+      <button id="btnBackToDashboard" class="btn btn-outline"><- Dashboard</button>
+      <span class="toolbar-sep"></span>
+      <div id="dynamicToolbarWrap" class="toolbar-dynamic-wrap">
+        <div id="actionButtons" class="toolbar-actions">
+          <div class="dropdown" id="importGroup">
+            <button id="btnImportMain" class="btn">Impor</button>
+            <div id="importDropdown" class="dropdown-content">
+              <button id="btnImportFile" class="dropdown-item">Impor File(s)</button>
+              <button id="btnImportFolder" class="dropdown-item">Impor Folder</button>
+              <button id="btnImportZip" class="dropdown-item">Impor ZIP</button>
+            </div>
+          </div>
+          <button id="btnExport" class="btn" disabled>Ekspor</button>
+          <button id="btnProofread" class="btn" disabled>Cari</button>
+          <button id="btnSettings" class="btn">Konfigurasi</button>
+        </div>
       </div>
-      <span class="grow"></span>
+      <div class="dropdown" id="moreGroup" style="display: none;">
+        <button id="btnMore" class="btn">...</button>
+        <div id="moreDropdown" class="dropdown-content dropdown-right"></div>
+      </div>
+      <span class="toolbar-sep desktop-only" style="margin-left: 8px;"></span>
       <span id="projectNameDisplay" class="toolbar-label toolbar-project-name desktop-only">Project Aktif</span>
     </header>
     <main class="split-layout">
@@ -88,20 +96,21 @@
         <label class="section-label" for="pasteArea">Hasil Teks</label>
         <textarea id="pasteArea" class="mono input-area" placeholder="Paste hasil dari AI di sini..." disabled></textarea>
         <div class="inline-actions">
-          <button id="btnApply" class="btn btn-success grow" disabled>Terapkan Terjemahan</button>
           <button id="btnUndo" class="btn btn-danger" disabled>Undo</button>
+          <button id="btnApply" class="btn btn-success grow" disabled>Terapkan Terjemahan</button>
+          <button id="btnRedo" class="btn btn-danger" disabled>Redo</button>
         </div>
-        <label class="section-label mt-3">Daftar Nama Karakter</label>
-        <p class="hint mb-2 hint-tight">Klik pada baris nama untuk langsung menyalin teks ke clipboard.</p>
-        <div id="nameTableWrap" class="name-table-wrap">
-          <table class="name-table">
-            <thead>
-              <tr>
-                <th>Nama Karakter</th>
-              </tr>
-            </thead>
-            <tbody id="nameTableBody"></tbody>
-          </table>
+        <div class="card-box mt-3 mb-2">
+          <div class="flex-between mb-2">
+            <div class="section-label" style="margin: 0;">Daftar Nama (<span id="nameTotalCount">0</span>)</div>
+            <button id="btnCopyAllNames" class="btn btn-outline btn-xs" disabled>Copy All</button>
+          </div>
+          <p class="hint mb-2 hint-tight">Klik pada baris nama untuk langsung menyalin teks ke clipboard.</p>
+          <div class="name-table-wrap">
+            <table class="name-table">
+              <tbody id="nameTableBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
     </main>
@@ -117,8 +126,7 @@
 
   <div id="settingsModal" class="modal-backdrop">
     <div class="modal modal-wide">
-      <h3>Pengaturan</h3>
-      
+      <h3>Konfigurasi</h3>
       <div class="card-box mb-2 mt-2">
         <div class="flex-between mb-2">
           <div class="section-label-lg" style="margin: 0;">Pengaturan Dasar</div>
@@ -138,15 +146,14 @@
             Sertakan Konteks Terjemahan
           </label>
           <div id="settingsContextWrap" class="settings-nested-box">
-            <p class="hint m-0 mb-1">Jumlah baris konteks (Maks: <span id="maxContextDisplay">0</span>)</p>
+            <p class="hint m-0 mb-1">Jumlah baris konteks</p>
             <div class="flex gap-10">
-              <input id="settingsContextInput" type="number" class="text-input grow" placeholder="5" min="5" />
+              <input id="settingsContextInput" type="number" class="text-input grow" placeholder="5" min="1" />
               <button id="btnSettingsContextApply" class="btn btn-outline" style="padding: 0 16px; font-weight: bold; font-size: 15px;" disabled>✓</button>
             </div>
           </div>
         </div>
       </div>
-
       <div class="card-box mb-2 mt-3">
         <div class="flex-between mb-1">
           <div class="section-label-lg" style="margin: 0;">Pengaturan Prompt AI</div>
@@ -155,7 +162,42 @@
         <p class="hint m-0 mt-1">Teks instruksi otomatis ditambahkan ke awal saat kamu klik "Copy untuk AI".</p>
         <textarea id="settingsPromptInput" class="mono input-area mt-2"></textarea>
       </div>
-
+      <div class="card-box mb-2 mt-3">
+        <div class="flex-between mb-1">
+          <div class="section-label-lg" style="margin: 0;">VNDB Glossary</div>
+          <button id="btnSettingsVndbReset" class="btn btn-outline btn-xs">Reset Default</button>
+        </div>
+        <p class="hint m-0 mt-1 mb-2">Menambahkan glossary pada saat menyalin teks untuk AI.</p>
+        <label class="checkbox-line text-white mb-2">
+          <input id="settingsVndbCheck" type="checkbox" />
+          Sertakan Glossary
+        </label>
+        <div id="settingsVndbWrap" class="settings-nested-box">
+          <div class="input-group mb-2">
+            <input id="settingsVndbIdInput" type="text" class="text-input grow" placeholder="ID VN (Contoh: v1234)" />
+            <button id="btnSettingsVndbFetch" class="btn btn-outline">Ambil</button>
+          </div>
+          <div id="settingsVndbStatus" class="status-toast empty mb-2"></div>
+          <textarea id="settingsVndbPreviewArea" class="mono input-area small" readonly placeholder="Pratinjau glossary..."></textarea>
+        </div>
+      </div>
+      <div class="card-box mb-2 mt-3">
+        <div class="flex-between mb-1">
+          <div class="section-label-lg" style="margin: 0;">Custom Glossary</div>
+          <button id="btnSettingsCustomReset" class="btn btn-outline btn-xs">Reset Default</button>
+        </div>
+        <p class="hint m-0 mt-1 mb-2">Tambahkan glossary dengan format "Asli: Terjemahan" (satu per baris).</p>
+        <label class="checkbox-line text-white mb-2">
+          <input id="settingsCustomCheck" type="checkbox" />
+          Sertakan Custom Glossary
+        </label>
+        <div id="settingsCustomWrap" class="settings-nested-box">
+          <textarea id="settingsCustomInput" class="mono input-area small mb-2" placeholder="Contoh:&#10;Konnichiwa: Halo&#10;Arigatou: Terima kasih"></textarea>
+          <div class="flex-center">
+            <button id="btnSettingsCustomApply" class="btn btn-outline w-full" disabled>Terapkan</button>
+          </div>
+        </div>
+      </div>
       <div class="card-box mb-2 mt-3">
         <div class="flex-between mb-1">
           <div class="section-label-lg" style="margin: 0;">Pengaturan Tag EPUB</div>
@@ -164,11 +206,10 @@
         <p class="hint m-0 mt-1 mb-2">Tag HTML target untuk diekstrak (pisahkan dengan koma). Berlaku untuk impor EPUB.</p>
         <input id="settingsEpubTagsInput" class="text-input w-full" type="text" placeholder="p, h1, h2, h3" />
       </div>
-
       <div class="modal-actions mt-3">
         <span class="grow"></span>
         <button id="btnSettingsCancel" class="btn btn-outline">Batal</button>
-        <button id="btnSettingsSave" class="btn btn-primary">Simpan Pengaturan</button>
+        <button id="btnSettingsSave" class="btn btn-primary">Simpan Konfigurasi</button>
       </div>
     </div>
   </div>
@@ -237,31 +278,6 @@
       <div class="modal-actions">
         <span class="grow"></span>
         <button id="btnProofreadClose" class="btn btn-primary">Tutup</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="vndbModal" class="modal-backdrop" style="z-index: 80;">
-    <div class="modal">
-      <h3>Sinkronisasi VNDB</h3>
-      <p class="hint mb-2">Masukkan ID Visual Novel untuk mengambil database nama karakter.</p>
-      <div class="input-group mb-2">
-        <input id="vndbIdInput" type="text" class="text-input grow" placeholder="Contoh: v123456789" />
-        <button id="btnVndbFetch" class="btn btn-primary">Ambil Data</button>
-      </div>
-      <div id="vndbStatus" class="status-toast empty mb-2"></div>
-      <label class="section-label">Preview Nama</label>
-      <textarea id="vndbPreviewArea" class="mono input-area small mb-2" readonly></textarea>
-      <label class="section-label mt-2">Terapkan Pada</label>
-      <select id="vndbScope" class="text-input w-full mb-2">
-        <option value="all">All Text</option>
-        <option value="name">Name Only</option>
-        <option value="message">Message Only</option>
-      </select>
-      <div class="modal-actions mt-3">
-        <span class="grow"></span>
-        <button id="btnVndbCancel" class="btn btn-outline">Batal</button>
-        <button id="btnVndbApply" class="btn btn-success" disabled>Terapkan</button>
       </div>
     </div>
   </div>
