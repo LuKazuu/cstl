@@ -302,7 +302,7 @@ class AppController {
 
   static async createNewProject() {
     let nm = prompt("Nama project baru:"); if(!nm?.trim()) return; nm = nm.trim();
-    let id = "proj_"+Date.now()+CFG.EXT_PROJ, data = {version:CFG.APP_VER, projectName:nm, projectType:CFG.TYPE_UNINIT, epubTags:CFG.DEF_TAGS, epubSourceId:null, imported_files:[], lines:[], prompt_header:CFG.DEF_PROMPT, ignoreNameTranslation:CFG.DEF_IGNORE_NAME, promptEnabled:CFG.DEF_PROMPT_EN, contextEnabled:CFG.DEF_CTX_EN, contextSize:CFG.DEF_CTX_SIZE, vndbEnabled:CFG.DEF_VNDB_EN, vndbId:"", vndbGlossary:[], customEnabled:CFG.DEF_CUST_EN, customRaw:"", customGlossary:[]};
+    let id = "proj_"+Date.now()+CFG.EXT_PROJ, data = {version:CFG.APP_VER, projectName:nm, projectType:CFG.TYPE_UNINIT, epubTags:CFG.DEF_TAGS, epubSourceId:null, updatedAt:Date.now(), imported_files:[], lines:[], prompt_header:CFG.DEF_PROMPT, ignoreNameTranslation:CFG.DEF_IGNORE_NAME, promptEnabled:CFG.DEF_PROMPT_EN, contextEnabled:CFG.DEF_CTX_EN, contextSize:CFG.DEF_CTX_SIZE, vndbEnabled:CFG.DEF_VNDB_EN, vndbId:"", vndbGlossary:[], customEnabled:CFG.DEF_CUST_EN, customRaw:"", customGlossary:[]};
     await StorageManager.saveProject(id, data); AppController.openProject(id, data);
   }
 
@@ -446,12 +446,12 @@ class AppController {
         cd.querySelector(".btn-rename").addEventListener("click", async () => { let n = prompt("Nama baru:", p.name); if(n?.trim() && n!==p.name) { p.data.projectName = n.trim(); await StorageManager.saveProject(p.id, p.data); AppController.loadDashboard(); } });
         cd.querySelector(".btn-backup").addEventListener("click", async () => {
           try {
-            document.body.style.cursor = "wait"; let z = new window.JSZip(); z.file("metadata.json", JSON.stringify(p.data));
+            document.body.style.cursor = "wait"; let z = new window.JSZip(); z.file("metadata.json", JSON.stringify({version:p.data.version, projectName:p.data.projectName, projectType:p.data.projectType, epubTags:p.data.epubTags, epubSourceId:p.data.epubSourceId, updatedAt:p.data.updatedAt, imported_files:p.data.imported_files, prompt_header:p.data.prompt_header, ignoreNameTranslation:p.data.ignoreNameTranslation, promptEnabled:p.data.promptEnabled, contextEnabled:p.data.contextEnabled, contextSize:p.data.contextSize, vndbEnabled:p.data.vndbEnabled, vndbId:p.data.vndbId, vndbGlossary:p.data.vndbGlossary, customEnabled:p.data.customEnabled, customRaw:p.data.customRaw, customGlossary:p.data.customGlossary}));
             let oStr="", tStr="", nStr="";
             for(let f of (p.data.imported_files||[])) { oStr+=`>>> ${f} <<<\n`; tStr+=`>>> ${f} <<<\n`; nStr+=`>>> ${f} <<<\n`; p.data.lines.filter(l=>l.file===f).forEach(l=>{ oStr+=`${l.message||""}\n`; tStr+=`${l.trans_message||""}\n`; nStr+=((l.name||"")||(l.trans_name||"")) ? `${l.name||""} ||| ${l.trans_name||""}\n` : `\n`; }); }
             z.file("original.txt", oStr); z.file("translated.txt", tStr); z.file("names.txt", nStr);
             if(p.data.projectType==="epub" && p.data.epubSourceId) z.file(p.data.epubSourceId, await (await (await StorageManager.getRoot()).getFileHandle(p.data.epubSourceId)).getFile());
-            let u = URL.createObjectURL(await z.generateAsync({type:"blob", compression:"DEFLATE", compressionOptions:{level:9}})), a = UI.createDomNode("a", null, {href:u, download:`${p.name.replace(/[^\p{L}\p{N}_\-\.]/gu,'_')}_backup${CFG.EXT_PROJ}`}); a.click(); setTimeout(()=>URL.revokeObjectURL(u), CFG.DELAY_REVOKE);
+            let u = URL.createObjectURL(await z.generateAsync({type:"blob", mimeType:"application/octet-stream", compression:"DEFLATE", compressionOptions:{level:9}})), a = UI.createDomNode("a", null, {href:u, download:`${p.name.replace(/[^\p{L}\p{N}_\-\.]/gu,'_')}_backup${CFG.EXT_PROJ}`}); a.click(); setTimeout(()=>URL.revokeObjectURL(u), CFG.DELAY_REVOKE);
           } catch(e) { alert("Gagal backup: "+e.message); } finally { document.body.style.cursor = "default"; }
         });
         cd.querySelector(".btn-delete").addEventListener("click", async () => { if(confirm("Hapus permanen?")) { await StorageManager.removeProject(p.id, p.data.epubSourceId); AppController.loadDashboard(); } });
