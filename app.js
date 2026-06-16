@@ -1,5 +1,5 @@
 const CFG = {
-  APP_VER: 8,
+  APP_VER: 9,
   EXT_PROJ: ".cstl",
   TYPE_UNINIT: "uninitialized",
   API_VNDB: "https://api.vndb.org/kana/character",
@@ -20,7 +20,7 @@ const CFG = {
   DEF_CTX_EN: false,
   DEF_VNDB_EN: false,
   DEF_CUST_EN: false,
-  DEF_PROMPT: `Rewrite entire text to Native Indonesian. Do not change prefix number. Euphemism prohibited. Use of "Bahasa Jakarta Selatan" is prohibited. Put results inside plaintext block.`
+  DEF_PROMPT: `Rewrite entire text to Native Indonesian. Euphemism prohibited. Use of "Bahasa Jakarta Selatan" is prohibited. Output ONLY a valid JSON array of arrays. Format lines with names as [ID, "Name", "Message"] and lines without names as [ID, "Message"]. Do not include any conversational text.`
 };
 
 class UI {
@@ -503,37 +503,111 @@ class AppController {
   static selectRange() { let f=parseInt(UI.el.rangeFromInput.value), t=parseInt(UI.el.rangeToInput.value), m=AppState.lines.length?Math.max(...AppState.lines.map(l=>l.line_num)):0; if(isNaN(f)||isNaN(t)||f>t||f<1||f>m||t>m) return alert("Range tidak valid."); AppState.selectedLines.clear(); for(let i=f; i<=t; i++) { let l=AppState.lineByNum.get(i); if(l&&!AppState.isTranslated(l)) AppState.selectedLines.add(i); } AppController.syncCheckboxes(); let idx=AppState.displayRows.findIndex(r=>r.type==="line"&&r.line.line_num===f); if(idx!==-1) { AppController.mainScroller.scrollToIndex(idx); setTimeout(()=>{ let re=UI.el.previewContainer.querySelector(`input[data-num="${f}"]`)?.closest('.preview-row'); if(re) { let bg=re.style.backgroundColor; re.style.transition="background-color .3s ease"; re.style.backgroundColor="rgba(59, 130, 246, 0.4)"; setTimeout(()=>re.style.backgroundColor=bg,CFG.DELAY_HL); } },50); } }
 
   static async copyForAi() {
-    let out=[], sel=AppState.lines.filter(l=>AppState.selectedLines.has(l.line_num)); sel.forEach(l=>out.push(l.name?`${l.line_num}. ${l.name}: ${l.message}`:`${l.line_num}. ${l.message}`));
+    let out=[], sel=AppState.lines.filter(l=>AppState.selectedLines.has(l.line_num)); 
+    sel.forEach(l => {
+      if(l.name) out.push([l.line_num, l.name, l.message]);
+      else out.push([l.line_num, l.message]);
+    });
+    
     let p = AppState.aiPromptEnabled ? `${AppState.aiInstructionHeader.trim()}\n\n` : "";
     let uV = AppState.vndbEnabled && AppState.vndbGlossary?.length, uC = AppState.customEnabled && AppState.customGlossary?.length;
-    if(uV||uC) { p+=`<glossary>\n`; if(uV) AppState.vndbGlossary.forEach(g=>p+=`${g[0]}: ${g[1]}\n`); if(uC) AppState.customGlossary.forEach(g=>p+=`${g[0]}: ${g[1]}\n`); p+=`</glossary>\n\n`; }
-    if(AppState.contextEnabled && AppState.selectedLines.size) { let mn=Math.min(...Array.from(AppState.selectedLines)), cx=AppState.lines.filter(l=>l.line_num<mn && AppState.isTranslated(l)).sort((a,b)=>b.line_num-a.line_num).slice(0,AppState.contextSize).reverse(); if(cx.length) { p+=`<context>\n`; cx.forEach(l=>{let tn=l.trans_name||l.name; p+=tn?`${l.line_num}. ${tn}: ${l.trans_message}\n`:`${l.line_num}. ${l.trans_message}\n`;}); p+=`</context>\n\n`; } }
-    p += `${out.join("\n")}\n`;
-    try { await navigator.clipboard.writeText(p); UI.flashMessage(`Disalin ${sel.length} baris.`); } catch(e) { UI.el.pasteArea.value=p; alert("Clipboard diblokir. Teks dipindah ke kolom 'Paste hasil AI'."); }
+    if(uV||uC) { 
+      p+=`<glossary>\n`; 
+      if(uV) AppState.vndbGlossary.forEach(g=>p+=`${g[0]}: ${g[1]}\n`); 
+      if(uC) AppState.customGlossary.forEach(g=>p+=`${g[0]}: ${g[1]}\n`); 
+      p+=`</glossary>\n\n`; 
+    }
+    
+    if(AppState.contextEnabled && AppState.selectedLines.size) { 
+      let mn=Math.min(...Array.from(AppState.selectedLines)), cx=AppState.lines.filter(l=>l.line_num<mn && AppState.isTranslated(l)).sort((a,b)=>b.line_num-a.line_num).slice(0,AppState.contextSize).reverse(); 
+      if(cx.length) { 
+        let ctxArr = [];
+        cx.forEach(l => {
+          let tn = l.trans_name || l.name;
+          if(tn) ctxArr.push([l.line_num, tn, l.trans_message]);
+          else ctxArr.push([l.line_num, l.trans_message]);
+        });
+        p+=`<context>\n[\n  ${ctxArr.map(item => JSON.stringify(item)).join(",\n  ")}\n]\n</context>\n\n`; 
+      } 
+    }
+    
+    p += `[\n  ${out.map(item => JSON.stringify(item)).join(",\n  ")}\n]\n`;
+    
+    try { await navigator.clipboard.writeText(p); UI.flashMessage(`Disalin ${sel.length} baris.`); } 
+    catch(e) { UI.el.pasteArea.value=p; alert("Clipboard diblokir. Teks dipindah ke kolom 'Paste hasil AI'."); }
   }
 
   static applyTranslation() {
     if(!AppState.lines.length) return;
-    let rw=UI.el.pasteArea.value.split(/\r?\n/), ps=[], errs=[], sn=new Set();
-    rw.forEach((txt,i) => {
-      txt=txt.trim(); if(!txt) return; let m=txt.match(/^\s*(\d+)\s*[.)]\s*(.*)$/); if(!m) return errs.push(`[Baris ${i+1}] Format rusak -> "${txt.substring(0,25)}..."`);
-      let nm=Number(m[1]); if(sn.has(nm)) errs.push(`[Baris ${nm}] Duplikat.`); sn.add(nm);
-      let name=null, msg=m[2].trim(), rm=msg, c1=msg.indexOf(':'), c2=msg.indexOf('：'), si=Math.min(c1===-1?Infinity:c1, c2===-1?Infinity:c2);
-      if(si!==Infinity) { name=msg.substring(0,si).trim(); msg=msg.substring(si+1).trim(); } ps.push({num:nm, name, msg, rm});
+    
+    let rawTxt = UI.el.pasteArea.value.trim();
+    let startIdx = rawTxt.indexOf('[');
+    let endIdx = rawTxt.lastIndexOf(']');
+    
+    if(startIdx === -1 || endIdx === -1) return alert("Gagal: Format array JSON ([...]) tidak ditemukan.");
+    let jsonStr = rawTxt.substring(startIdx, endIdx + 1);
+    
+    let parsedData;
+    try { parsedData = JSON.parse(jsonStr); } 
+    catch(e) { return alert("Gagal membaca struktur JSON: " + e.message); }
+    
+    if(!Array.isArray(parsedData)) return alert("Gagal: Format utama bukan array.");
+    
+    let ps = [], errs = [], sn = new Set();
+    parsedData.forEach((item, i) => {
+      if(!Array.isArray(item)) return errs.push(`[Index ${i}] Bukan array.`);
+      if(item.length !== 2 && item.length !== 3) return errs.push(`[Index ${i}] Format salah (Harus 2 atau 3 elemen).`);
+      
+      let num = item[0];
+      if(typeof num !== 'number') return errs.push(`[Index ${i}] ID bukan angka.`);
+      if(sn.has(num)) return errs.push(`[Baris ${num}] Terdapat duplikat ID.`);
+      sn.add(num);
+      
+      let name = item.length === 3 ? item[1] : null;
+      let msg = item.length === 3 ? item[2] : item[1];
+      
+      if(name !== null && typeof name !== 'string') return errs.push(`[Baris ${num}] Nama bukan string.`);
+      if(typeof msg !== 'string') return errs.push(`[Baris ${num}] Pesan bukan string.`);
+      
+      ps.push({ num, name: name ? name.trim() : null, msg: msg.trim() });
     });
-    if(!ps.length && !errs.length) return alert("Kosong/tidak valid."); if(ps.length!==AppState.selectedLines.size) errs.push(`Jumlah tidak sesuai seleksi.`);
-    AppState.selectedLines.forEach(n=>{if(!sn.has(n)) errs.push(`[Baris ${n}] Hilang.`);}); sn.forEach(n=>{if(!AppState.selectedLines.has(n)) errs.push(`[Baris ${n}] Tidak dicentang.`);});
-    let upds=[];
+    
+    if(!ps.length && !errs.length) return alert("Data JSON kosong.");
+    if(ps.length !== AppState.selectedLines.size) errs.push(`Jumlah hasil (${ps.length}) tidak sesuai seleksi (${AppState.selectedLines.size}).`);
+    
+    AppState.selectedLines.forEach(n => { if(!sn.has(n)) errs.push(`[Baris ${n}] Terlewat / Hilang.`); });
+    sn.forEach(n => { if(!AppState.selectedLines.has(n)) errs.push(`[Baris ${n}] Tidak dicentang di awal.`); });
+    
+    let upds = [];
     ps.forEach(it => {
-      let l=AppState.lineByNum.get(it.num); if(!l) return errs.push(`[Baris ${it.num}] Tidak ada di JSON.`);
-      if(AppState.ignoreNameTranslation&&l.name) it.name=l.name;
-      let oN=!!(l.name||"").trim(), tN=!!(it.name||"").trim(); if(!oN&&tN){ it.msg=it.rm; it.name=null; tN=false; }
-      if(oN&&!tN) errs.push(`[Baris ${it.num}] Nama hilang.`); else if(!oN&&tN) errs.push(`[Baris ${it.num}] Tiba-tiba ada nama.`); else if(!it.msg) errs.push(`[Baris ${it.num}] Pesan kosong.`); else upds.push({l,it});
+      let l = AppState.lineByNum.get(it.num);
+      if(!l) return errs.push(`[Baris ${it.num}] Tidak ada di file project.`);
+      
+      if(AppState.ignoreNameTranslation && l.name) it.name = l.name;
+      
+      let oN = !!(l.name || "").trim(), tN = !!(it.name || "").trim();
+      if(oN && !tN) errs.push(`[Baris ${it.num}] Nama karakter hilang.`); 
+      else if(!oN && tN) errs.push(`[Baris ${it.num}] Tiba-tiba ada nama karakter.`); 
+      else if(!it.msg) errs.push(`[Baris ${it.num}] Pesan teks kosong.`); 
+      else upds.push({l, it});
     });
-    if(errs.length) return alert("DITOLAK:\n"+errs.slice(0,10).join("\n")+(errs.length>10?`\n... (+${errs.length-10} lain)`:""));
-    AppState.undoSnapshot={lines:JSON.parse(JSON.stringify(AppState.lines)), selected:new Set(AppState.selectedLines)}; AppState.redoSnapshot=null;
-    upds.forEach(({l,it}) => { l.trans_message=it.msg; l.is_translated=true; if(it.name) l.trans_name=AppState.ignoreNameTranslation?null:it.name; AppState.selectedLines.delete(l.line_num); });
-    UI.el.pasteArea.value=""; AppController.refreshWorkspace(); AppState.queueAutoSave(); UI.flashMessage(`${upds.length} baris sukses.`);
+    
+    if(errs.length) return alert("DITOLAK:\n" + errs.slice(0, 10).join("\n") + (errs.length > 10 ? `\n... (+${errs.length - 10} lain)` : ""));
+    
+    AppState.undoSnapshot = {lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines)}; 
+    AppState.redoSnapshot = null;
+    
+    upds.forEach(({l, it}) => { 
+      l.trans_message = it.msg; 
+      l.is_translated = true; 
+      if(it.name) l.trans_name = AppState.ignoreNameTranslation ? null : it.name; 
+      AppState.selectedLines.delete(l.line_num); 
+    });
+    
+    UI.el.pasteArea.value = ""; 
+    AppController.refreshWorkspace(); 
+    AppState.queueAutoSave(); 
+    UI.flashMessage(`${upds.length} baris sukses diterapkan.`);
   }
 
   static undoTranslation() { if(!AppState.undoSnapshot) return; AppState.redoSnapshot={lines:JSON.parse(JSON.stringify(AppState.lines)), selected:new Set(AppState.selectedLines)}; AppState.lines=AppState.undoSnapshot.lines.map(AppState.normalizeLine); AppState.selectedLines=new Set(AppState.undoSnapshot.selected); AppState.undoSnapshot=null; AppController.refreshWorkspace(); AppState.queueAutoSave(); }
