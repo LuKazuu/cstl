@@ -1,56 +1,140 @@
 <!doctype html>
 <html lang="id">
 <head>
-  <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-  <meta name="theme-color" content="#0f172a"/><title>Copas Tool</title>
-  <link rel="manifest" href="./manifest.json"/><link rel="icon" type="image/svg+xml" href="./icon.svg"/><link rel="apple-touch-icon" href="./icon.svg"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0e1a" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="Copas Tool — alat bantu terjemahan modern." />
+  <title>Copas Tool</title>
+
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+  <link rel="apple-touch-icon" href="./icon.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="./styles.css" />
+
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script defer src="./app.js"></script>
 </head>
 <body>
   <div id="dashboardView" class="dashboard-shell open">
+    <div class="dashboard-aurora" aria-hidden="true">
+      <span class="aurora-blob aurora-1"></span>
+      <span class="aurora-blob aurora-2"></span>
+    </div>
+
     <header class="dashboard-hero">
-      <div class="hero-left"><div class="hero-title-wrap"><h1 class="hero-title">Copas Tool</h1><span class="hero-badge">v9</span></div></div>
-      <div class="actions"><button id="btnNewProject" class="btn btn-primary">Buat Project</button><button id="btnRestoreProject" class="btn btn-outline">Pulihkan Project</button></div>
-    </header>
-    <main class="dashboard-content"><div class="section-label section-label-lg">Project Tersimpan</div><div id="projectList" class="project-grid"></div></main>
-  </div>
-  
-  <div id="workspaceView" class="app-shell" style="display:none;">
-    <header class="toolbar">
-      <button id="btnBackToDashboard" class="btn btn-outline"><- Dashboard</button><span class="toolbar-sep"></span>
-      <div id="dynamicToolbarWrap" class="toolbar-dynamic-wrap">
-        <div id="actionButtons" class="toolbar-actions">
-          <div class="dropdown" id="importGroup"><button id="btnImportMain" class="btn">Impor</button><div id="importDropdown" class="dropdown-content"><button id="btnImportFile" class="dropdown-item">Impor File(s)</button><button id="btnImportFolder" class="dropdown-item">Impor Folder</button><button id="btnImportZip" class="dropdown-item">Impor ZIP</button></div></div>
-          <button id="btnExport" class="btn" disabled>Ekspor</button><button id="btnProofread" class="btn" disabled>Cari</button><button id="btnGlossary" class="btn">Glossary</button><button id="btnSettings" class="btn">Pengaturan</button>
+      <div class="hero-left">
+        <div class="hero-title-wrap">
+          <h1 class="hero-title">Copas Tool</h1>
+          <span class="hero-badge">v10</span>
         </div>
       </div>
-      <div class="dropdown" id="moreGroup" style="display:none;"><button id="btnMore" class="btn">...</button><div id="moreDropdown" class="dropdown-content dropdown-right"></div></div>
-      <span class="toolbar-sep desktop-only" style="margin-left:8px;"></span><span id="projectNameDisplay" class="toolbar-label toolbar-project-name desktop-only">Project Aktif</span>
+      <div class="actions">
+        <button id="btnNewProject" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          Buat Project
+        </button>
+        <button id="btnRestoreProject" class="btn btn-outline">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
+          Pulihkan Project
+        </button>
+      </div>
+    </header>
+
+    <main class="dashboard-content">
+      <div class="section-label section-label-lg">Project Tersimpan</div>
+      <div id="projectList" class="project-grid"></div>
+    </main>
+  </div>
+
+  <div id="workspaceView" class="app-shell" style="display:none;">
+    <header class="toolbar">
+      <button id="btnBackToDashboard" class="btn btn-outline btn-icon" aria-label="Kembali ke Dashboard">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        <span class="btn-text">Dashboard</span>
+      </button>
+      <span class="toolbar-sep desktop-only"></span>
+      <div id="dynamicToolbarWrap" class="toolbar-dynamic-wrap">
+        <div id="actionButtons" class="toolbar-actions">
+          <div class="dropdown" id="importGroup">
+            <button id="btnImportMain" class="btn">Impor</button>
+            <div id="importDropdown" class="dropdown-content">
+              <button id="btnImportFile" class="dropdown-item">Impor File(s)</button>
+              <button id="btnImportFolder" class="dropdown-item">Impor Folder</button>
+              <button id="btnImportZip" class="dropdown-item">Impor ZIP</button>
+            </div>
+          </div>
+          <button id="btnExport" class="btn" disabled>Ekspor</button>
+          <button id="btnProofread" class="btn" disabled>Cari</button>
+          <button id="btnGlossary" class="btn">Glossary</button>
+          <button id="btnSettings" class="btn">Pengaturan</button>
+        </div>
+      </div>
+      <div class="dropdown" id="moreGroup" style="display:none;">
+        <button id="btnMore" class="btn btn-icon" aria-label="Menu lainnya">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <div id="moreDropdown" class="dropdown-content dropdown-right"></div>
+      </div>
+      <span class="toolbar-sep desktop-only" style="margin-left:8px;"></span>
+      <span id="projectNameDisplay" class="toolbar-label toolbar-project-name desktop-only">Project Aktif</span>
     </header>
     <main class="split-layout">
       <section class="panel panel-left">
-        <div class="panel-header"><h2 class="panel-title">Teks</h2><div class="progress-wrap"><div class="progress-track"><div id="progressFill" class="progress-fill"></div></div><span id="progressText" class="mono">0/0</span></div></div>
-        <div id="previewViewport" class="preview-viewport"><div id="previewContainer" class="preview-container"></div></div>
+        <div class="panel-header">
+          <h2 class="panel-title">Teks</h2>
+          <div class="progress-wrap">
+            <div class="progress-track">
+              <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <span id="progressText" class="mono">0/0</span>
+          </div>
+        </div>
+        <div id="previewViewport" class="preview-viewport">
+          <div id="previewContainer" class="preview-container"></div>
+        </div>
       </section>
       <section class="panel panel-right">
         <h2 class="panel-title">Alat</h2>
         <div class="card-box mb-2">
           <label class="section-label mt-0">Pilih Berdasarkan Baris</label>
-          <div class="flex-center gap-4 mb-2 wrap"><input id="rangeFromInput" type="number" class="text-input grow" placeholder="Dari baris..." min="1" disabled /><span class="text-muted">-</span><input id="rangeToInput" type="number" class="text-input grow" placeholder="Sampai baris..." min="1" disabled /><button id="btnSelectRange" class="btn btn-outline" disabled>Centang</button></div>
-          <div class="flex-center gap-4 mb-2 wrap"><button id="btnSelectAll" class="btn btn-outline grow" disabled>Pilih Semua</button><button id="btnClearSelection" class="btn btn-outline grow" disabled>Hapus Pilihan</button></div>
-          <button id="btnCopyForAi" class="btn btn-primary w-full" disabled>Copy <span id="copyCount">0</span> Baris</button>
+          <div class="flex-center gap-4 mb-2 wrap">
+            <input id="rangeFromInput" type="number" class="text-input grow" placeholder="Dari baris..." min="1" disabled />
+            <span class="text-muted">-</span>
+            <input id="rangeToInput" type="number" class="text-input grow" placeholder="Sampai baris..." min="1" disabled />
+            <button id="btnSelectRange" class="btn btn-outline" disabled>Centang</button>
+          </div>
+          <div class="flex-center gap-4 mb-2 wrap">
+            <button id="btnSelectAll" class="btn btn-outline grow" disabled>Pilih Semua</button>
+            <button id="btnClearSelection" class="btn btn-outline grow" disabled>Hapus Pilihan</button>
+          </div>
+          <button id="btnCopyForAi" class="btn btn-primary w-full" disabled>Copy</button>
         </div>
         <div id="copyStatus" class="status-toast empty"></div>
-        <label class="section-label" for="pasteArea">Hasil Teks</label><textarea id="pasteArea" class="mono input-area" placeholder="Paste hasil dari AI di sini..." disabled></textarea>
-        <div class="inline-actions"><button id="btnUndo" class="btn btn-danger" disabled>Undo</button><button id="btnApply" class="btn btn-success grow" disabled>Terapkan Terjemahan</button><button id="btnRedo" class="btn btn-danger" disabled>Redo</button></div>
+        <label class="section-label" for="pasteArea">Hasil Teks</label>
+        <textarea id="pasteArea" class="mono input-area" placeholder="Paste hasil dari AI di sini..." disabled></textarea>
+        <div class="inline-actions">
+          <button id="btnUndo" class="btn btn-danger" disabled>Undo</button>
+          <button id="btnApply" class="btn btn-success grow" disabled>Terapkan Terjemahan</button>
+          <button id="btnRedo" class="btn btn-danger" disabled>Redo</button>
+        </div>
         <div class="card-box mt-3 mb-2">
-          <div class="flex-between mb-2"><div class="section-label" style="margin:0;">Daftar Nama (<span id="nameTotalCount">0</span>)</div><button id="btnCopyAllNames" class="btn btn-outline btn-xs" disabled>Copy All</button></div>
+          <div class="flex-between mb-2">
+            <div class="section-label" style="margin:0;">Daftar Nama (<span id="nameTotalCount">0</span>)</div>
+            <button id="btnCopyAllNames" class="btn btn-outline btn-xs" disabled>Copy All</button>
+          </div>
           <p class="hint mb-2 hint-tight">Klik pada baris nama untuk langsung menyalin teks ke clipboard.</p>
-          <div class="name-table-wrap"><table class="name-table"><tbody id="nameTableBody"></tbody></table></div>
+          <div class="name-table-wrap">
+            <table class="name-table">
+              <tbody id="nameTableBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
     </main>
@@ -62,39 +146,187 @@
   <input id="importZipInput" type="file" accept=".zip" hidden />
   <input id="restoreProjectInput" type="file" accept=".cstl" hidden />
 
-  <div id="settingsModal" class="modal-backdrop"><div class="modal modal-wide">
-    <h3>Pengaturan</h3>
-    <div class="card-box mb-2 mt-2">
-      <div class="flex-between mb-2"><div class="section-label-lg" style="margin:0;">Pengaturan Dasar</div><button id="btnSettingsDasarReset" class="btn btn-outline btn-xs">Reset Default</button></div>
-      <div class="flex-col gap-12"><label class="checkbox-line text-white"><input id="settingsIgnoreNameCheck" type="checkbox"/>Abaikan Terjemahan Nama</label><label class="checkbox-line text-white"><input id="settingsPromptCheck" type="checkbox"/>Sertakan Prompt AI</label><label class="checkbox-line text-white"><input id="settingsContextCheck" type="checkbox"/>Sertakan Konteks Terjemahan</label>
-        <div id="settingsContextWrap" class="settings-nested-box"><p class="hint m-0 mb-1">Jumlah baris konteks</p><div class="flex gap-10"><input id="settingsContextInput" type="number" class="text-input grow" placeholder="5" min="1" /><button id="btnSettingsContextApply" class="btn btn-outline" style="padding:0 16px;font-weight:bold;font-size:15px;" disabled>✓</button></div></div>
+  <div id="settingsModal" class="modal-backdrop">
+    <div class="modal modal-wide" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Pengaturan</h3>
+      </div>
+      <div class="modal-body">
+        <div class="card-box mb-2 mt-2">
+          <div class="flex-between mb-2">
+            <div class="section-label-lg" style="margin:0;">Pengaturan Dasar</div>
+            <button id="btnSettingsDasarReset" class="btn btn-outline btn-xs">Reset Default</button>
+          </div>
+          <div class="flex-col gap-12">
+            <label class="checkbox-line text-white">
+              <input id="settingsIgnoreNameCheck" type="checkbox" />Abaikan Terjemahan Nama
+            </label>
+            <label class="checkbox-line text-white">
+              <input id="settingsPromptCheck" type="checkbox" />Sertakan Prompt AI
+            </label>
+            <label class="checkbox-line text-white">
+              <input id="settingsJumpToContextCheck" type="checkbox" />Lompat ke Konteks Pencarian
+            </label>
+            <label class="checkbox-line text-white">
+              <input id="settingsReferenceCheck" type="checkbox" />Sertakan Referensi
+            </label>
+          </div>
+        </div>
+        <div class="card-box mb-2 mt-3">
+          <div class="flex-between mb-1">
+            <div class="section-label-lg" style="margin:0;">Pengaturan Prompt AI</div>
+            <button id="btnSettingsPromptReset" class="btn btn-outline btn-xs">Reset Default</button>
+          </div>
+          <p class="hint m-0 mt-1">Teks instruksi otomatis ditambahkan saat menyalin teks.</p>
+          <textarea id="settingsPromptInput" class="mono input-area mt-2"></textarea>
+        </div>
+        <div class="card-box mb-2 mt-3">
+          <div class="flex-between mb-1">
+            <div class="section-label-lg" style="margin:0;">Pengaturan Tag EPUB</div>
+            <button id="btnSettingsEpubReset" class="btn btn-outline btn-xs">Reset Default</button>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">Digunakan untuk mengekstrak teks dari EPUB (pisahkan dengan koma).</p>
+          <input id="settingsEpubTagsInput" class="text-input w-full" type="text" placeholder="p, h1, h2, h3" />
+        </div>
+      </div>
+      <div class="modal-actions mt-3">
+        <span class="grow"></span>
+        <button id="btnSettingsCancel" class="btn btn-outline">Batal</button>
+        <button id="btnSettingsSave" class="btn btn-primary">Simpan Pengaturan</button>
       </div>
     </div>
-    <div class="card-box mb-2 mt-3"><div class="flex-between mb-1"><div class="section-label-lg" style="margin:0;">Pengaturan Prompt AI</div><button id="btnSettingsPromptReset" class="btn btn-outline btn-xs">Reset Default</button></div><p class="hint m-0 mt-1">Teks instruksi otomatis ditambahkan saat menyalin teks.</p><textarea id="settingsPromptInput" class="mono input-area mt-2"></textarea></div>
-    <div class="card-box mb-2 mt-3"><div class="flex-between mb-1"><div class="section-label-lg" style="margin:0;">Pengaturan Tag EPUB</div><button id="btnSettingsEpubReset" class="btn btn-outline btn-xs">Reset Default</button></div><p class="hint m-0 mt-1 mb-2">Digunakan untuk mengekstrak teks dari EPUB (pisahkan dengan koma).</p><input id="settingsEpubTagsInput" class="text-input w-full" type="text" placeholder="p, h1, h2, h3" /></div>
-    <div class="modal-actions mt-3"><span class="grow"></span><button id="btnSettingsCancel" class="btn btn-outline">Batal</button><button id="btnSettingsSave" class="btn btn-primary">Simpan Pengaturan</button></div>
-  </div></div>
+  </div>
 
-  <div id="glossaryModal" class="modal-backdrop"><div class="modal modal-wide">
-    <h3>Glossary</h3>
-    <div class="card-box mb-2 mt-2"><div class="flex-between mb-1"><div class="section-label-lg" style="margin:0;">VNDB Glossary</div><button id="btnGlossaryVndbReset" class="btn btn-outline btn-xs">Reset Default</button></div><p class="hint m-0 mt-1 mb-2">Menambahkan glossary nama dari VNDB pada saat menyalin teks.</p><label class="checkbox-line text-white mb-2"><input id="glossaryVndbCheck" type="checkbox"/>Sertakan Glossary</label><div id="glossaryVndbWrap" class="settings-nested-box"><div class="input-group mb-2"><input id="glossaryVndbIdInput" type="text" class="text-input grow" placeholder="ID VN (Contoh: v1234)" /><button id="btnGlossaryVndbFetch" class="btn btn-outline">Ambil</button></div><div id="glossaryVndbStatus" class="status-toast empty mb-2"></div><textarea id="glossaryVndbPreviewArea" class="mono input-area small" readonly placeholder="Pratinjau glossary..."></textarea></div></div>
-    <div class="card-box mb-2 mt-3"><div class="flex-between mb-1"><div class="section-label-lg" style="margin:0;">Custom Glossary</div><button id="btnGlossaryCustomReset" class="btn btn-outline btn-xs">Reset Default</button></div><p class="hint m-0 mt-1 mb-2">Tambahkan custom glossary dengan format "Teks: Teks" per baris.</p><label class="checkbox-line text-white mb-2"><input id="glossaryCustomCheck" type="checkbox"/>Sertakan Custom Glossary</label><div id="glossaryCustomWrap" class="settings-nested-box"><textarea id="glossaryCustomInput" class="mono input-area small mb-2" placeholder="Contoh:&#10;Konnichiwa: Halo&#10;Arigatou: Terima kasih"></textarea><div class="flex-center"><button id="btnGlossaryCustomApply" class="btn btn-outline w-full" disabled>Terapkan</button></div></div></div>
-    <div class="modal-actions mt-3"><span class="grow"></span><button id="btnGlossaryCancel" class="btn btn-outline">Batal</button><button id="btnGlossarySave" class="btn btn-primary">Simpan Glossary</button></div>
-  </div></div>
+  <div id="glossaryModal" class="modal-backdrop">
+    <div class="modal modal-wide" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Glossary</h3>
+      </div>
+      <div class="modal-body">
+        <div class="card-box mb-2 mt-2">
+          <div class="flex-between mb-1">
+            <div class="section-label-lg" style="margin:0;">VNDB Glossary</div>
+            <button id="btnGlossaryVndbReset" class="btn btn-outline btn-xs">Reset Default</button>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">Menambahkan glossary nama dari VNDB pada saat menyalin teks.</p>
+          <label class="checkbox-line text-white mb-2">
+            <input id="glossaryVndbCheck" type="checkbox" />Sertakan Glossary
+          </label>
+          <div id="glossaryVndbWrap" class="settings-nested-box">
+            <div class="input-group mb-2">
+              <input id="glossaryVndbIdInput" type="text" class="text-input grow" placeholder="ID VN (Contoh: v1234)" />
+              <button id="btnGlossaryVndbFetch" class="btn btn-outline">Ambil</button>
+            </div>
+            <div id="glossaryVndbStatus" class="status-toast empty mb-2"></div>
+            <textarea id="glossaryVndbPreviewArea" class="mono input-area small" readonly placeholder="Pratinjau glossary..."></textarea>
+          </div>
+        </div>
+        <div class="card-box mb-2 mt-3">
+          <div class="flex-between mb-1">
+            <div class="section-label-lg" style="margin:0;">Custom Glossary</div>
+            <button id="btnGlossaryCustomReset" class="btn btn-outline btn-xs">Reset Default</button>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">Tambahkan custom glossary dengan format "Teks: Teks" per baris.</p>
+          <label class="checkbox-line text-white mb-2">
+            <input id="glossaryCustomCheck" type="checkbox" />Sertakan Custom Glossary
+          </label>
+          <div id="glossaryCustomWrap" class="settings-nested-box">
+            <textarea id="glossaryCustomInput" class="mono input-area small mb-2" placeholder="Contoh:&#10;Konnichiwa: Halo&#10;Arigatou: Terima kasih"></textarea>
+            <div class="flex-center">
+              <button id="btnGlossaryCustomApply" class="btn btn-outline w-full" disabled>Terapkan</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions mt-3">
+        <span class="grow"></span>
+        <button id="btnGlossaryCancel" class="btn btn-outline">Batal</button>
+        <button id="btnGlossarySave" class="btn btn-primary">Simpan Glossary</button>
+      </div>
+    </div>
+  </div>
 
-  <div id="lineEditorModal" class="modal-backdrop"><div class="modal modal-wide">
-    <h3 id="lineEditorTitle">Edit Terjemahan</h3><label class="section-label">Teks Asli</label><textarea id="lineOriginalView" class="mono input-area small" readonly></textarea><div id="lineNameWrap"><label class="section-label mt-2">Nama Karakter</label><input id="lineNameInput" class="mono text-input w-full" type="text" /></div><label class="section-label mt-2">Terjemahan</label><textarea id="lineMessageInput" class="mono input-area"></textarea><label class="checkbox-line mt-2"><input id="lineTranslatedCheck" type="checkbox"/>Tandai sebagai sudah diterjemahkan</label>
-    <div class="modal-actions"><span class="grow"></span><button id="btnLineCancel" class="btn btn-outline">Batal</button><button id="btnLineSave" class="btn btn-primary">Simpan Perubahan</button></div>
-  </div></div>
+  <div id="lineEditorModal" class="modal-backdrop">
+    <div class="modal modal-wide" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3 id="lineEditorTitle">Edit Terjemahan</h3>
+      </div>
+      <div class="modal-body">
+        <label class="section-label">Teks Asli</label>
+        <textarea id="lineOriginalView" class="mono input-area small" readonly></textarea>
+        <div id="lineNameWrap">
+          <label class="section-label mt-2">Nama Karakter</label>
+          <input id="lineNameInput" class="mono text-input w-full" type="text" />
+        </div>
+        <label class="section-label mt-2">Terjemahan</label>
+        <textarea id="lineMessageInput" class="mono input-area"></textarea>
+        <label class="checkbox-line mt-2">
+          <input id="lineTranslatedCheck" type="checkbox" />Tandai sebagai sudah diterjemahkan
+        </label>
+      </div>
+      <div class="modal-actions">
+        <span class="grow"></span>
+        <button id="btnLineCancel" class="btn btn-outline">Batal</button>
+        <button id="btnLineSave" class="btn btn-primary">Simpan Perubahan</button>
+      </div>
+    </div>
+  </div>
 
-  <div id="proofreadModal" class="modal-backdrop"><div class="modal modal-xl">
-    <h3>Cari & Replace</h3>
-    <div class="card-box mb-2"><div class="flex-col gap-10"><label for="proofreadSearchInput" class="label-bold">Cari:</label><div class="flex gap-12 wrap"><input id="proofreadSearchInput" class="mono text-input grow min-w-200" type="text" placeholder="Ketik kata atau pola regex..." /><div class="proofread-filters flex-center gap-12 wrap"><select id="proofreadScope" class="text-input select-sm"><option value="all">All Text</option><option value="name">Name Only</option><option value="message">Message Only</option></select><label class="checkbox-line"><input id="proofreadRegexCheck" type="checkbox"/>Regex</label><label class="checkbox-line"><input id="proofreadCaseCheck" type="checkbox"/>Case Sensitive</label><label class="checkbox-line"><input id="proofreadExactCheck" type="checkbox"/>Exact Match</label><label class="checkbox-line"><input id="proofreadTranslatedOnlyCheck" type="checkbox" checked />Translated Only</label></div></div><div class="flex-center mt-1"><button id="btnProofreadReset" class="btn btn-outline">Reset</button></div></div></div>
-    <div class="card-box mb-2"><div class="flex-col gap-14"><label for="proofreadReplaceInput" class="label-bold">Ganti dengan:</label><input id="proofreadReplaceInput" class="mono text-input w-full" type="text" placeholder="Teks pengganti untuk Replace All..." /><div class="flex-center"><button id="btnProofreadReplaceAll" class="btn btn-success btn-px-lg">Replace All</button></div></div></div>
-    <p id="proofreadStatus" class="hint mt-2"></p><div class="proofread-results-wrap mt-2"><div id="proofreadContainer" class="preview-container"></div></div>
-    <div class="modal-actions"><span class="grow"></span><button id="btnProofreadClose" class="btn btn-primary">Tutup</button></div>
-  </div></div>
+  <div id="proofreadModal" class="modal-backdrop">
+    <div class="modal modal-xl" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Cari &amp; Replace</h3>
+      </div>
+      <div class="modal-body">
+        <div class="card-box mb-2">
+          <div class="flex-col gap-10">
+            <label for="proofreadSearchInput" class="label-bold">Cari:</label>
+            <div class="flex gap-12 wrap">
+              <input id="proofreadSearchInput" class="mono text-input grow min-w-200" type="text" placeholder="Ketik kata atau pola regex..." />
+              <div class="proofread-filters flex-center gap-12 wrap">
+                <select id="proofreadScope" class="text-input select-sm">
+                  <option value="all">All Text</option>
+                  <option value="name">Name Only</option>
+                  <option value="message">Message Only</option>
+                </select>
+                <label class="checkbox-line"><input id="proofreadRegexCheck" type="checkbox" />Regex</label>
+                <label class="checkbox-line"><input id="proofreadCaseCheck" type="checkbox" />Case Sensitive</label>
+                <label class="checkbox-line"><input id="proofreadExactCheck" type="checkbox" />Exact Match</label>
+                <label class="checkbox-line"><input id="proofreadTranslatedOnlyCheck" type="checkbox" checked />Translated Only</label>
+              </div>
+            </div>
+            <div class="flex-center mt-1">
+              <button id="btnProofreadReset" class="btn btn-outline">Reset</button>
+            </div>
+          </div>
+        </div>
+        <div class="card-box mb-2">
+          <div class="flex-col gap-14">
+            <label for="proofreadReplaceInput" class="label-bold">Ganti dengan:</label>
+            <input id="proofreadReplaceInput" class="mono text-input w-full" type="text" placeholder="Teks pengganti untuk Replace All..." />
+            <div class="flex-center">
+              <button id="btnProofreadReplaceAll" class="btn btn-success btn-px-lg">Replace All</button>
+            </div>
+          </div>
+        </div>
+        <p id="proofreadStatus" class="hint mt-2"></p>
+        <div class="proofread-results-wrap mt-2">
+          <div id="proofreadContainer" class="preview-container"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <span class="grow"></span>
+        <button id="btnProofreadClose" class="btn btn-primary">Tutup</button>
+      </div>
+    </div>
+  </div>
 
-  <script>if('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));</script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+      });
+    }
+  </script>
 </body>
 </html>
