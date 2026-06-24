@@ -1,4 +1,4 @@
-const DEFAULT_PROMPT = `Rewrite entire text to Native Indonesian. Euphemism prohibited. Use of "Bahasa Jakarta Selatan" is prohibited. Format: <ID n="Name">Message</ID>. Example: <1 n="Shiro">Hello</1> or <2>Message without name</2>. Output ONLY valid tags without markdown or conversational text.`;
+const DEFAULT_PROMPT = `Rewrite entire text to Native Indonesian. Euphemism prohibited. Onomatopoeia must be in English-based. Bahasa Jakarta Selatan is prohibited. Format: <ID n="Name">Message</ID> or <2>Message without name</2>.`;
 
 class Utils {
   static escapeHtml(text) {
@@ -342,19 +342,16 @@ class VirtualScroller {
       this.containerElement.appendChild(newElement);
     }
 
-    // Step 1: Update content for visible rows (writes to textContent / className).
     for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
       let dataIndex = startIndex + elementIndex;
       this.updateRowFunction(this.domElementsArray[elementIndex], this.itemsArray[dataIndex], dataIndex);
     }
 
-    // Step 2: Measure all heights in a single batched read (forces one reflow).
     let measuredHeights = new Array(requiredElements);
     for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
       measuredHeights[elementIndex] = this.domElementsArray[elementIndex].offsetHeight;
     }
 
-    // Step 3: Update stored heights if changed.
     let heightsChanged = false;
     let scrollAdjustment = 0;
     for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
@@ -370,7 +367,6 @@ class VirtualScroller {
       }
     }
 
-    // Step 4: Recompute positions if any heights changed.
     if (heightsChanged) {
       this.updatePositions();
       if (scrollAdjustment !== 0) {
@@ -379,13 +375,11 @@ class VirtualScroller {
       }
     }
 
-    // Step 5: Apply all transforms in a batch (single layout write phase).
     for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
       let dataIndex = startIndex + elementIndex;
       this.domElementsArray[elementIndex].style.transform = `translateY(${this.rowPositions[dataIndex]}px)`;
     }
 
-    // Step 6: Hide unused rows (batch write).
     for (let elementIndex = requiredElements; elementIndex < this.domElementsArray.length; elementIndex++) {
       this.domElementsArray[elementIndex].style.transform = 'translateY(-9999px)';
     }
