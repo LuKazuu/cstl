@@ -145,6 +145,7 @@ class AppState {
   static customRaw = "";
   static customGlossary = [];
   static jumpToContext = false;
+  static hideTools = false;
   static proofreadScope = "all";
   static proofreadRegex = false;
   static proofreadCaseSensitive = false;
@@ -181,6 +182,7 @@ class AppState {
       customRaw: AppState.customRaw,
       customGlossary: AppState.customGlossary,
       jumpToContext: AppState.jumpToContext,
+      hideTools: AppState.hideTools,
       proofreadScope: AppState.proofreadScope,
       proofreadRegex: AppState.proofreadRegex,
       proofreadCaseSensitive: AppState.proofreadCaseSensitive,
@@ -781,7 +783,8 @@ class AppController {
       customEnabled: false,
       customRaw: "",
       customGlossary: [],
-      jumpToContext: false
+      jumpToContext: false,
+      hideTools: false
     };
 
     await StorageManager.saveProjectData(newProjectId, newProjectData);
@@ -928,6 +931,7 @@ class AppController {
       UI.elements.settingsPromptCheck.checked = AppState.aiPromptEnabled;
       UI.elements.settingsReferenceCheck.checked = AppState.referenceEnabled;
       UI.elements.settingsJumpToContextCheck.checked = AppState.jumpToContext;
+      UI.elements.settingsHideToolsCheck.checked = AppState.hideTools;
       UI.elements.settingsPromptInput.value = AppState.aiInstructionHeader;
       UI.elements.settingsEpubTagsInput.value = AppState.epubTags || "p";
       UI.toggleModalVisibility(UI.elements.settingsModal, true);
@@ -938,6 +942,7 @@ class AppController {
       UI.elements.settingsPromptCheck.checked = true;
       UI.elements.settingsReferenceCheck.checked = false;
       UI.elements.settingsJumpToContextCheck.checked = false;
+      UI.elements.settingsHideToolsCheck.checked = false;
     });
 
     UI.elements.btnSettingsPromptReset.addEventListener("click", () => {
@@ -954,8 +959,10 @@ class AppController {
       AppState.aiPromptEnabled = UI.elements.settingsPromptCheck.checked;
       AppState.referenceEnabled = UI.elements.settingsReferenceCheck.checked;
       AppState.jumpToContext = UI.elements.settingsJumpToContextCheck.checked;
+      AppState.hideTools = UI.elements.settingsHideToolsCheck.checked;
       AppState.aiInstructionHeader = UI.elements.settingsPromptInput.value.trim();
       AppState.epubTags = UI.elements.settingsEpubTagsInput.value.trim() || "p";
+      AppController.applyHideTools();
       UI.toggleModalVisibility(UI.elements.settingsModal, false);
       AppState.queueAutoSave();
     });
@@ -1212,13 +1219,15 @@ class AppController {
 
   static async loadDashboard() {
     UI.elements.projectList.innerHTML = "";
+    const dashboardContent = UI.elements.projectList.parentElement;
     try {
       let savedProjects = await StorageManager.fetchAllProjects();
       if (!savedProjects.length) {
+        dashboardContent.classList.add("is-empty");
         UI.elements.projectList.innerHTML = `<p class="hint" style="grid-column:1/-1;">Belum ada Project. Buat atau Pulihkan!</p>`;
         return;
       }
-      
+      dashboardContent.classList.remove("is-empty");
       savedProjects.forEach(savedProject => {
         let projectCard = UI.createDomNode("div", "project-card");
         let projectBadgeHtml = savedProject.fileCount || savedProject.lineCount ? (savedProject.data.projectType === 'epub' ? `<span class="badge badge-epub">EPUB</span>` : (savedProject.data.projectType === 'json' ? `<span class="badge badge-json">JSON-VNTP</span>` : '')) : '';
@@ -1234,8 +1243,8 @@ class AppController {
           </div>
           <div class="project-actions">
             <button class="btn btn-primary btn-sm btn-open">Buka</button>
-            <button class="btn btn-outline btn-sm btn-backup">Backup</button>
             <button class="btn btn-outline btn-sm btn-rename">Ubah</button>
+            <button class="btn btn-outline btn-sm btn-backup">Backup</button>
             <button class="btn btn-danger btn-sm btn-delete">Hapus</button>
           </div>
         `;
@@ -1366,7 +1375,8 @@ class AppController {
         customEnabled: metadataJson.customEnabled ?? false,
         customRaw: metadataJson.customRaw || "",
         customGlossary: metadataJson.customGlossary || [],
-        jumpToContext: metadataJson.jumpToContext ?? false
+        jumpToContext: metadataJson.jumpToContext ?? false,
+        hideTools: metadataJson.hideTools ?? false
       });
       
       await AppController.loadDashboard();
@@ -1398,6 +1408,7 @@ class AppController {
     AppState.customRaw = targetProjectData.customRaw || "";
     AppState.customGlossary = targetProjectData.customGlossary || [];
     AppState.jumpToContext = targetProjectData.jumpToContext ?? false;
+    AppState.hideTools = targetProjectData.hideTools ?? false;
     AppState.proofreadScope = targetProjectData.proofreadScope || "all";
     AppState.proofreadRegex = targetProjectData.proofreadRegex ?? false;
     AppState.proofreadCaseSensitive = targetProjectData.proofreadCaseSensitive ?? false;
@@ -1410,9 +1421,19 @@ class AppController {
     UI.elements.projectNameDisplay.textContent = AppState.projectName;
     UI.elements.dashboardView.classList.remove("open");
     UI.elements.workspaceView.style.display = "flex";
+    AppController.applyHideTools();
     
     requestAnimationFrame(() => AppController.adjustToolbar());
     AppController.refreshWorkspace(false);
+  }
+
+  static applyHideTools() {
+    let splitLayout = document.querySelector('.split-layout');
+    if (!splitLayout) return;
+    splitLayout.classList.toggle('hide-tools', AppState.hideTools);
+    if (AppController.mainScroller) {
+      requestAnimationFrame(() => AppController.mainScroller.render());
+    }
   }
 
   static closeProject() {
@@ -1446,6 +1467,7 @@ class AppController {
     AppState.proofreadCaseSensitive = false;
     AppState.proofreadExactMatch = false;
     AppState.proofreadTranslatedOnly = true;
+    AppState.hideTools = false;
     AppState.namesDirty = true;
     
     if (AppController.mainScroller) AppController.mainScroller.setItems([], false);
@@ -1455,6 +1477,8 @@ class AppController {
     UI.elements.pasteArea.value = "";
     UI.elements.copyStatus.classList.add("empty");
     UI.elements.workspaceView.style.display = "none";
+    let splitLayout = document.querySelector('.split-layout');
+    if (splitLayout) splitLayout.classList.remove('hide-tools');
     UI.elements.dashboardView.classList.add("open");
     AppController.loadDashboard();
   }
