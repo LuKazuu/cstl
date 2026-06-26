@@ -1,4 +1,4 @@
-const DEFAULT_PROMPT = `Rewrite entire text to Native Indonesian. Euphemism prohibited. Onomatopoeia must be in English-based. Bahasa Jakarta Selatan is prohibited. Format: <ID n="Name">Message</ID> or <2>Message without name</2>.`;
+const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Do not remove the JSON.`;
 
 class Utils {
   static escapeHtml(text) {
@@ -1685,10 +1685,10 @@ class AppController {
 
   static async copyForAi() {
     let selectedLinesArray = AppState.lines.filter(lineData => AppState.selectedLines.has(lineData.line_num));
-    let promptText = "";
+    let promptParts = [];
 
     if (AppState.aiPromptEnabled && AppState.aiInstructionHeader.trim()) {
-      promptText += `<instruction>\n${AppState.aiInstructionHeader.trim()}\n</instruction>\n\n`;
+      promptParts.push(AppState.aiInstructionHeader.trim());
     }
 
     let glossaryMap = new Map();
@@ -1700,9 +1700,9 @@ class AppController {
     }
 
     if (glossaryMap.size > 0) {
-      promptText += `<glossary>\n`;
-      glossaryMap.forEach((val, key) => promptText += `${key}: ${val}\n`);
-      promptText += `</glossary>\n\n`;
+      let glossaryLines = [];
+      glossaryMap.forEach((val, key) => glossaryLines.push(`${key}: ${val}`));
+      promptParts.push(`Glossary:\n${glossaryLines.join('\n')}`);
     }
 
     if (AppState.referenceEnabled) {
@@ -1758,22 +1758,23 @@ class AppController {
       }
 
       if (referenceMap.size > 0) {
-        promptText += `<reference>\n`;
-        referenceMap.forEach((val, key) => promptText += `${key}: ${val}\n`);
-        promptText += `</reference>\n\n`;
+        let refLines = [];
+        referenceMap.forEach((val, key) => refLines.push(`${key}: ${val}`));
+        promptParts.push(`Reference:\n${refLines.join('\n')}`);
       }
     }
 
-    promptText += `<translate>\n`;
-    selectedLinesArray.forEach(line => {
-      let id = line.line_num;
-      if (line.name) {
-        promptText += `<${id} n="${line.name.replace(/"/g, '&quot;')}">${line.message}</${id}>\n`;
-      } else {
-        promptText += `<${id}>${line.message}</${id}>\n`;
-      }
-    });
-    promptText += `</translate>`;
+    let linesJson = JSON.stringify(
+      selectedLinesArray.map(line => {
+        let entry = { i: line.line_num };
+        if (line.name) entry.n = line.name;
+        entry.t = line.message;
+        return entry;
+      })
+    );
+    promptParts.push(linesJson);
+
+    let promptText = promptParts.join('\n\n');
 
     try {
       await navigator.clipboard.writeText(promptText);
@@ -1784,78 +1785,140 @@ class AppController {
     }
   }
 
+  static fixDoubleQuotes(jsonString) {
+    let result = [];
+    let inString = false;
+    let i = 0;
+    while (i < jsonString.length) {
+      let ch = jsonString[i];
+      if (inString) {
+        if (ch === '\\' && i + 1 < jsonString.length) {
+          result.push(ch, jsonString[i + 1]);
+          i += 2;
+          continue;
+        }
+        if (ch === '"') {
+          if (i + 1 < jsonString.length && jsonString[i + 1] === '"') {
+            result.push('\\"');
+            i += 2;
+            continue;
+          }
+          inString = false;
+        }
+        result.push(ch);
+        i++;
+      } else {
+        if (ch === '"') inString = true;
+        result.push(ch);
+        i++;
+      }
+    }
+    return result.join('');
+  }
+
   static applyTranslation() {
     if (!AppState.lines.length) return;
-    
+
     let rawInputText = UI.elements.pasteArea.value.trim();
-    let regexPattern = /<(\d+)\s*(?:n=(["'])(.*?)\2)?\s*>([\s\S]*?)<\/\1>/g;
-    let matchResult;
     let processedResults = [];
     let validationErrors = [];
     let seenLineNumbers = new Set();
-    
-    while ((matchResult = regexPattern.exec(rawInputText)) !== null) {
-      let targetLineNumber = Number(matchResult[1]);
-      let characterName = matchResult[3] !== undefined ? matchResult[3].replace(/&quot;/g, '"') : null;
-      let translationMessage = matchResult[4].trim();
-      
-      if (seenLineNumbers.has(targetLineNumber)) {
-        validationErrors.push(`[Baris ${targetLineNumber}] Terdapat duplikat ID balasan AI.`);
+
+    let jsonText = rawInputText;
+    let codeFenceMatch = rawInputText.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeFenceMatch) jsonText = codeFenceMatch[1].trim();
+    let arrayStart = jsonText.indexOf('[');
+    let arrayEnd = jsonText.lastIndexOf(']');
+
+    if (arrayStart === -1 || arrayEnd <= arrayStart) {
+      return alert("Baris 1: JSON array tidak ditemukan.");
+    }
+
+    let jsonSubstring = jsonText.substring(arrayStart, arrayEnd + 1);
+    let parsedArray;
+    try {
+      parsedArray = JSON.parse(jsonSubstring);
+    } catch (firstError) {
+      try {
+        parsedArray = JSON.parse(AppController.fixDoubleQuotes(jsonSubstring));
+      } catch (secondError) {
+        return alert("Baris 1: JSON tidak valid.");
+      }
+    }
+
+    if (!Array.isArray(parsedArray) || !parsedArray.length) {
+      return alert("Baris 1: Array JSON kosong.");
+    }
+
+    for (let entry of parsedArray) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      let targetLineNumber = Number(entry.i);
+      if (!Number.isInteger(targetLineNumber) || targetLineNumber <= 0) {
+        validationErrors.push(`Baris ?: ID tidak valid.`);
         continue;
       }
+      if (seenLineNumbers.has(targetLineNumber)) {
+        validationErrors.push(`Baris ${targetLineNumber}: Duplikat ID.`);
+        continue;
+      }
+      let characterName = entry.n != null ? String(entry.n) : null;
+      let translationMessage = entry.t != null ? String(entry.t).trim() : "";
       seenLineNumbers.add(targetLineNumber);
       processedResults.push({ num: targetLineNumber, name: characterName, msg: translationMessage });
     }
-    
-    if (!processedResults.length) return alert("Gagal: Format tag terjemahan tidak ditemukan pada teks.");
-    
-    if (processedResults.length !== AppState.selectedLines.size) {
-      validationErrors.push(`Jumlah tag yang dibaca (${processedResults.length}) tidak sama dengan jumlah centang (${AppState.selectedLines.size}).`);
+
+    if (!processedResults.length) {
+      if (validationErrors.length) return alert("DITOLAK:\n" + validationErrors.slice(0, 10).join("\n") + (validationErrors.length > 10 ? `\n+${validationErrors.length - 10} error lainnya` : ""));
+      return alert("Baris 1: Tidak ada data valid.");
     }
-    
+
+    if (processedResults.length !== AppState.selectedLines.size) {
+      validationErrors.push(`Baris ?: Jumlah entry (${processedResults.length}) ≠ jumlah centang (${AppState.selectedLines.size}).`);
+    }
+
     AppState.selectedLines.forEach(targetLineNumber => {
-      if (!seenLineNumbers.has(targetLineNumber)) validationErrors.push(`[Baris ${targetLineNumber}] AI melewatkan baris ini (tidak dikerjakan).`);
+      if (!seenLineNumbers.has(targetLineNumber)) validationErrors.push(`Baris ${targetLineNumber}: Dilewati AI.`);
     });
-    
+
     seenLineNumbers.forEach(targetLineNumber => {
-      if (!AppState.selectedLines.has(targetLineNumber)) validationErrors.push(`[Baris ${targetLineNumber}] AI mengarang ID ini (kamu tidak mencentangnya).`);
+      if (!AppState.selectedLines.has(targetLineNumber)) validationErrors.push(`Baris ${targetLineNumber}: ID tidak dicentang.`);
     });
-    
+
     let translationUpdates = [];
     processedResults.forEach(resultItem => {
       let targetLineData = AppState.lineByNum.get(resultItem.num);
       if (!targetLineData) {
-        validationErrors.push(`[Baris ${resultItem.num}] ID ini tidak ada di sistem sama sekali.`);
+        validationErrors.push(`Baris ${resultItem.num}: ID tidak ada.`);
         return;
       }
-      
+
       if (AppState.ignoreNameTranslation && targetLineData.name) {
         resultItem.name = targetLineData.name;
       }
-      
+
       let hasOriginalName = !!(targetLineData.name || "").trim();
       let hasTranslatedName = !!(resultItem.name || "").trim();
-      
-      if (hasOriginalName && !hasTranslatedName) validationErrors.push(`[Baris ${resultItem.num}] Teks asli punya Nama Karakter, tapi AI mengosongkannya.`);
-      else if (!hasOriginalName && hasTranslatedName) validationErrors.push(`[Baris ${resultItem.num}] Teks asli tanpa Nama (Narasi), tapi AI menyelipkan nama.`);
-      else if (!resultItem.msg) validationErrors.push(`[Baris ${resultItem.num}] Pesan kosong.`);
+
+      if (hasOriginalName && !hasTranslatedName) validationErrors.push(`Baris ${resultItem.num}: Nama dihapus AI.`);
+      else if (!hasOriginalName && hasTranslatedName) validationErrors.push(`Baris ${resultItem.num}: Narasi tapi ada nama.`);
+      else if (!resultItem.msg) validationErrors.push(`Baris ${resultItem.num}: Pesan kosong.`);
       else translationUpdates.push({ lineData: targetLineData, itemResult: resultItem });
     });
-    
+
     if (validationErrors.length) {
-      return alert("DITOLAK:\n" + validationErrors.slice(0, 10).join("\n") + (validationErrors.length > 10 ? `\n... (+${validationErrors.length - 10} baris error lainnya)` : ""));
+      return alert("DITOLAK:\n" + validationErrors.slice(0, 10).join("\n") + (validationErrors.length > 10 ? `\n+${validationErrors.length - 10} error lainnya` : ""));
     }
-    
+
     AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
     AppState.redoSnapshot = null;
-    
+
     translationUpdates.forEach(({ lineData, itemResult }) => {
       lineData.trans_message = itemResult.msg;
       lineData.is_translated = true;
       if (itemResult.name) lineData.trans_name = AppState.ignoreNameTranslation ? null : itemResult.name;
       AppState.selectedLines.delete(lineData.line_num);
     });
-    
+
     UI.elements.pasteArea.value = "";
     AppState.namesDirty = true;
     AppController.refreshWorkspace(true);
