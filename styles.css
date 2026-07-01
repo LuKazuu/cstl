@@ -602,6 +602,8 @@ input, textarea, button, select { font-family: inherit; font-size: inherit; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 10px 12px;
+  contain: layout style paint;
+  will-change: transform;
 }
 .preview-row:hover { background: var(--panel-2); }
 .preview-row.row-selected {

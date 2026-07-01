@@ -259,112 +259,200 @@ class VirtualScroller {
     this.createRowFunction = createRowFunction;
     this.updateRowFunction = updateRowFunction;
     this.itemsArray = [];
-    this.rowHeights = [];
-    this.rowPositions = [];
+    this.rowHeights = new Float32Array(0);
+    this.rowPositions = new Float32Array(0);
     this.domElementsArray = [];
+    this.elementDataIndices = [];
     this.defaultRowHeight = 80;
+    this.rowGap = 8;
+    this.topPadding = 8;
+    this.bottomPadding = 8;
+    this.overscanCount = 12;
     this.currentScrollTop = 0;
-    this._scrollTimer = null;
+    this.totalContentHeight = 0;
+    this.rafScheduled = false;
+    this.scrollRafId = 0;
+    this.lastViewportWidth = 0;
+    this.lastViewportHeight = 0;
 
     this.viewportElement.addEventListener('scroll', () => {
-      window.requestAnimationFrame(() => this.onScrollEvent());
+      this.currentScrollTop = this.viewportElement.scrollTop;
+      this.scheduleRender();
     }, { passive: true });
+
+    if (window.ResizeObserver) {
+      this.resizeObserver = new ResizeObserver(() => {
+        let newWidth = this.viewportElement.clientWidth;
+        let newHeight = this.viewportElement.clientHeight;
+        if (newWidth === this.lastViewportWidth && newHeight === this.lastViewportHeight) return;
+        this.lastViewportWidth = newWidth;
+        this.lastViewportHeight = newHeight;
+        this.invalidateAll();
+        this.scheduleRender();
+      });
+      this.resizeObserver.observe(this.viewportElement);
+      this.lastViewportWidth = this.viewportElement.clientWidth;
+      this.lastViewportHeight = this.viewportElement.clientHeight;
+    }
+  }
+
+  scheduleRender() {
+    if (this.rafScheduled) return;
+    this.rafScheduled = true;
+    window.requestAnimationFrame(() => {
+      this.rafScheduled = false;
+      this.render();
+    });
   }
 
   setItems(itemsArray, keepState = false) {
+    let previousScrollTop = keepState ? this.viewportElement.scrollTop : 0;
+    let keepHeights = keepState && this.rowHeights.length === itemsArray.length;
+    let previousHeights = keepHeights ? this.rowHeights : null;
+
     this.itemsArray = itemsArray;
-    if (!keepState || this.rowHeights.length !== itemsArray.length) {
-      this.rowHeights = new Float32Array(itemsArray.length).fill(this.defaultRowHeight);
-      this.rowPositions = new Float32Array(itemsArray.length);
-      this.updatePositions();
-      this.currentScrollTop = 0;
-      this.viewportElement.scrollTop = 0;
+
+    if (previousHeights) {
+      this.rowHeights = previousHeights;
     } else {
-      this.updatePositions();
-      this.currentScrollTop = this.viewportElement.scrollTop;
+      this.rowHeights = new Float32Array(itemsArray.length).fill(this.defaultRowHeight);
     }
+    this.rowPositions = new Float32Array(itemsArray.length);
+    this.updatePositions();
+
+    if (keepState) {
+      let maxScroll = Math.max(0, this.totalContentHeight - this.viewportElement.clientHeight);
+      this.viewportElement.scrollTop = Math.min(previousScrollTop, maxScroll);
+    } else {
+      this.viewportElement.scrollTop = 0;
+    }
+    this.currentScrollTop = this.viewportElement.scrollTop;
+
+    this.invalidateAll();
     this.render();
+  }
+
+  invalidateAll() {
+    for (let i = 0; i < this.elementDataIndices.length; i++) {
+      this.elementDataIndices[i] = -1;
+    }
   }
 
   updatePositions() {
-    let currentPosition = 8;
-    for (let itemIndex = 0; itemIndex < this.itemsArray.length; itemIndex++) {
-      this.rowPositions[itemIndex] = currentPosition;
-      currentPosition += this.rowHeights[itemIndex];
+    let currentPosition = this.topPadding;
+    let n = this.itemsArray.length;
+    for (let i = 0; i < n; i++) {
+      this.rowPositions[i] = currentPosition;
+      currentPosition += this.rowHeights[i];
     }
-    this.containerElement.style.height = `${currentPosition + 8}px`;
+    this.totalContentHeight = currentPosition + this.bottomPadding;
+    this.containerElement.style.height = `${this.totalContentHeight}px`;
   }
 
-  onScrollEvent() {
-    this.currentScrollTop = this.viewportElement.scrollTop;
-    this.render();
-  }
-
-  findStartIndex() {
-    let leftIndex = 0;
-    let rightIndex = this.itemsArray.length - 1;
-    while (leftIndex <= rightIndex) {
-      let midIndex = Math.floor((leftIndex + rightIndex) / 2);
-      if (this.rowPositions[midIndex] <= this.currentScrollTop && this.rowPositions[midIndex] + this.rowHeights[midIndex] > this.currentScrollTop) {
-        return midIndex;
-      }
-      if (this.rowPositions[midIndex] < this.currentScrollTop) {
-        leftIndex = midIndex + 1;
+  findStartIndex(scrollTop) {
+    let n = this.itemsArray.length;
+    if (n === 0) return 0;
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      let mid = (lo + hi) >> 1;
+      let end = this.rowPositions[mid] + this.rowHeights[mid];
+      if (end <= scrollTop) {
+        lo = mid + 1;
       } else {
-        rightIndex = midIndex - 1;
+        hi = mid;
       }
     }
-    return Math.max(0, Math.min(leftIndex, this.itemsArray.length - 1));
+    return lo;
+  }
+
+  findEndIndex(startIndex, viewportHeight) {
+    let endIndex = startIndex;
+    let accumulated = 0;
+    while (endIndex < this.itemsArray.length && accumulated < viewportHeight) {
+      accumulated += this.rowHeights[endIndex];
+      endIndex++;
+    }
+    return endIndex;
   }
 
   render() {
+    let rerenders = 0;
+    let needsMore = false;
+    while (rerenders < 5) {
+      needsMore = this._doRender();
+      if (!needsMore) break;
+      rerenders++;
+    }
+    if (needsMore) this.scheduleRender();
+  }
+
+  _doRender() {
     if (!this.itemsArray.length) {
-      this.domElementsArray.forEach(element => element.style.transform = 'translateY(-9999px)');
+      for (let i = 0; i < this.domElementsArray.length; i++) {
+        this.domElementsArray[i].style.transform = 'translateY(-9999px)';
+        this.elementDataIndices[i] = -1;
+      }
       this.containerElement.style.height = '0px';
-      return;
+      this.totalContentHeight = 0;
+      return false;
     }
 
     let viewportHeight = this.viewportElement.clientHeight || 800;
     if (viewportHeight === 0) viewportHeight = 800;
-    let startIndex = Math.max(0, this.findStartIndex() - 4);
-    let endIndex = startIndex;
-    let visibleHeight = 0;
 
-    while (endIndex < this.itemsArray.length && visibleHeight < viewportHeight + (this.defaultRowHeight * 8)) {
-      visibleHeight += this.rowHeights[endIndex];
-      endIndex++;
-    }
+    let scrollTop = this.currentScrollTop;
+    let visibleStart = this.findStartIndex(scrollTop);
+    let visibleEnd = this.findEndIndex(visibleStart, viewportHeight);
+    let renderStart = Math.max(0, visibleStart - this.overscanCount);
+    let renderEnd = Math.min(this.itemsArray.length, visibleEnd + this.overscanCount);
+    let requiredCount = renderEnd - renderStart;
 
-    let requiredElements = Math.min(endIndex - startIndex, 100);
-
-    while (this.domElementsArray.length < requiredElements) {
+    while (this.domElementsArray.length < requiredCount) {
       let newElement = this.createRowFunction();
+      newElement.style.position = 'absolute';
       newElement.style.transform = 'translateY(-9999px)';
       this.domElementsArray.push(newElement);
+      this.elementDataIndices.push(-1);
       this.containerElement.appendChild(newElement);
     }
 
-    for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
-      let dataIndex = startIndex + elementIndex;
-      this.updateRowFunction(this.domElementsArray[elementIndex], this.itemsArray[dataIndex], dataIndex);
+    for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
+      let dataIndex = renderStart + elementIndex;
+      let element = this.domElementsArray[elementIndex];
+      if (this.elementDataIndices[elementIndex] !== dataIndex) {
+        this.updateRowFunction(element, this.itemsArray[dataIndex], dataIndex);
+        this.elementDataIndices[elementIndex] = dataIndex;
+      }
     }
 
-    let measuredHeights = new Array(requiredElements);
-    for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
-      measuredHeights[elementIndex] = this.domElementsArray[elementIndex].offsetHeight;
+    for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
+      let dataIndex = renderStart + elementIndex;
+      this.domElementsArray[elementIndex].style.transform = `translateY(${this.rowPositions[dataIndex]}px)`;
+    }
+
+    for (let elementIndex = requiredCount; elementIndex < this.domElementsArray.length; elementIndex++) {
+      if (this.elementDataIndices[elementIndex] !== -1) {
+        this.domElementsArray[elementIndex].style.transform = 'translateY(-9999px)';
+        this.elementDataIndices[elementIndex] = -1;
+      }
     }
 
     let heightsChanged = false;
     let scrollAdjustment = 0;
-    for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
-      let dataIndex = startIndex + elementIndex;
-      let currentHeight = measuredHeights[elementIndex];
-      if (currentHeight > 0 && Math.abs((currentHeight + 8) - this.rowHeights[dataIndex]) > 1) {
-        let heightDifference = (currentHeight + 8) - this.rowHeights[dataIndex];
-        this.rowHeights[dataIndex] = currentHeight + 8;
-        heightsChanged = true;
-        if (this.rowPositions[dataIndex] < this.currentScrollTop) {
-          scrollAdjustment += heightDifference;
+
+    for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
+      let dataIndex = renderStart + elementIndex;
+      let element = this.domElementsArray[elementIndex];
+      let measuredHeight = element.offsetHeight;
+      if (measuredHeight > 0) {
+        let totalWithGap = measuredHeight + this.rowGap;
+        if (Math.abs(totalWithGap - this.rowHeights[dataIndex]) > 1) {
+          let diff = totalWithGap - this.rowHeights[dataIndex];
+          if (this.rowPositions[dataIndex] < scrollTop) {
+            scrollAdjustment += diff;
+          }
+          this.rowHeights[dataIndex] = totalWithGap;
+          heightsChanged = true;
         }
       }
     }
@@ -375,36 +463,44 @@ class VirtualScroller {
         this.viewportElement.scrollTop += scrollAdjustment;
         this.currentScrollTop = this.viewportElement.scrollTop;
       }
+      for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
+        let dataIndex = renderStart + elementIndex;
+        this.domElementsArray[elementIndex].style.transform = `translateY(${this.rowPositions[dataIndex]}px)`;
+      }
+
+      let viewportBottom = this.currentScrollTop + viewportHeight;
+      let lastRenderedBottom = renderEnd < this.itemsArray.length
+        ? this.rowPositions[renderEnd - 1] + this.rowHeights[renderEnd - 1]
+        : this.totalContentHeight;
+      if (lastRenderedBottom < viewportBottom) {
+        return true;
+      }
     }
 
-    for (let elementIndex = 0; elementIndex < requiredElements; elementIndex++) {
-      let dataIndex = startIndex + elementIndex;
-      this.domElementsArray[elementIndex].style.transform = `translateY(${this.rowPositions[dataIndex]}px)`;
-    }
-
-    for (let elementIndex = requiredElements; elementIndex < this.domElementsArray.length; elementIndex++) {
-      this.domElementsArray[elementIndex].style.transform = 'translateY(-9999px)';
-    }
+    return false;
   }
 
   scrollToIndex(targetIndex) {
     if (targetIndex < 0 || targetIndex >= this.itemsArray.length) return;
-    if (this._scrollTimer) {
-      clearTimeout(this._scrollTimer);
-      this._scrollTimer = null;
-    }
-    this.viewportElement.scrollTop = this.rowPositions[targetIndex] - (this.viewportElement.clientHeight / 2);
+    let viewportHeight = this.viewportElement.clientHeight || 800;
+    let targetPosition = this.rowPositions[targetIndex] || 0;
+    let targetScrollTop = targetPosition - (viewportHeight / 2) + (this.rowHeights[targetIndex] / 2);
+    this.viewportElement.scrollTop = Math.max(0, targetScrollTop);
     this.currentScrollTop = this.viewportElement.scrollTop;
     this.render();
-    this._scrollTimer = setTimeout(() => {
-      this._scrollTimer = null;
-      this.viewportElement.scrollTop = this.rowPositions[targetIndex] - (this.viewportElement.clientHeight / 2) + (this.rowHeights[targetIndex] / 2);
+    if (this.scrollRafId) cancelAnimationFrame(this.scrollRafId);
+    this.scrollRafId = window.requestAnimationFrame(() => {
+      this.scrollRafId = 0;
+      let newPosition = this.rowPositions[targetIndex] || 0;
+      let newScrollTop = newPosition - (viewportHeight / 2) + (this.rowHeights[targetIndex] / 2);
+      this.viewportElement.scrollTop = Math.max(0, newScrollTop);
       this.currentScrollTop = this.viewportElement.scrollTop;
       this.render();
-    }, 20);
+    });
   }
 
   forceUpdate() {
+    this.invalidateAll();
     this.render();
   }
 }
