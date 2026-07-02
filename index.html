@@ -31,7 +31,7 @@
     <header class="dashboard-hero">
       <div class="hero-left">
         <h1 class="hero-title">Copas Tool</h1>
-        <span class="hero-badge">v10</span>
+        <span class="hero-badge">v12</span>
       </div>
       <div class="actions">
         <button id="btnNewProject" class="btn btn-primary">
@@ -95,6 +95,10 @@
           </div>
         </div>
         <div id="previewViewport" class="preview-viewport">
+          <div id="stickyFileHeader" class="sticky-file-header empty">
+            <input id="stickyFileCheckbox" type="checkbox" title="Pilih semua baris di file ini" />
+            <span id="stickyFileName" class="sticky-file-name"></span>
+          </div>
           <div id="previewContainer" class="preview-container"></div>
         </div>
       </section>
@@ -284,7 +288,7 @@
             <label for="proofreadSearchInput" class="label-bold">Cari:</label>
             <div class="flex gap-12 wrap">
               <input id="proofreadSearchInput" class="mono text-input grow min-w-200" type="text" placeholder="Ketik kata atau pola regex..." />
-              <div class="proofread-filters flex-center gap-12 wrap">
+              <div class="flex-center gap-12 wrap">
                 <select id="proofreadScope" class="text-input select-sm">
                   <option value="all">All Text</option>
                   <option value="name">Name Only</option>

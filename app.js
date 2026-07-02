@@ -1,4 +1,4 @@
-const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Do not remove the JSON.`;
+const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Keep the line numbering and format intact.`;
 
 class Utils {
   static escapeHtml(text) {
@@ -26,6 +26,30 @@ class Utils {
   static extractMetadata(projectData) {
     const { lines, proofreadScope, proofreadRegex, proofreadCaseSensitive, proofreadExactMatch, proofreadTranslatedOnly, ...metadata } = projectData;
     return metadata;
+  }
+
+  static sanitizeFileName(name) {
+    return String(name || "").replace(/[^\p{L}\p{N}_\-\.]/gu, '_');
+  }
+
+  static safeClipboardWrite(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    let textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand("copy");
+      return Promise.resolve();
+    } catch (err) {
+      return Promise.reject(err);
+    } finally {
+      document.body.removeChild(textarea);
+    }
   }
 }
 
@@ -65,13 +89,25 @@ class UI {
 
   static createDomNode(tagName, className, attributesObject = {}) {
     let domNode = document.createElement(tagName);
-    if (className) {
-      domNode.className = className;
-    }
+    if (className) domNode.className = className;
     for (let attributeKey in attributesObject) {
-      domNode[attributeKey] = attributesObject[attributeKey];
+      domNode.setAttribute(attributeKey, attributesObject[attributeKey]);
     }
     return domNode;
+  }
+
+  static isAnyModalOpen() {
+    return document.querySelectorAll('.modal-backdrop.open').length > 0;
+  }
+
+  static getTopmostOpenModal() {
+    let openModals = Array.from(document.querySelectorAll('.modal-backdrop.open'));
+    if (!openModals.length) return null;
+    return openModals.sort((a, b) => {
+      let za = parseInt(getComputedStyle(a).zIndex) || 0;
+      let zb = parseInt(getComputedStyle(b).zIndex) || 0;
+      return zb - za;
+    })[0];
   }
 }
 
@@ -164,7 +200,7 @@ class AppState {
 
   static toProjectData() {
     return {
-      version: 10,
+      version: 12,
       projectName: AppState.projectName,
       projectType: AppState.projectType,
       epubTags: AppState.epubTags,
@@ -215,7 +251,7 @@ class AppState {
     AppState.lineByNum.clear();
     AppState.filesLinesCache.clear();
     AppState.displayRows = [];
-    
+
     let groupedFiles = new Map(AppState.importedFiles.map(fileName => [fileName, []]));
     AppState.lines.forEach(lineData => {
       AppState.lineByNum.set(lineData.line_num, lineData);
@@ -223,7 +259,7 @@ class AppState {
         groupedFiles.get(lineData.file).push(lineData);
       }
     });
-    
+
     for (let [fileName, fileRows] of groupedFiles.entries()) {
       AppState.filesLinesCache.set(fileName, fileRows);
       if (fileRows.length) {
@@ -265,8 +301,8 @@ class VirtualScroller {
     this.elementDataIndices = [];
     this.defaultRowHeight = 80;
     this.rowGap = 8;
-    this.topPadding = 8;
-    this.bottomPadding = 8;
+    this.topPadding = 0;
+    this.bottomPadding = 0;
     this.overscanCount = 12;
     this.currentScrollTop = 0;
     this.totalContentHeight = 0;
@@ -315,7 +351,10 @@ class VirtualScroller {
     if (previousHeights) {
       this.rowHeights = previousHeights;
     } else {
-      this.rowHeights = new Float32Array(itemsArray.length).fill(this.defaultRowHeight);
+      this.rowHeights = new Float32Array(itemsArray.length);
+      for (let i = 0; i < itemsArray.length; i++) {
+        this.rowHeights[i] = itemsArray[i] && itemsArray[i].type === "separator" ? 21 : this.defaultRowHeight;
+      }
     }
     this.rowPositions = new Float32Array(itemsArray.length);
     this.updatePositions();
@@ -444,16 +483,16 @@ class VirtualScroller {
       let dataIndex = renderStart + elementIndex;
       let element = this.domElementsArray[elementIndex];
       let measuredHeight = element.offsetHeight;
-      if (measuredHeight > 0) {
-        let totalWithGap = measuredHeight + this.rowGap;
-        if (Math.abs(totalWithGap - this.rowHeights[dataIndex]) > 1) {
-          let diff = totalWithGap - this.rowHeights[dataIndex];
-          if (this.rowPositions[dataIndex] < scrollTop) {
-            scrollAdjustment += diff;
-          }
-          this.rowHeights[dataIndex] = totalWithGap;
-          heightsChanged = true;
+      let isSeparator = this.itemsArray[dataIndex] && this.itemsArray[dataIndex].type === "separator";
+      if (measuredHeight === 0) continue;
+      let totalWithGap = isSeparator ? measuredHeight : measuredHeight + this.rowGap;
+      if (Math.abs(totalWithGap - this.rowHeights[dataIndex]) > 1) {
+        let diff = totalWithGap - this.rowHeights[dataIndex];
+        if (this.rowPositions[dataIndex] < scrollTop) {
+          scrollAdjustment += diff;
         }
+        this.rowHeights[dataIndex] = totalWithGap;
+        heightsChanged = true;
       }
     }
 
@@ -598,7 +637,7 @@ class Importer {
             let containerXmlContent = await zipArchive.file("META-INF/container.xml").async("text");
             let rootFileNode = new DOMParser().parseFromString(containerXmlContent, "application/xml").querySelector("rootfile");
             if (!rootFileNode) throw new Error("EPUB tidak valid.");
-            
+
             let opfPathString = decodeURIComponent(rootFileNode.getAttribute("full-path"));
             let opfDirectoryPath = opfPathString.includes("/") ? opfPathString.substring(0, opfPathString.lastIndexOf("/")) + "/" : "";
             let opfDocumentNode = new DOMParser().parseFromString(await zipArchive.file(opfPathString).async("text"), "application/xml");
@@ -735,7 +774,7 @@ class Exporter {
         }
 
         let blobUrl = URL.createObjectURL(await zipArchive.generateAsync({ type: "blob", mimeType: "application/epub+zip", compression: "DEFLATE", compressionOptions: { level: 9 } }));
-        let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${AppState.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_tl.epub` });
+        let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${Utils.sanitizeFileName(AppState.projectName)}_tl.epub` });
         downloadAnchor.click();
         setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
         UI.flashStatusMessage("Ekspor EPUB berhasil!");
@@ -767,7 +806,7 @@ class Exporter {
         let zipArchive = new window.JSZip();
         exportResults.forEach(exportItem => zipArchive.file(exportItem.fileNameProperty, exportItem.fileContentProperty));
         let blobUrl = URL.createObjectURL(await zipArchive.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } }));
-        let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${AppState.projectName.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_export.zip` });
+        let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${Utils.sanitizeFileName(AppState.projectName)}_export.zip` });
         downloadAnchor.click();
         setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
       } else {
@@ -825,7 +864,7 @@ class VndbService {
     for (let characterItem of charactersArray) {
       if (!characterItem.name || !characterItem.original) continue;
       addGlossaryEntry(characterItem.original, characterItem.name);
-      
+
       if (characterItem.original.includes(' ') && characterItem.name.includes(' ')) {
         let kanaParts = characterItem.original.split(' ');
         let romajiParts = characterItem.name.split(' ');
@@ -853,6 +892,7 @@ class AppController {
   static tempCustomRaw = "";
   static tempCustomGlossary = [];
   static lastSearchQuery = "";
+  static _lastFileBadge = null;
 
   static async createNewProject() {
     let newProjectName = prompt("Nama project baru:");
@@ -861,7 +901,7 @@ class AppController {
 
     let newProjectId = "proj_" + Date.now() + ".cstl";
     let newProjectData = {
-      version: 10,
+      version: 12,
       projectName: newProjectName,
       projectType: "uninitialized",
       epubTags: "p",
@@ -896,12 +936,12 @@ class AppController {
 
     AppController.mainScroller = new VirtualScroller(UI.elements.previewViewport, UI.elements.previewContainer, AppController.createMainRow, AppController.updateMainRow);
     AppController.proofreadScroller = new VirtualScroller(UI.elements.proofreadContainer.closest('.proofread-results-wrap'), UI.elements.proofreadContainer, AppController.createProofreadRow, AppController.updateProofreadRow);
-    
+
     AppController.bindEvents();
     await AppController.loadDashboard();
   }
 
-  static throttle(targetFunction, delayMs = 200) {
+  static debounce(targetFunction, delayMs = 200) {
     let timeoutTimer;
     return function(...functionArgs) {
       clearTimeout(timeoutTimer);
@@ -936,7 +976,7 @@ class AppController {
   }
 
   static bindEvents() {
-    window.addEventListener('resize', AppController.throttle(() => {
+    window.addEventListener('resize', AppController.debounce(() => {
       if (UI.elements.workspaceView.style.display !== "none") AppController.adjustToolbar();
     }, 100));
 
@@ -959,6 +999,18 @@ class AppController {
       }
       if (!clickEvent.target.closest('#importGroup') && UI.elements.importDropdown) UI.elements.importDropdown.classList.remove("show");
       if (!clickEvent.target.closest('#moreGroup') && UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
+
+      let backdrop = clickEvent.target.closest('.modal-backdrop.open');
+      if (backdrop && clickEvent.target === backdrop) {
+        UI.toggleModalVisibility(backdrop, false);
+      }
+    });
+
+    document.addEventListener("keydown", keyEvent => {
+      if (keyEvent.key === "Escape" && UI.isAnyModalOpen()) {
+        let topModal = UI.getTopmostOpenModal();
+        if (topModal) UI.toggleModalVisibility(topModal, false);
+      }
     });
 
     ["btnImportFile", "btnImportFolder", "btnImportZip"].forEach((buttonId, index) => {
@@ -984,7 +1036,7 @@ class AppController {
     UI.elements.btnApply.addEventListener("click", AppController.applyTranslation);
     UI.elements.btnUndo.addEventListener("click", AppController.undoTranslation);
     UI.elements.btnRedo.addEventListener("click", AppController.redoTranslation);
-    
+
     UI.elements.btnProofread.addEventListener("click", () => {
       if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
       AppController.openProofread();
@@ -1003,7 +1055,7 @@ class AppController {
     });
 
     UI.elements.btnSelectRange.addEventListener("click", AppController.selectRange);
-    
+
     UI.elements.btnGlossary.addEventListener("click", () => {
       if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
       UI.elements.glossaryVndbCheck.checked = AppState.vndbEnabled;
@@ -1020,7 +1072,7 @@ class AppController {
       UI.elements.btnGlossaryCustomApply.disabled = true;
       UI.toggleModalVisibility(UI.elements.glossaryModal, true);
     });
-    
+
     UI.elements.btnSettings.addEventListener("click", () => {
       if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
       UI.elements.settingsIgnoreNameCheck.checked = AppState.ignoreNameTranslation;
@@ -1075,18 +1127,20 @@ class AppController {
         UI.elements.btnGlossaryVndbFetch.disabled = UI.elements.glossaryVndbIdInput.disabled = true;
         UI.elements.glossaryVndbStatus.textContent = "Mengambil data...";
         UI.elements.glossaryVndbStatus.className = "status-toast";
-        UI.elements.glossaryVndbStatus.style.color = "var(--primary)";
-        
+        UI.elements.glossaryVndbStatus.classList.add("info");
+
         let allCharactersList = await VndbService.fetchCharacters(vndbIdentifier);
         if (!allCharactersList.length) throw new Error("Karakter tidak ditemukan.");
-        
+
         AppController.tempVndbGlossary = VndbService.buildGlossary(allCharactersList);
         UI.elements.glossaryVndbPreviewArea.value = AppController.tempVndbGlossary.map(glossaryEntry => `${glossaryEntry[0]}: ${glossaryEntry[1]}`).join("\n");
         UI.elements.glossaryVndbStatus.textContent = `Ditemukan ${AppController.tempVndbGlossary.length} entri.`;
-        UI.elements.glossaryVndbStatus.style.color = "var(--success)";
+        UI.elements.glossaryVndbStatus.classList.remove("info");
+        UI.elements.glossaryVndbStatus.classList.add("success");
       } catch (error) {
         UI.elements.glossaryVndbStatus.textContent = error.message;
-        UI.elements.glossaryVndbStatus.style.color = "var(--danger)";
+        UI.elements.glossaryVndbStatus.classList.remove("info", "success");
+        UI.elements.glossaryVndbStatus.classList.add("error");
         UI.elements.btnGlossaryVndbFetch.disabled = UI.elements.glossaryVndbIdInput.disabled = false;
       }
     });
@@ -1102,7 +1156,13 @@ class AppController {
     });
 
     UI.elements.glossaryCustomCheck.addEventListener("change", changeEvent => {
-      UI.elements.glossaryCustomWrap.classList.toggle("section-disabled", !changeEvent.target.checked);
+      let isEnabled = changeEvent.target.checked;
+      UI.elements.glossaryCustomWrap.classList.toggle("section-disabled", !isEnabled);
+      if (!isEnabled) {
+        UI.elements.btnGlossaryCustomApply.disabled = true;
+      } else {
+        UI.elements.glossaryCustomInput.dispatchEvent(new Event("input"));
+      }
     });
 
     UI.elements.btnGlossaryCustomReset.addEventListener("click", () => {
@@ -1116,9 +1176,10 @@ class AppController {
 
     UI.elements.glossaryCustomInput.addEventListener("input", () => {
       let rawInputText = UI.elements.glossaryCustomInput.value;
+      let isSectionEnabled = UI.elements.glossaryCustomCheck.checked;
       let isValidFormat = true;
       let hasContent = false;
-      
+
       for (let textLine of rawInputText.split(/\r?\n/)) {
         textLine = textLine.trim();
         if (!textLine) continue;
@@ -1129,7 +1190,7 @@ class AppController {
           break;
         }
       }
-      UI.elements.btnGlossaryCustomApply.disabled = (rawInputText === AppController.tempCustomRaw || (!isValidFormat && hasContent));
+      UI.elements.btnGlossaryCustomApply.disabled = (!isSectionEnabled || rawInputText === AppController.tempCustomRaw || (!isValidFormat && hasContent));
     });
 
     UI.elements.btnGlossaryCustomApply.addEventListener("click", () => {
@@ -1164,7 +1225,7 @@ class AppController {
     UI.elements.btnLineCancel.addEventListener("click", () => UI.toggleModalVisibility(UI.elements.lineEditorModal, false));
     UI.elements.btnLineSave.addEventListener("click", AppController.saveLineEditor);
     UI.elements.btnProofreadClose.addEventListener("click", () => UI.toggleModalVisibility(UI.elements.proofreadModal, false));
-    
+
     UI.elements.btnProofreadReset.addEventListener("click", () => {
       UI.elements.proofreadSearchInput.value = "";
       UI.elements.proofreadReplaceInput.value = "";
@@ -1178,10 +1239,10 @@ class AppController {
     });
 
     UI.elements.btnProofreadReplaceAll.addEventListener("click", AppController.execReplaceAll);
-    
-    let delayedSearch = AppController.throttle(AppController.renderProofread, 200);
+
+    let delayedSearch = AppController.debounce(AppController.renderProofread, 200);
     UI.elements.proofreadSearchInput.addEventListener("input", delayedSearch);
-    
+
     ["proofreadScope", "proofreadRegexCheck", "proofreadCaseCheck", "proofreadExactCheck", "proofreadTranslatedOnlyCheck"].forEach(elementId => {
       UI.elements[elementId].addEventListener("change", () => {
         AppController.syncProofreadSettings();
@@ -1190,21 +1251,25 @@ class AppController {
     });
 
     UI.elements.previewContainer.addEventListener("change", clickEvent => {
-      if (clickEvent.target.classList.contains('sep-cb')) {
-        let fileLinesArray = AppState.filesLinesCache.get(clickEvent.target.dataset.file) || [];
-        fileLinesArray.forEach(lineData => {
-          if (!AppState.isTranslated(lineData)) {
-            if (clickEvent.target.checked) AppState.selectedLines.add(lineData.line_num);
-            else AppState.selectedLines.delete(lineData.line_num);
-          }
-        });
-        AppController.syncCheckboxes();
-      } else if (clickEvent.target.closest('.checkbox-cell') && clickEvent.target.type === 'checkbox') {
+      if (clickEvent.target.closest('.checkbox-cell') && clickEvent.target.type === 'checkbox') {
         let targetLineNumber = Number(clickEvent.target.dataset.num);
         if (clickEvent.target.checked) AppState.selectedLines.add(targetLineNumber);
         else AppState.selectedLines.delete(targetLineNumber);
         AppController.syncCheckboxes();
       }
+    });
+
+    UI.elements.stickyFileCheckbox.addEventListener("change", changeEvent => {
+      let fileName = changeEvent.target.dataset.file;
+      if (!fileName) return;
+      let fileLinesArray = AppState.filesLinesCache.get(fileName) || [];
+      fileLinesArray.forEach(lineData => {
+        if (!AppState.isTranslated(lineData)) {
+          if (changeEvent.target.checked) AppState.selectedLines.add(lineData.line_num);
+          else AppState.selectedLines.delete(lineData.line_num);
+        }
+      });
+      AppController.syncCheckboxes();
     });
 
     UI.elements.previewContainer.addEventListener("click", clickEvent => {
@@ -1218,6 +1283,15 @@ class AppController {
       }
     });
 
+    let fileBadgeRaf = 0;
+    UI.elements.previewViewport.addEventListener("scroll", () => {
+      if (fileBadgeRaf) return;
+      fileBadgeRaf = requestAnimationFrame(() => {
+        fileBadgeRaf = 0;
+        AppController.updateCurrentFileBadge();
+      });
+    }, { passive: true });
+
     UI.elements.proofreadContainer.addEventListener("click", clickEvent => {
       let textContentWrap = clickEvent.target.closest('.text-content');
       if (textContentWrap?.dataset.num) {
@@ -1230,10 +1304,8 @@ class AppController {
             setTimeout(() => {
               let rowHtmlElement = UI.elements.previewContainer.querySelector(`input[data-num="${lineNum}"]`)?.closest('.preview-row');
               if (rowHtmlElement) {
-                let originalBackground = rowHtmlElement.style.backgroundColor;
-                rowHtmlElement.style.transition = "background-color .3s ease";
-                rowHtmlElement.style.backgroundColor = "rgba(59, 130, 246, 0.4)";
-                setTimeout(() => rowHtmlElement.style.backgroundColor = originalBackground, 800);
+                rowHtmlElement.classList.add("row-flash");
+                setTimeout(() => rowHtmlElement.classList.remove("row-flash"), 800);
               }
             }, 60);
           }
@@ -1246,7 +1318,7 @@ class AppController {
     UI.elements.nameTableBody.addEventListener("click", async clickEvent => {
       if (clickEvent.target.tagName === "TD") {
         try {
-          await navigator.clipboard.writeText(clickEvent.target.textContent);
+          await Utils.safeClipboardWrite(clickEvent.target.textContent);
           UI.flashStatusMessage(`Nama disalin!`);
         } catch (error) {
           alert(`Gagal disalin.`);
@@ -1262,7 +1334,7 @@ class AppController {
       let sortedNamesArray = Array.from(uniqueNamesSet).sort();
       if (!sortedNamesArray.length) return;
       try {
-        await navigator.clipboard.writeText(sortedNamesArray.join('\n'));
+        await Utils.safeClipboardWrite(sortedNamesArray.join('\n'));
         UI.flashStatusMessage(`${sortedNamesArray.length} nama disalin!`);
       } catch (error) {
         alert("Clipboard diblokir.");
@@ -1303,7 +1375,7 @@ class AppController {
       }
 
       let blobUrl = URL.createObjectURL(await backupZipArchive.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } }));
-      let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${savedProject.name.replace(/[^\p{L}\p{N}_\-\.]/gu, '_')}_backup.cstl` });
+      let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${Utils.sanitizeFileName(savedProject.name)}_backup.cstl` });
       downloadAnchor.click();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
     } catch (error) {
@@ -1327,7 +1399,7 @@ class AppController {
       savedProjects.forEach(savedProject => {
         let projectCard = UI.createDomNode("div", "project-card");
         let projectBadgeHtml = savedProject.fileCount || savedProject.lineCount ? (savedProject.data.projectType === 'epub' ? `<span class="badge badge-epub">EPUB</span>` : (savedProject.data.projectType === 'json' ? `<span class="badge badge-json">JSON-VNTP</span>` : '')) : '';
-        
+
         projectCard.innerHTML = `
           <div class="project-card-main">
             <h3>${Utils.escapeHtml(savedProject.name)}</h3>
@@ -1344,9 +1416,9 @@ class AppController {
             <button class="btn btn-danger btn-sm btn-delete">Hapus</button>
           </div>
         `;
-        
+
         projectCard.querySelector(".btn-open").addEventListener("click", () => AppController.openProject(savedProject.id, savedProject.data));
-        
+
         projectCard.querySelector(".btn-rename").addEventListener("click", async () => {
           let updatedProjectName = prompt("Nama baru:", savedProject.name);
           if (updatedProjectName?.trim() && updatedProjectName !== savedProject.name) {
@@ -1355,16 +1427,16 @@ class AppController {
             AppController.loadDashboard();
           }
         });
-        
+
         projectCard.querySelector(".btn-backup").addEventListener("click", () => AppController.backupProject(savedProject));
-        
+
         projectCard.querySelector(".btn-delete").addEventListener("click", async () => {
           if (confirm("Hapus permanen?")) {
             await StorageManager.removeProjectData(savedProject.id, savedProject.data.epubSourceId);
             AppController.loadDashboard();
           }
         });
-        
+
         UI.elements.projectList.appendChild(projectCard);
       });
     } catch (error) {
@@ -1375,36 +1447,36 @@ class AppController {
   static async restoreProject(changeEvent) {
     let uploadedFile = changeEvent.target.files?.[0];
     if (!uploadedFile) return;
-    
+
     try {
       document.body.style.cursor = "wait";
       let zipArchive = new window.JSZip();
       await zipArchive.loadAsync(uploadedFile);
-      
+
       let metaFileEntry = zipArchive.file("metadata.json");
       let originalFileEntry = zipArchive.file("original.txt");
       let translateFileEntry = zipArchive.file("translate.txt");
       let nameFileEntry = zipArchive.file("name.txt");
-      
+
       if (!metaFileEntry || !originalFileEntry || !translateFileEntry || !nameFileEntry) throw new Error("Format arsip tidak valid.");
-      
+
       let metadataJson = JSON.parse(await metaFileEntry.async("text"));
       let originalLinesArray = (await originalFileEntry.async("text")).split(/\r?\n/);
       let translateLinesArray = (await translateFileEntry.async("text")).split(/\r?\n/);
       let nameLinesArray = (await nameFileEntry.async("text")).split(/\r?\n/);
-      
+
       if (originalLinesArray[originalLinesArray.length - 1] === "") originalLinesArray.pop();
       if (translateLinesArray[translateLinesArray.length - 1] === "") translateLinesArray.pop();
       if (nameLinesArray[nameLinesArray.length - 1] === "") nameLinesArray.pop();
-      
+
       if (originalLinesArray.length !== translateLinesArray.length || originalLinesArray.length !== nameLinesArray.length) {
         throw new Error("Baris tidak sinkron.");
       }
-      
+
       let parsedLinesArray = [];
       let currentFileName = "unknown";
       let currentLineNumber = 1;
-      
+
       for (let arrayIndex = 0; arrayIndex < originalLinesArray.length; arrayIndex++) {
         let originalLine = originalLinesArray[arrayIndex];
         let fileMatch = originalLine.match(/^<filename>(.*?)<\/filename>$/);
@@ -1418,14 +1490,14 @@ class AppController {
           let parsedOriginalName = null;
           let parsedTranslateName = null;
           let nameLine = nameLinesArray[arrayIndex].trim();
-          
+
           if (nameLine) {
             let origMatch = nameLine.match(/<original>(.*?)<\/original>/);
             let transMatch = nameLine.match(/<translate>(.*?)<\/translate>/);
             parsedOriginalName = origMatch ? origMatch[1] : null;
             parsedTranslateName = transMatch ? transMatch[1] : null;
           }
-          
+
           parsedLinesArray.push({
             line_num: currentLineNumber++,
             file: currentFileName,
@@ -1437,9 +1509,9 @@ class AppController {
           });
         }
       }
-      
+
       let restoredProjectName = metadataJson.projectName || uploadedFile.name.replace(".cstl", '');
-      
+
       if (metadataJson.projectType === "epub" && metadataJson.epubSourceId) {
         let epubFileEntry = zipArchive.file(metadataJson.epubSourceId);
         if (epubFileEntry) {
@@ -1452,9 +1524,9 @@ class AppController {
           metadataJson.epubSourceId = newEpubId;
         }
       }
-      
+
       await StorageManager.saveProjectData("proj_" + Date.now() + ".cstl", {
-        version: 10,
+        version: 12,
         projectName: restoredProjectName,
         projectType: metadataJson.projectType || "uninitialized",
         epubTags: metadataJson.epubTags || "p",
@@ -1474,7 +1546,7 @@ class AppController {
         jumpToContext: metadataJson.jumpToContext ?? false,
         hideTools: metadataJson.hideTools ?? false
       });
-      
+
       await AppController.loadDashboard();
       alert(`Project "${restoredProjectName}" dipulihkan!`);
     } catch (error) {
@@ -1513,12 +1585,12 @@ class AppController {
     AppState.selectedLines.clear();
     AppState.undoSnapshot = AppState.redoSnapshot = null;
     AppState.namesDirty = true;
-    
+
     UI.elements.projectNameDisplay.textContent = AppState.projectName;
     UI.elements.dashboardView.classList.remove("open");
     UI.elements.workspaceView.style.display = "flex";
     AppController.applyHideTools();
-    
+
     requestAnimationFrame(() => AppController.adjustToolbar());
     AppController.refreshWorkspace(false);
   }
@@ -1528,7 +1600,10 @@ class AppController {
     if (!splitLayout) return;
     splitLayout.classList.toggle('hide-tools', AppState.hideTools);
     if (AppController.mainScroller) {
-      requestAnimationFrame(() => AppController.mainScroller.render());
+      requestAnimationFrame(() => {
+        AppController.mainScroller.invalidateAll();
+        AppController.mainScroller.render();
+      });
     }
   }
 
@@ -1565,13 +1640,20 @@ class AppController {
     AppState.proofreadTranslatedOnly = true;
     AppState.hideTools = false;
     AppState.namesDirty = true;
-    
+
     if (AppController.mainScroller) AppController.mainScroller.setItems([], false);
     if (AppController.proofreadScroller) AppController.proofreadScroller.setItems([], false);
-    
+
     UI.elements.nameTableBody.replaceChildren();
     UI.elements.pasteArea.value = "";
     UI.elements.copyStatus.classList.add("empty");
+    UI.elements.stickyFileName.textContent = "";
+    UI.elements.stickyFileName.title = "";
+    UI.elements.stickyFileHeader.classList.add("empty");
+    UI.elements.stickyFileCheckbox.checked = false;
+    UI.elements.stickyFileCheckbox.disabled = true;
+    delete UI.elements.stickyFileCheckbox.dataset.file;
+    AppController._lastFileBadge = null;
     UI.elements.workspaceView.style.display = "none";
     let splitLayout = document.querySelector('.split-layout');
     if (splitLayout) splitLayout.classList.remove('hide-tools');
@@ -1583,6 +1665,7 @@ class AppController {
     AppState.updateTranslatedCount();
     AppState.rebuildCache();
     AppController.mainScroller.setItems(AppState.displayRows, keepScroll);
+    AppController.updateCurrentFileBadge();
     AppController.updateButtons();
     if (AppState.namesDirty) {
       AppController.renderNameTable();
@@ -1596,7 +1679,7 @@ class AppController {
   static updateButtons() {
     let hasProjectData = AppState.lines.length > 0;
     let hasSelectedLines = AppState.selectedLines.size > 0;
-    
+
     UI.elements.btnExport.disabled = !hasProjectData;
     UI.elements.btnProofread.disabled = !hasProjectData;
     UI.elements.btnSelectAll.disabled = !hasProjectData;
@@ -1605,7 +1688,7 @@ class AppController {
     UI.elements.rangeFromInput.disabled = !hasProjectData;
     UI.elements.rangeToInput.disabled = !hasProjectData;
     UI.elements.btnSelectRange.disabled = !hasProjectData;
-    
+
     UI.elements.btnClearSelection.disabled = !hasSelectedLines;
     UI.elements.btnCopyForAi.disabled = !hasSelectedLines;
     let copyCount = AppState.selectedLines.size;
@@ -1618,56 +1701,84 @@ class AppController {
     let translationPercentage = totalLinesCount ? Math.floor((translatedLinesCount / totalLinesCount) * 100) : 0;
     let displayModeText = AppState.projectType === "uninitialized" ? "-" : (AppState.projectType === "epub" ? "EPUB" : "JSON-VNTP");
     let displayFileText = AppState.importedFiles.length > 1 ? AppState.importedFiles.length : (AppState.importedFiles[0] || "-");
-    
+
     UI.elements.statusBar.textContent = `Mode: ${displayModeText} | File: ${displayFileText} | Baris: ${totalLinesCount} | TL: ${translatedLinesCount}/${totalLinesCount} (${translationPercentage}%)`;
     UI.elements.progressFill.style.width = `${translationPercentage}%`;
     UI.elements.progressText.textContent = `${translatedLinesCount}/${totalLinesCount}`;
   }
 
+  static updateCurrentFileBadge() {
+    let header = UI.elements.stickyFileHeader;
+    let nameEl = UI.elements.stickyFileName;
+    let checkbox = UI.elements.stickyFileCheckbox;
+    if (!header || !nameEl || !AppController.mainScroller) return;
+    let scrollTop = UI.elements.previewViewport.scrollTop;
+    let visibleIndex = AppController.mainScroller.findStartIndex(scrollTop);
+    let currentFile = null;
+    if (AppState.displayRows.length && visibleIndex < AppState.displayRows.length) {
+      let topRow = AppState.displayRows[visibleIndex];
+      if (topRow.type === "separator") currentFile = topRow.file;
+      else if (topRow.type === "line") currentFile = topRow.line.file;
+    }
+    if (currentFile !== AppController._lastFileBadge) {
+      if (currentFile) {
+        let baseName = String(currentFile).replace(/\\/g, "/").split("/").pop();
+        nameEl.textContent = baseName;
+        nameEl.title = currentFile;
+        header.classList.remove("empty");
+        checkbox.dataset.file = currentFile;
+      } else {
+        nameEl.textContent = "";
+        nameEl.title = "";
+        header.classList.add("empty");
+        delete checkbox.dataset.file;
+      }
+      AppController._lastFileBadge = currentFile;
+    }
+    if (currentFile && checkbox) {
+      let fileLinesArray = AppState.filesLinesCache.get(currentFile) || [];
+      let selectedCount = 0;
+      let untranslatedCount = 0;
+      fileLinesArray.forEach(lineData => {
+        if (!AppState.isTranslated(lineData)) {
+          untranslatedCount++;
+          if (AppState.selectedLines.has(lineData.line_num)) selectedCount++;
+        }
+      });
+      checkbox.disabled = untranslatedCount === 0;
+      checkbox.checked = untranslatedCount > 0 && selectedCount === untranslatedCount;
+      checkbox.indeterminate = selectedCount > 0 && selectedCount < untranslatedCount;
+    }
+  }
+
   static createMainRow() {
     let mainRow = document.createElement("div");
     mainRow.className = "preview-row";
-    
+
     let checkboxCell = document.createElement("div");
     checkboxCell.className = "checkbox-cell";
-    
+
     let checkboxElement = document.createElement("input");
     checkboxElement.type = "checkbox";
-    
+
     let textContentWrap = document.createElement("div");
     textContentWrap.className = "text-content";
-    
+
     let originalDiv = document.createElement("div");
     originalDiv.className = "original";
-    
+
     let translatedDiv = document.createElement("div");
     translatedDiv.className = "translated";
-    
+
     textContentWrap.append(originalDiv, translatedDiv);
     checkboxCell.append(checkboxElement, textContentWrap);
-    
-    let separatorDiv = document.createElement("div");
-    separatorDiv.style.cssText = "display:none;align-items:center;gap:12px;width:100%;";
-    
-    let separatorCheckbox = document.createElement("input");
-    separatorCheckbox.type = "checkbox";
-    separatorCheckbox.className = "sep-cb";
-    
-    let separatorLabel = document.createElement("div");
-    separatorLabel.className = "mono grow";
-    separatorLabel.style.cssText = "font-weight:700;color:var(--primary);";
-    
-    separatorDiv.append(separatorCheckbox, separatorLabel);
-    mainRow.append(checkboxCell, separatorDiv);
-    
+    mainRow.append(checkboxCell);
+
     mainRow.checkboxCellElement = checkboxCell;
     mainRow.checkboxElement = checkboxElement;
     mainRow.originalDivElement = originalDiv;
     mainRow.translatedDivElement = translatedDiv;
-    mainRow.separatorDivElement = separatorDiv;
-    mainRow.separatorCheckboxElement = separatorCheckbox;
-    mainRow.separatorLabelElement = separatorLabel;
-    
+
     return mainRow;
   }
 
@@ -1675,38 +1786,21 @@ class AppController {
     if (rowData.type === "separator") {
       rowElement.className = "preview-row separator";
       rowElement.checkboxCellElement.style.display = "none";
-      rowElement.separatorDivElement.style.display = "flex";
-      rowElement.separatorCheckboxElement.dataset.file = rowData.file;
-      
-      let fileLinesArray = AppState.filesLinesCache.get(rowData.file) || [];
-      let allLinesChecked = true;
-      let hasUntranslatedLines = false;
-      
-      fileLinesArray.forEach(lineData => {
-        if (!AppState.isTranslated(lineData)) {
-          hasUntranslatedLines = true;
-          if (!AppState.selectedLines.has(lineData.line_num)) allLinesChecked = false;
-        }
-      });
-      
-      rowElement.separatorCheckboxElement.checked = hasUntranslatedLines && allLinesChecked;
-      rowElement.separatorLabelElement.textContent = `File: ${rowData.file}`;
     } else {
       let lineData = rowData.line;
       let rowClasses = "preview-row";
-      
+
       if (AppState.isTranslated(lineData)) rowClasses += " row-translated";
       if (AppState.selectedLines.has(lineData.line_num)) rowClasses += " row-selected";
-      
+
       rowElement.className = rowClasses;
       rowElement.checkboxCellElement.style.display = "flex";
-      rowElement.separatorDivElement.style.display = "none";
       rowElement.checkboxElement.dataset.num = lineData.line_num;
       rowElement.checkboxElement.checked = AppState.selectedLines.has(lineData.line_num);
       rowElement.checkboxElement.disabled = AppState.isTranslated(lineData);
-      
+
       rowElement.originalDivElement.textContent = lineData.name ? `${lineData.line_num}. ${lineData.name}: ${lineData.message}` : `${lineData.line_num}. ${lineData.message}`;
-      
+
       if (AppState.isTranslated(lineData)) {
         rowElement.translatedDivElement.classList.remove("cell-muted");
         let translatedCharacterName = lineData.trans_name || lineData.name;
@@ -1720,6 +1814,7 @@ class AppController {
 
   static syncCheckboxes() {
     AppController.mainScroller.forceUpdate();
+    AppController.updateCurrentFileBadge();
     AppController.updateButtons();
   }
 
@@ -1728,12 +1823,12 @@ class AppController {
     AppState.lines.forEach(lineData => {
       if (lineData.name) uniqueNamesSet.add(lineData.name);
     });
-    
+
     let sortedNamesArray = Array.from(uniqueNamesSet).sort();
     UI.elements.nameTotalCount.textContent = sortedNamesArray.length;
     UI.elements.btnCopyAllNames.disabled = !sortedNamesArray.length;
     UI.elements.nameTableBody.replaceChildren();
-    
+
     let documentFragment = document.createDocumentFragment();
     sortedNamesArray.forEach(characterName => {
       let tableRow = document.createElement("tr");
@@ -1751,32 +1846,102 @@ class AppController {
     let fromLineNumber = parseInt(UI.elements.rangeFromInput.value);
     let toLineNumber = parseInt(UI.elements.rangeToInput.value);
     let maxLineNumber = AppState.lines.length ? AppState.lines.reduce((maxId, lineData) => Math.max(maxId, lineData.line_num), 0) : 0;
-    
+
     if (isNaN(fromLineNumber) || isNaN(toLineNumber) || fromLineNumber > toLineNumber || fromLineNumber < 1 || fromLineNumber > maxLineNumber || toLineNumber > maxLineNumber) {
       return alert("Range tidak valid.");
     }
-    
+
     AppState.selectedLines.clear();
     for (let lineNumber = fromLineNumber; lineNumber <= toLineNumber; lineNumber++) {
       let lineData = AppState.lineByNum.get(lineNumber);
       if (lineData && !AppState.isTranslated(lineData)) AppState.selectedLines.add(lineNumber);
     }
-    
+
     AppController.syncCheckboxes();
-    
+
     let rowIndex = AppState.displayRows.findIndex(rowData => rowData.type === "line" && rowData.line.line_num === fromLineNumber);
     if (rowIndex !== -1) {
       AppController.mainScroller.scrollToIndex(rowIndex);
       setTimeout(() => {
         let rowHtmlElement = UI.elements.previewContainer.querySelector(`input[data-num="${fromLineNumber}"]`)?.closest('.preview-row');
         if (rowHtmlElement) {
-          let originalBackground = rowHtmlElement.style.backgroundColor;
-          rowHtmlElement.style.transition = "background-color .3s ease";
-          rowHtmlElement.style.backgroundColor = "rgba(59, 130, 246, 0.4)";
-          setTimeout(() => rowHtmlElement.style.backgroundColor = originalBackground, 800);
+          rowHtmlElement.classList.add("row-flash");
+          setTimeout(() => rowHtmlElement.classList.remove("row-flash"), 800);
         }
       }, 50);
     }
+  }
+
+  static buildGlossaryMap() {
+    let glossaryMap = new Map();
+    if (AppState.vndbEnabled && AppState.vndbGlossary?.length) {
+      AppState.vndbGlossary.forEach(entry => glossaryMap.set(entry[0], entry[1]));
+    }
+    if (AppState.customEnabled && AppState.customGlossary?.length) {
+      AppState.customGlossary.forEach(entry => glossaryMap.set(entry[0], entry[1]));
+    }
+    return glossaryMap;
+  }
+
+  static buildReferenceMap(selectedLinesArray, glossaryMap) {
+    let referenceMap = new Map();
+    let selectedNames = new Set();
+    let selectedTrigrams = new Set();
+
+    selectedLinesArray.forEach(line => {
+      if (line.name) selectedNames.add(line.name);
+      let tri = Utils.getTrigrams(line.message);
+      tri.forEach(t => selectedTrigrams.add(t));
+    });
+
+    if (selectedNames.size > 0) {
+      let translatedLinesReversed = [...AppState.lines].filter(l => AppState.isTranslated(l)).reverse();
+      selectedNames.forEach(name => {
+        if (!glossaryMap.has(name)) {
+          let match = translatedLinesReversed.find(l => l.name === name && l.trans_name);
+          if (match && match.trans_name) {
+            referenceMap.set(name, match.trans_name);
+          }
+        }
+      });
+    }
+
+    let scoredMessages = [];
+    let translatedLines = AppState.lines.filter(l => AppState.isTranslated(l));
+
+    translatedLines.forEach(line => {
+      if (line.message && !glossaryMap.has(line.message)) {
+        let lineTrigrams = Utils.getTrigrams(line.message);
+        let score = 0;
+        for (let t of lineTrigrams) {
+          if (selectedTrigrams.has(t)) score++;
+        }
+        if (score > 0) {
+          scoredMessages.push({ orig: line.message, trans: line.trans_message, score: score });
+        }
+      }
+    });
+
+    scoredMessages.sort((a, b) => b.score - a.score);
+
+    let addedCount = 0;
+    let seenOrig = new Set();
+    for (let msg of scoredMessages) {
+      if (addedCount >= 5) break;
+      if (!seenOrig.has(msg.orig)) {
+        seenOrig.add(msg.orig);
+        referenceMap.set(msg.orig, msg.trans);
+        addedCount++;
+      }
+    }
+
+    return referenceMap;
+  }
+
+  static formatLineForAi(line) {
+    return line.name
+      ? `${line.line_num}. ${line.name}: ${line.message}`
+      : `${line.line_num}. ${line.message}`;
   }
 
   static async copyForAi() {
@@ -1787,14 +1952,7 @@ class AppController {
       promptParts.push(AppState.aiInstructionHeader.trim());
     }
 
-    let glossaryMap = new Map();
-    if (AppState.vndbEnabled && AppState.vndbGlossary?.length) {
-      AppState.vndbGlossary.forEach(entry => glossaryMap.set(entry[0], entry[1]));
-    }
-    if (AppState.customEnabled && AppState.customGlossary?.length) {
-      AppState.customGlossary.forEach(entry => glossaryMap.set(entry[0], entry[1]));
-    }
-
+    let glossaryMap = AppController.buildGlossaryMap();
     if (glossaryMap.size > 0) {
       let glossaryLines = [];
       glossaryMap.forEach((val, key) => glossaryLines.push(`${key}: ${val}`));
@@ -1802,57 +1960,7 @@ class AppController {
     }
 
     if (AppState.referenceEnabled) {
-      let referenceMap = new Map();
-      let selectedNames = new Set();
-      let selectedTrigrams = new Set();
-
-      selectedLinesArray.forEach(line => {
-        if (line.name) selectedNames.add(line.name);
-        let tri = Utils.getTrigrams(line.message);
-        tri.forEach(t => selectedTrigrams.add(t));
-      });
-
-      if (selectedNames.size > 0) {
-        let translatedLinesReversed = [...AppState.lines].filter(l => AppState.isTranslated(l)).reverse();
-        selectedNames.forEach(name => {
-          if (!glossaryMap.has(name)) {
-            let match = translatedLinesReversed.find(l => l.name === name && l.trans_name);
-            if (match && match.trans_name) {
-              referenceMap.set(name, match.trans_name);
-            }
-          }
-        });
-      }
-
-      let scoredMessages = [];
-      let translatedLines = AppState.lines.filter(l => AppState.isTranslated(l));
-      
-      translatedLines.forEach(line => {
-        if (line.message && !glossaryMap.has(line.message)) {
-          let lineTrigrams = Utils.getTrigrams(line.message);
-          let score = 0;
-          for (let t of lineTrigrams) {
-            if (selectedTrigrams.has(t)) score++;
-          }
-          if (score > 0) {
-            scoredMessages.push({ orig: line.message, trans: line.trans_message, score: score });
-          }
-        }
-      });
-
-      scoredMessages.sort((a, b) => b.score - a.score);
-      
-      let addedCount = 0;
-      let seenOrig = new Set();
-      for (let msg of scoredMessages) {
-        if (addedCount >= 5) break;
-        if (!seenOrig.has(msg.orig)) {
-          seenOrig.add(msg.orig);
-          referenceMap.set(msg.orig, msg.trans);
-          addedCount++;
-        }
-      }
-
+      let referenceMap = AppController.buildReferenceMap(selectedLinesArray, glossaryMap);
       if (referenceMap.size > 0) {
         let refLines = [];
         referenceMap.forEach((val, key) => refLines.push(`${key}: ${val}`));
@@ -1860,20 +1968,13 @@ class AppController {
       }
     }
 
-    let linesJson = JSON.stringify(
-      selectedLinesArray.map(line => {
-        let entry = { i: line.line_num };
-        if (line.name) entry.n = line.name;
-        entry.t = line.message;
-        return entry;
-      })
-    );
-    promptParts.push(linesJson);
+    let textLines = selectedLinesArray.map(AppController.formatLineForAi);
+    promptParts.push(textLines.join('\n'));
 
     let promptText = promptParts.join('\n\n');
 
     try {
-      await navigator.clipboard.writeText(promptText);
+      await Utils.safeClipboardWrite(promptText);
       UI.flashStatusMessage(`Disalin ${selectedLinesArray.length} baris.`);
     } catch (error) {
       UI.elements.pasteArea.value = promptText;
@@ -1881,95 +1982,70 @@ class AppController {
     }
   }
 
-  static fixDoubleQuotes(jsonString) {
-    let result = [];
-    let inString = false;
-    let i = 0;
-    while (i < jsonString.length) {
-      let ch = jsonString[i];
-      if (inString) {
-        if (ch === '\\' && i + 1 < jsonString.length) {
-          result.push(ch, jsonString[i + 1]);
-          i += 2;
-          continue;
-        }
-        if (ch === '"') {
-          if (i + 1 < jsonString.length && jsonString[i + 1] === '"') {
-            result.push('\\"');
-            i += 2;
-            continue;
-          }
-          inString = false;
-        }
-        result.push(ch);
-        i++;
-      } else {
-        if (ch === '"') inString = true;
-        result.push(ch);
-        i++;
+  static parseAiResponse(rawText) {
+    let cleanedText = rawText.replace(/```(?:json|text)?\s*([\s\S]*?)```/g, '$1').trim();
+    let parsedResults = [];
+    let validationErrors = [];
+    let seenLineNumbers = new Set();
+
+    let lineRegex = /^(\d+)\.\s+(.*)$/;
+    let lines = cleanedText.split(/\r?\n/);
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
+      if (!line) continue;
+
+      let match = line.match(lineRegex);
+      if (!match) {
+        validationErrors.push(`Baris ${i + 1}: Format tidak valid (harus "N. ...").`);
+        continue;
       }
+
+      let targetLineNumber = Number(match[1]);
+      let restText = match[2].trim();
+
+      if (!Number.isInteger(targetLineNumber) || targetLineNumber <= 0) {
+        validationErrors.push(`Baris ${i + 1}: ID tidak valid.`);
+        continue;
+      }
+
+      if (seenLineNumbers.has(targetLineNumber)) {
+        validationErrors.push(`Baris ${targetLineNumber}: Duplikat ID.`);
+        continue;
+      }
+      seenLineNumbers.add(targetLineNumber);
+
+      let name = null;
+      let message = restText;
+      let colonIndex = restText.indexOf(": ");
+      if (colonIndex > 0) {
+        name = restText.substring(0, colonIndex).trim();
+        message = restText.substring(colonIndex + 2).trim();
+      }
+
+      parsedResults.push({ num: targetLineNumber, name: name, msg: message });
     }
-    return result.join('');
+
+    return { parsedResults, validationErrors, seenLineNumbers };
   }
 
   static applyTranslation() {
     if (!AppState.lines.length) return;
 
     let rawInputText = UI.elements.pasteArea.value.trim();
-    let processedResults = [];
-    let validationErrors = [];
-    let seenLineNumbers = new Set();
+    if (!rawInputText) return alert("Teks kosong.");
 
-    let jsonText = rawInputText;
-    let codeFenceMatch = rawInputText.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeFenceMatch) jsonText = codeFenceMatch[1].trim();
-    let arrayStart = jsonText.indexOf('[');
-    let arrayEnd = jsonText.lastIndexOf(']');
+    let { parsedResults, validationErrors, seenLineNumbers } = AppController.parseAiResponse(rawInputText);
 
-    if (arrayStart === -1 || arrayEnd <= arrayStart) {
-      return alert("Baris 1: JSON array tidak ditemukan.");
-    }
-
-    let jsonSubstring = jsonText.substring(arrayStart, arrayEnd + 1);
-    let parsedArray;
-    try {
-      parsedArray = JSON.parse(jsonSubstring);
-    } catch (firstError) {
-      try {
-        parsedArray = JSON.parse(AppController.fixDoubleQuotes(jsonSubstring));
-      } catch (secondError) {
-        return alert("Baris 1: JSON tidak valid.");
+    if (!parsedResults.length) {
+      if (validationErrors.length) {
+        return alert("DITOLAK:\n" + validationErrors.slice(0, 10).join("\n") + (validationErrors.length > 10 ? `\n+${validationErrors.length - 10} error lainnya` : ""));
       }
+      return alert("Tidak ada data valid.");
     }
 
-    if (!Array.isArray(parsedArray) || !parsedArray.length) {
-      return alert("Baris 1: Array JSON kosong.");
-    }
-
-    for (let entry of parsedArray) {
-      if (typeof entry !== 'object' || entry === null) continue;
-      let targetLineNumber = Number(entry.i);
-      if (!Number.isInteger(targetLineNumber) || targetLineNumber <= 0) {
-        validationErrors.push(`Baris ?: ID tidak valid.`);
-        continue;
-      }
-      if (seenLineNumbers.has(targetLineNumber)) {
-        validationErrors.push(`Baris ${targetLineNumber}: Duplikat ID.`);
-        continue;
-      }
-      let characterName = entry.n != null ? String(entry.n) : null;
-      let translationMessage = entry.t != null ? String(entry.t).trim() : "";
-      seenLineNumbers.add(targetLineNumber);
-      processedResults.push({ num: targetLineNumber, name: characterName, msg: translationMessage });
-    }
-
-    if (!processedResults.length) {
-      if (validationErrors.length) return alert("DITOLAK:\n" + validationErrors.slice(0, 10).join("\n") + (validationErrors.length > 10 ? `\n+${validationErrors.length - 10} error lainnya` : ""));
-      return alert("Baris 1: Tidak ada data valid.");
-    }
-
-    if (processedResults.length !== AppState.selectedLines.size) {
-      validationErrors.push(`Baris ?: Jumlah entry (${processedResults.length}) ≠ jumlah centang (${AppState.selectedLines.size}).`);
+    if (parsedResults.length !== AppState.selectedLines.size) {
+      validationErrors.push(`Jumlah entry (${parsedResults.length}) ≠ jumlah centang (${AppState.selectedLines.size}).`);
     }
 
     AppState.selectedLines.forEach(targetLineNumber => {
@@ -1981,7 +2057,7 @@ class AppController {
     });
 
     let translationUpdates = [];
-    processedResults.forEach(resultItem => {
+    parsedResults.forEach(resultItem => {
       let targetLineData = AppState.lineByNum.get(resultItem.num);
       if (!targetLineData) {
         validationErrors.push(`Baris ${resultItem.num}: ID tidak ada.`);
@@ -2047,14 +2123,14 @@ class AppController {
   static openLineEditor(targetLineNumber) {
     let targetLineData = AppState.lineByNum.get(targetLineNumber);
     if (!targetLineData) return;
-    
+
     AppController.activeEditorLineNum = targetLineNumber;
     UI.elements.lineEditorTitle.textContent = `Edit Baris ${targetLineNumber}`;
     UI.elements.lineOriginalView.value = targetLineData.name ? `${targetLineData.name}: ${targetLineData.message}` : targetLineData.message;
     UI.elements.lineNameWrap.style.display = targetLineData.name ? "block" : "none";
     UI.elements.lineNameInput.value = targetLineData.name ? (targetLineData.trans_name || "") : "";
     if (targetLineData.name) UI.elements.lineNameInput.placeholder = targetLineData.name;
-    
+
     UI.elements.lineMessageInput.value = (targetLineData.trans_message || "").trim();
     UI.elements.lineTranslatedCheck.checked = AppState.isTranslated(targetLineData);
     UI.toggleModalVisibility(UI.elements.lineEditorModal, true);
@@ -2063,15 +2139,15 @@ class AppController {
   static saveLineEditor() {
     let targetLineData = AppState.lineByNum.get(AppController.activeEditorLineNum);
     if (!targetLineData) return;
-    
+
     let translationMessage = UI.elements.lineMessageInput.value.trim().replace(/\r?\n/g, "\\n");
     if (UI.elements.lineTranslatedCheck.checked && !translationMessage) return alert("Pesan kosong.");
-    
+
     AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
     targetLineData.trans_message = translationMessage || null;
     targetLineData.is_translated = !!(UI.elements.lineTranslatedCheck.checked && translationMessage);
     if (targetLineData.name) targetLineData.trans_name = UI.elements.lineNameInput.value.trim().replace(/\r?\n/g, "\\n") || null;
-    
+
     AppState.redoSnapshot = null;
     AppState.namesDirty = true;
     UI.toggleModalVisibility(UI.elements.lineEditorModal, false);
@@ -2122,37 +2198,37 @@ class AppController {
     setTimeout(() => AppController.renderProofread(), 340);
   }
 
+  static buildSearchRegExp(searchQueryText, isRegexSearch, isExactMatchSearch, isCaseSensitiveSearch) {
+    if (!searchQueryText) return null;
+    try {
+      let regexPatternString = isRegexSearch ? searchQueryText : searchQueryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (isExactMatchSearch) regexPatternString = `(?<![\\p{L}\\p{N}_])${regexPatternString}(?![\\p{L}\\p{N}_])`;
+      return new RegExp(regexPatternString, isCaseSensitiveSearch ? "gu" : "giu");
+    } catch (error) {
+      return null;
+    }
+  }
+
   static renderProofread() {
     if (!UI.elements.proofreadModal.classList.contains("open")) return;
-    
+
     let searchQueryText = UI.elements.proofreadSearchInput.value;
     let isRegexSearch = UI.elements.proofreadRegexCheck.checked;
     let isCaseSensitiveSearch = UI.elements.proofreadCaseCheck.checked;
     let isExactMatchSearch = UI.elements.proofreadExactCheck.checked;
     let onlyTranslatedSearch = UI.elements.proofreadTranslatedOnlyCheck.checked;
     let searchScopeType = UI.elements.proofreadScope.value;
-    let searchRegExp = null;
-    
-    AppController.currentHighlightRegex = null;
-    
-    if (searchQueryText) {
-      try {
-        let regexPatternString = isRegexSearch ? searchQueryText : searchQueryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        if (isExactMatchSearch) regexPatternString = `(?<![\\p{L}\\p{N}_])${regexPatternString}(?![\\p{L}\\p{N}_])`;
-        searchRegExp = new RegExp(regexPatternString, isCaseSensitiveSearch ? "gu" : "giu");
-        AppController.currentHighlightRegex = new RegExp(regexPatternString, isCaseSensitiveSearch ? "gu" : "giu");
-      } catch (error) {
-        return;
-      }
-    }
-    
+
+    let searchRegExp = AppController.buildSearchRegExp(searchQueryText, isRegexSearch, isExactMatchSearch, isCaseSensitiveSearch);
+    AppController.currentHighlightRegex = searchRegExp ? new RegExp(searchRegExp.source, searchRegExp.flags) : null;
+
     AppState.proofreadMatches = AppState.lines.filter(lineData => {
       if (onlyTranslatedSearch && !AppState.isTranslated(lineData)) return false;
       let defaultOriginalName = lineData.name || "";
       let finalTranslatedName = AppState.isTranslated(lineData) ? (lineData.trans_name || "").trim() || lineData.name : null;
       let targetSearchMessage = onlyTranslatedSearch ? lineData.trans_message : lineData.message;
       let targetSearchName = onlyTranslatedSearch ? finalTranslatedName : defaultOriginalName;
-      
+
       if (searchQueryText && searchRegExp) {
         let isMatchFound = false;
         searchRegExp.lastIndex = 0;
@@ -2171,9 +2247,9 @@ class AppController {
       transMsg: lineData.trans_message,
       isTrans: AppState.isTranslated(lineData)
     }));
-    
+
     UI.elements.proofreadStatus.textContent = `Ditemukan ${AppState.proofreadMatches.length} baris.`;
-    
+
     let queryChanged = searchQueryText !== AppController.lastSearchQuery;
     AppController.lastSearchQuery = searchQueryText;
     AppController.proofreadScroller.setItems(AppState.proofreadMatches, !queryChanged);
@@ -2182,27 +2258,27 @@ class AppController {
   static createProofreadRow() {
     let proofreadRow = document.createElement("div");
     proofreadRow.className = "preview-row";
-    
+
     let contentWrap = document.createElement("div");
     contentWrap.className = "text-content";
-    
+
     let metaDiv = document.createElement("div");
     metaDiv.className = "file-meta";
-    
+
     let originalDiv = document.createElement("div");
     originalDiv.className = "original";
-    
+
     let translatedDiv = document.createElement("div");
     translatedDiv.className = "translated";
-    
+
     contentWrap.append(metaDiv, originalDiv, translatedDiv);
     proofreadRow.append(contentWrap);
-    
+
     proofreadRow.wrapElement = contentWrap;
     proofreadRow.metaElement = metaDiv;
     proofreadRow.originalElement = originalDiv;
     proofreadRow.translatedElement = translatedDiv;
-    
+
     return proofreadRow;
   }
 
@@ -2211,10 +2287,10 @@ class AppController {
     rowElement.metaElement.textContent = `File: ${rowData.file} | Baris: ${rowData.num}`;
     rowElement.originalElement.replaceChildren();
     rowElement.translatedElement.replaceChildren();
-    
+
     let onlyTranslatedChecked = UI.elements.proofreadTranslatedOnlyCheck.checked;
     let searchScopeValue = UI.elements.proofreadScope.value;
-    
+
     let buildNodeTree = (nameString, messageString, applyHighlight) => {
       let documentFragment = document.createDocumentFragment();
       if (nameString) {
@@ -2232,10 +2308,10 @@ class AppController {
       }
       return documentFragment;
     };
-    
+
     if (!rowData.isTrans) rowElement.translatedElement.classList.add("cell-muted");
     else rowElement.translatedElement.classList.remove("cell-muted");
-    
+
     if (onlyTranslatedChecked) {
       rowElement.originalElement.textContent = rowData.origName ? `${rowData.origName}: ${rowData.origMsg}` : rowData.origMsg;
       if (rowData.isTrans) rowElement.translatedElement.appendChild(buildNodeTree(rowData.transName, rowData.transMsg, true));
@@ -2250,32 +2326,31 @@ class AppController {
   static execReplaceAll() {
     let searchQueryText = UI.elements.proofreadSearchInput.value;
     let replacementText = UI.elements.proofreadReplaceInput.value;
-    
+
     if (!searchQueryText) return alert("Pencarian kosong!");
-    
-    let replaceRegExp;
-    try {
-      let replacePatternString = UI.elements.proofreadRegexCheck.checked ? searchQueryText : searchQueryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (UI.elements.proofreadExactCheck.checked) replacePatternString = `(?<![\\p{L}\\p{N}_])${replacePatternString}(?![\\p{L}\\p{N}_])`;
-      replaceRegExp = new RegExp(replacePatternString, UI.elements.proofreadCaseCheck.checked ? 'gu' : 'giu');
-    } catch (error) {
-      return alert("Regex tidak valid.");
-    }
-    
+
+    let replaceRegExp = AppController.buildSearchRegExp(
+      searchQueryText,
+      UI.elements.proofreadRegexCheck.checked,
+      UI.elements.proofreadExactCheck.checked,
+      UI.elements.proofreadCaseCheck.checked
+    );
+    if (!replaceRegExp) return alert("Regex tidak valid.");
+
     let replacedCount = 0;
     AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
     AppState.redoSnapshot = null;
-    
+
     let onlyTranslatedReplace = UI.elements.proofreadTranslatedOnlyCheck.checked;
     let replaceScopeType = UI.elements.proofreadScope.value;
-    
+
     AppState.lines.forEach(lineData => {
       if (onlyTranslatedReplace && !AppState.isTranslated(lineData)) return;
-      
+
       let isLineReplaced = false;
       let targetMessageProperty = onlyTranslatedReplace ? 'trans_message' : 'message';
       let targetNameProperty = onlyTranslatedReplace ? 'trans_name' : 'name';
-      
+
       if ((replaceScopeType === 'all' || replaceScopeType === 'message') && lineData[targetMessageProperty]) {
         let newStringValue = lineData[targetMessageProperty].replace(replaceRegExp, replacementText);
         if (newStringValue !== lineData[targetMessageProperty]) {
@@ -2283,7 +2358,7 @@ class AppController {
           isLineReplaced = true;
         }
       }
-      
+
       if ((replaceScopeType === 'all' || replaceScopeType === 'name') && lineData[targetNameProperty]) {
         let newStringValue = lineData[targetNameProperty].replace(replaceRegExp, replacementText);
         if (newStringValue !== lineData[targetNameProperty]) {
@@ -2291,10 +2366,10 @@ class AppController {
           isLineReplaced = true;
         }
       }
-      
+
       if (isLineReplaced) replacedCount++;
     });
-    
+
     if (replacedCount) {
       AppState.namesDirty = true;
       AppController.refreshWorkspace(true);
