@@ -70,7 +70,7 @@ class UI {
     } else {
       element.classList.add("closing");
       element.classList.remove("open");
-      setTimeout(() => element.classList.remove("closing"), 220);
+      setTimeout(() => element.classList.remove("closing"), 180);
     }
   }
 
@@ -301,8 +301,8 @@ class VirtualScroller {
     this.elementDataIndices = [];
     this.defaultRowHeight = 80;
     this.rowGap = 8;
-    this.topPadding = 0;
-    this.bottomPadding = 0;
+    this.topPadding = 8;
+    this.bottomPadding = 12;
     this.overscanCount = 12;
     this.currentScrollTop = 0;
     this.totalContentHeight = 0;
@@ -448,19 +448,21 @@ class VirtualScroller {
 
     while (this.domElementsArray.length < requiredCount) {
       let newElement = this.createRowFunction();
-      newElement.style.position = 'absolute';
       newElement.style.transform = 'translateY(-9999px)';
       this.domElementsArray.push(newElement);
       this.elementDataIndices.push(-1);
       this.containerElement.appendChild(newElement);
     }
 
+    let justUpdated = false;
     for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
       let dataIndex = renderStart + elementIndex;
       let element = this.domElementsArray[elementIndex];
       if (this.elementDataIndices[elementIndex] !== dataIndex) {
         this.updateRowFunction(element, this.itemsArray[dataIndex], dataIndex);
         this.elementDataIndices[elementIndex] = dataIndex;
+        element._needsMeasure = true;
+        justUpdated = true;
       }
     }
 
@@ -479,20 +481,24 @@ class VirtualScroller {
     let heightsChanged = false;
     let scrollAdjustment = 0;
 
-    for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
-      let dataIndex = renderStart + elementIndex;
-      let element = this.domElementsArray[elementIndex];
-      let measuredHeight = element.offsetHeight;
-      let isSeparator = this.itemsArray[dataIndex] && this.itemsArray[dataIndex].type === "separator";
-      if (measuredHeight === 0) continue;
-      let totalWithGap = isSeparator ? measuredHeight : measuredHeight + this.rowGap;
-      if (Math.abs(totalWithGap - this.rowHeights[dataIndex]) > 1) {
-        let diff = totalWithGap - this.rowHeights[dataIndex];
-        if (this.rowPositions[dataIndex] < scrollTop) {
-          scrollAdjustment += diff;
+    if (justUpdated) {
+      for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
+        let element = this.domElementsArray[elementIndex];
+        if (!element._needsMeasure) continue;
+        element._needsMeasure = false;
+        let dataIndex = renderStart + elementIndex;
+        let measuredHeight = element.offsetHeight;
+        if (measuredHeight === 0) continue;
+        let isSeparator = this.itemsArray[dataIndex] && this.itemsArray[dataIndex].type === "separator";
+        let totalWithGap = isSeparator ? measuredHeight : measuredHeight + this.rowGap;
+        if (Math.abs(totalWithGap - this.rowHeights[dataIndex]) > 1) {
+          let diff = totalWithGap - this.rowHeights[dataIndex];
+          if (this.rowPositions[dataIndex] < scrollTop) {
+            scrollAdjustment += diff;
+          }
+          this.rowHeights[dataIndex] = totalWithGap;
+          heightsChanged = true;
         }
-        this.rowHeights[dataIndex] = totalWithGap;
-        heightsChanged = true;
       }
     }
 
@@ -556,7 +562,7 @@ class Importer {
   }
 
   static getBaseName(filePath) {
-    return String(filePath || "").replace(/\\/g, "/").split("/").pop().replace(/\.json$/i, "");
+    return String(filePath || "").replace(/\\/g, "/").split("/").pop();
   }
 
   static parseJsonData(jsonArray, fileName, startLineNum) {
@@ -893,6 +899,7 @@ class AppController {
   static tempCustomGlossary = [];
   static lastSearchQuery = "";
   static _lastFileBadge = null;
+  static _fileBadgeCache = null;
 
   static async createNewProject() {
     let newProjectName = prompt("Nama project baru:");
@@ -1649,11 +1656,13 @@ class AppController {
     UI.elements.copyStatus.classList.add("empty");
     UI.elements.stickyFileName.textContent = "";
     UI.elements.stickyFileName.title = "";
+    if (UI.elements.stickyFileRange) UI.elements.stickyFileRange.textContent = "";
     UI.elements.stickyFileHeader.classList.add("empty");
     UI.elements.stickyFileCheckbox.checked = false;
     UI.elements.stickyFileCheckbox.disabled = true;
     delete UI.elements.stickyFileCheckbox.dataset.file;
     AppController._lastFileBadge = null;
+    AppController._fileBadgeCache = null;
     UI.elements.workspaceView.style.display = "none";
     let splitLayout = document.querySelector('.split-layout');
     if (splitLayout) splitLayout.classList.remove('hide-tools');
@@ -1710,6 +1719,7 @@ class AppController {
   static updateCurrentFileBadge() {
     let header = UI.elements.stickyFileHeader;
     let nameEl = UI.elements.stickyFileName;
+    let rangeEl = UI.elements.stickyFileRange;
     let checkbox = UI.elements.stickyFileCheckbox;
     if (!header || !nameEl || !AppController.mainScroller) return;
     let scrollTop = UI.elements.previewViewport.scrollTop;
@@ -1725,26 +1735,43 @@ class AppController {
         let baseName = String(currentFile).replace(/\\/g, "/").split("/").pop();
         nameEl.textContent = baseName;
         nameEl.title = currentFile;
+        if (rangeEl) {
+          let fileLinesArray = AppState.filesLinesCache.get(currentFile) || [];
+          if (fileLinesArray.length) {
+            let firstLine = fileLinesArray[0].line_num;
+            let lastLine = fileLinesArray[fileLinesArray.length - 1].line_num;
+            rangeEl.textContent = `${firstLine}-${lastLine}`;
+          } else {
+            rangeEl.textContent = "";
+          }
+        }
         header.classList.remove("empty");
         checkbox.dataset.file = currentFile;
       } else {
         nameEl.textContent = "";
         nameEl.title = "";
+        if (rangeEl) rangeEl.textContent = "";
         header.classList.add("empty");
         delete checkbox.dataset.file;
       }
       AppController._lastFileBadge = currentFile;
+      AppController._fileBadgeCache = null;
     }
     if (currentFile && checkbox) {
-      let fileLinesArray = AppState.filesLinesCache.get(currentFile) || [];
-      let selectedCount = 0;
-      let untranslatedCount = 0;
-      fileLinesArray.forEach(lineData => {
-        if (!AppState.isTranslated(lineData)) {
-          untranslatedCount++;
-          if (AppState.selectedLines.has(lineData.line_num)) selectedCount++;
-        }
-      });
+      let cacheKey = `${currentFile}:${AppState.selectedLines.size}:${AppState.translatedCount}`;
+      if (!AppController._fileBadgeCache || AppController._fileBadgeCache.key !== cacheKey) {
+        let fileLinesArray = AppState.filesLinesCache.get(currentFile) || [];
+        let selectedCount = 0;
+        let untranslatedCount = 0;
+        fileLinesArray.forEach(lineData => {
+          if (!AppState.isTranslated(lineData)) {
+            untranslatedCount++;
+            if (AppState.selectedLines.has(lineData.line_num)) selectedCount++;
+          }
+        });
+        AppController._fileBadgeCache = { key: cacheKey, selectedCount, untranslatedCount };
+      }
+      let { selectedCount, untranslatedCount } = AppController._fileBadgeCache;
       checkbox.disabled = untranslatedCount === 0;
       checkbox.checked = untranslatedCount > 0 && selectedCount === untranslatedCount;
       checkbox.indeterminate = selectedCount > 0 && selectedCount < untranslatedCount;
@@ -1982,7 +2009,7 @@ class AppController {
     }
   }
 
-  static parseAiResponse(rawText) {
+  static parseAiResponse(rawText, lineByNum) {
     let cleanedText = rawText.replace(/```(?:json|text)?\s*([\s\S]*?)```/g, '$1').trim();
     let parsedResults = [];
     let validationErrors = [];
@@ -2015,12 +2042,20 @@ class AppController {
       }
       seenLineNumbers.add(targetLineNumber);
 
+      let originalLine = lineByNum ? lineByNum.get(targetLineNumber) : null;
       let name = null;
       let message = restText;
-      let colonIndex = restText.indexOf(": ");
-      if (colonIndex > 0) {
-        name = restText.substring(0, colonIndex).trim();
-        message = restText.substring(colonIndex + 2).trim();
+
+      if (originalLine && originalLine.name) {
+        let colonIndex = restText.indexOf(": ");
+        if (colonIndex > 0) {
+          name = restText.substring(0, colonIndex).trim();
+          message = restText.substring(colonIndex + 2).trim();
+        } else if (restText.endsWith(":")) {
+          let trailingColon = restText.length - 1;
+          name = restText.substring(0, trailingColon).trim();
+          message = "";
+        }
       }
 
       parsedResults.push({ num: targetLineNumber, name: name, msg: message });
@@ -2035,7 +2070,7 @@ class AppController {
     let rawInputText = UI.elements.pasteArea.value.trim();
     if (!rawInputText) return alert("Teks kosong.");
 
-    let { parsedResults, validationErrors, seenLineNumbers } = AppController.parseAiResponse(rawInputText);
+    let { parsedResults, validationErrors, seenLineNumbers } = AppController.parseAiResponse(rawInputText, AppState.lineByNum);
 
     if (!parsedResults.length) {
       if (validationErrors.length) {
@@ -2070,10 +2105,11 @@ class AppController {
 
       let hasOriginalName = !!(targetLineData.name || "").trim();
       let hasTranslatedName = !!(resultItem.name || "").trim();
+      let originalHasMessage = !!(targetLineData.message || "").trim();
 
       if (hasOriginalName && !hasTranslatedName) validationErrors.push(`Baris ${resultItem.num}: Nama dihapus AI.`);
       else if (!hasOriginalName && hasTranslatedName) validationErrors.push(`Baris ${resultItem.num}: Narasi tapi ada nama.`);
-      else if (!resultItem.msg) validationErrors.push(`Baris ${resultItem.num}: Pesan kosong.`);
+      else if (!resultItem.msg && originalHasMessage) validationErrors.push(`Baris ${resultItem.num}: Pesan kosong.`);
       else translationUpdates.push({ lineData: targetLineData, itemResult: resultItem });
     });
 
@@ -2141,11 +2177,13 @@ class AppController {
     if (!targetLineData) return;
 
     let translationMessage = UI.elements.lineMessageInput.value.trim().replace(/\r?\n/g, "\\n");
-    if (UI.elements.lineTranslatedCheck.checked && !translationMessage) return alert("Pesan kosong.");
+    let originalHasMessage = !!(targetLineData.message || "").trim();
+    if (UI.elements.lineTranslatedCheck.checked && !translationMessage && originalHasMessage) return alert("Pesan kosong.");
 
     AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
     targetLineData.trans_message = translationMessage || null;
-    targetLineData.is_translated = !!(UI.elements.lineTranslatedCheck.checked && translationMessage);
+    let markTranslated = UI.elements.lineTranslatedCheck.checked && (!!translationMessage || !originalHasMessage);
+    targetLineData.is_translated = markTranslated;
     if (targetLineData.name) targetLineData.trans_name = UI.elements.lineNameInput.value.trim().replace(/\r?\n/g, "\\n") || null;
 
     AppState.redoSnapshot = null;
