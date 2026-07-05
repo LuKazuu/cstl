@@ -119,7 +119,14 @@
         <div class="card mt-3 mb-2">
           <div class="row between mb-2">
             <div class="section-label" style="margin:0;">Daftar Nama (<span id="nameTotalCount">0</span>)</div>
-            <button id="btnCopyAllNames" class="btn btn-ghost btn-xs" disabled>Copy All</button>
+            <div class="dropdown" id="copyNamesGroup">
+              <button id="btnCopyAllNames" class="btn btn-ghost btn-xs" disabled>Copy All</button>
+              <div id="copyNamesDropdown" class="dropdown-content dropdown-right">
+                <button id="btnCopyNamesPlain" class="dropdown-item">Nama Saja</button>
+                <button id="btnCopyNamesWithGlossary" class="dropdown-item">Dengan Glossary</button>
+                <button id="btnCopyNamesMissingGlossary" class="dropdown-item">Belum di Glossary</button>
+              </div>
+            </div>
           </div>
           <p class="hint mb-2 hint-tight">Klik pada baris nama untuk langsung menyalin teks ke clipboard.</p>
           <div class="name-table-wrap">

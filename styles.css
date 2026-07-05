@@ -335,7 +335,8 @@ input, textarea, button, select { font-family: inherit; font-size: inherit; }
   width: 100%;
 }
 .dropdown-item:last-child { border-bottom: none; }
-.dropdown-item:hover { background: var(--primary-tint); color: #c7d2fe; }
+.dropdown-item:hover:not(:disabled) { background: var(--primary-tint); color: #c7d2fe; }
+.dropdown-item:disabled { opacity: 0.35; cursor: not-allowed; }
 
 #moreGroup { flex-shrink: 0; }
 #moreDropdown { padding: 4px; min-width: 170px; }

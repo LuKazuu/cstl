@@ -1,4 +1,4 @@
-const CACHE = 'cstl-v14';
+const CACHE = 'cstl-v14.2';
 const ASSETS = [
   './',
   './index.html',

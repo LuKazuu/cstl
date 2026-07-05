@@ -819,8 +819,13 @@ const App = {
         e.preventDefault();
         $('moreDropdown')?.classList.toggle('show');
       }
+      if (e.target.closest('#btnCopyAllNames')) {
+        e.preventDefault();
+        $('copyNamesDropdown')?.classList.toggle('show');
+      }
       if (!e.target.closest('#importGroup') && $('importDropdown')) $('importDropdown').classList.remove('show');
       if (!e.target.closest('#moreGroup') && $('moreDropdown')) $('moreDropdown').classList.remove('show');
+      if (!e.target.closest('#copyNamesGroup') && $('copyNamesDropdown')) $('copyNamesDropdown').classList.remove('show');
       const bd = e.target.closest('.backdrop.open');
       if (bd && e.target === bd) App.toggleModal(bd, false);
     });
@@ -1101,14 +1106,9 @@ const App = {
       }
     });
 
-    $('btnCopyAllNames').addEventListener('click', async () => {
-      const names = new Set();
-      State.lines.forEach(l => { if (l.name) names.add(l.name); });
-      const arr = Array.from(names).sort();
-      if (!arr.length) return;
-      try { await clipboard(arr.join('\n')); App.flash(`${arr.length} nama disalin!`); }
-      catch { alert('Clipboard diblokir.'); }
-    });
+    $('btnCopyNamesPlain').addEventListener('click', () => App.copyAllNames('plain'));
+    $('btnCopyNamesWithGlossary').addEventListener('click', () => App.copyAllNames('glossary'));
+    $('btnCopyNamesMissingGlossary').addEventListener('click', () => App.copyAllNames('missing'));
   },
 
   async backup(p) {
@@ -1558,7 +1558,14 @@ const App = {
     State.lines.forEach(l => { if (l.name) set.add(l.name); });
     const arr = Array.from(set).sort();
     $('nameTotalCount').textContent = arr.length;
-    $('btnCopyAllNames').disabled = !arr.length;
+    const hasNames = arr.length > 0;
+    const gloss = App.buildGlossaryMap();
+    const hasGloss = hasNames && arr.some(n => gloss.has(n));
+    const hasMissing = hasNames && arr.some(n => !gloss.has(n));
+    $('btnCopyAllNames').disabled = !hasNames;
+    $('btnCopyNamesPlain').disabled = !hasNames;
+    $('btnCopyNamesWithGlossary').disabled = !hasGloss;
+    $('btnCopyNamesMissingGlossary').disabled = !hasMissing;
     const body = $('nameTableBody');
     body.replaceChildren();
     const frag = document.createDocumentFragment();
@@ -1572,6 +1579,30 @@ const App = {
       frag.appendChild(tr);
     });
     body.appendChild(frag);
+  },
+
+  async copyAllNames(mode) {
+    $('copyNamesDropdown').classList.remove('show');
+    const names = new Set();
+    State.lines.forEach(l => { if (l.name) names.add(l.name); });
+    const arr = Array.from(names).sort();
+    if (!arr.length) return;
+    const gloss = App.buildGlossaryMap();
+    let lines, label;
+    if (mode === 'plain') {
+      lines = arr;
+      label = `${arr.length} nama disalin!`;
+    } else if (mode === 'glossary') {
+      lines = arr.map(n => `${n}: ${gloss.get(n) || ''}`);
+      label = `${arr.length} nama + glossary disalin!`;
+    } else {
+      const missing = arr.filter(n => !gloss.has(n));
+      lines = missing.map(n => `${n}: `);
+      label = `${missing.length} nama (belum di glossary) disalin!`;
+    }
+    if (!lines.length) { App.flash('Tidak ada nama yang cocok.'); return; }
+    try { await clipboard(lines.join('\n')); App.flash(label); }
+    catch { alert('Clipboard diblokir.'); }
   },
 
   selectRange() {
