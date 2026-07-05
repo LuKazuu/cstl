@@ -1,2423 +1,2008 @@
 const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Keep the line numbering and format intact.`;
 
-class Utils {
-  static escapeHtml(text) {
-    return String(text == null ? "" : text)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
+const $ = id => document.getElementById(id);
+const escapeHtml = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+const sanitizeName = s => String(s || '').replace(/[^\p{L}\p{N}_\-\.]/gu, '_');
+const isJapanese = s => /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(s);
+const baseName = p => String(p || '').replace(/\\/g, '/').split('/').pop();
 
-  static getTrigrams(text) {
-    let set = new Set();
-    if (!text) return set;
-    if (text.length < 3) {
-      set.add(text);
-      return set;
-    }
-    for (let i = 0; i <= text.length - 3; i++) {
-      set.add(text.substring(i, i + 3));
-    }
-    return set;
-  }
-
-  static extractMetadata(projectData) {
-    const { lines, proofreadScope, proofreadRegex, proofreadCaseSensitive, proofreadExactMatch, proofreadTranslatedOnly, ...metadata } = projectData;
-    return metadata;
-  }
-
-  static sanitizeFileName(name) {
-    return String(name || "").replace(/[^\p{L}\p{N}_\-\.]/gu, '_');
-  }
-
-  static safeClipboardWrite(text) {
-    if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(text);
-    }
-    let textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      document.execCommand("copy");
-      return Promise.resolve();
-    } catch (err) {
-      return Promise.reject(err);
-    } finally {
-      document.body.removeChild(textarea);
-    }
-  }
+function clipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); return Promise.resolve(); }
+  catch (e) { return Promise.reject(e); }
+  finally { document.body.removeChild(ta); }
 }
 
-class UI {
-  static elements = {};
-  static hintTokenCounter = 0;
+function getTrigrams(text) {
+  const set = new Set();
+  if (!text) return set;
+  if (text.length < 3) { set.add(text); return set; }
+  for (let i = 0; i <= text.length - 3; i++) set.add(text.substring(i, i + 3));
+  return set;
+}
 
-  static cacheElements() {
-    document.querySelectorAll('[id]').forEach(element => {
-      UI.elements[element.id] = element;
+function decodeBuffer(buf) {
+  for (const enc of ['utf-8', 'shift_jis', 'windows-31j', 'cp932']) {
+    try { return new TextDecoder(enc, { fatal: true }).decode(buf); } catch {}
+  }
+  return new TextDecoder('utf-8').decode(buf);
+}
+
+function normalizeLine(l) {
+  return {
+    line_num: Number(l.line_num),
+    file: String(l.file),
+    name: l.name == null ? null : String(l.name).replace(/\r?\n/g, '\\n').trim(),
+    message: String(l.message || '').replace(/\r?\n/g, '\\n').trim(),
+    trans_name: l.trans_name == null ? null : String(l.trans_name).replace(/\r?\n/g, '\\n').trim(),
+    trans_message: l.trans_message == null ? null : String(l.trans_message).replace(/\r?\n/g, '\\n').trim(),
+    is_translated: Boolean(l.is_translated)
+  };
+}
+
+const State = {
+  projectId: null,
+  projectName: '',
+  projectType: 'uninitialized',
+  epubTags: 'p',
+  epubSourceId: null,
+  lines: [],
+  files: [],
+  prompt: DEFAULT_PROMPT,
+  ignoreName: false,
+  promptEnabled: true,
+  referenceEnabled: false,
+  vndbEnabled: false,
+  vndbId: '',
+  vndbGlossary: [],
+  customEnabled: false,
+  customRaw: '',
+  customGlossary: [],
+  jumpToContext: false,
+  hideTools: false,
+  prScope: 'all',
+  prRegex: false,
+  prCase: false,
+  prExact: false,
+  prTranslatedOnly: true,
+  undo: null,
+  redo: null,
+  selected: new Set(),
+  rows: [],
+  byNum: new Map(),
+  fileLines: new Map(),
+  matches: [],
+  saveTimer: null,
+  translatedCount: 0,
+  namesDirty: true
+};
+
+State.toData = () => ({
+  version: 14,
+  projectName: State.projectName,
+  projectType: State.projectType,
+  epubTags: State.epubTags,
+  epubSourceId: State.epubSourceId,
+  imported_files: State.files,
+  lines: State.lines,
+  prompt_header: State.prompt,
+  ignoreNameTranslation: State.ignoreName,
+  promptEnabled: State.promptEnabled,
+  referenceEnabled: State.referenceEnabled,
+  vndbEnabled: State.vndbEnabled,
+  vndbId: State.vndbId,
+  vndbGlossary: State.vndbGlossary,
+  customEnabled: State.customEnabled,
+  customRaw: State.customRaw,
+  customGlossary: State.customGlossary,
+  jumpToContext: State.jumpToContext,
+  hideTools: State.hideTools,
+  proofreadScope: State.prScope,
+  proofreadRegex: State.prRegex,
+  proofreadCaseSensitive: State.prCase,
+  proofreadExactMatch: State.prExact,
+  proofreadTranslatedOnly: State.prTranslatedOnly
+});
+
+const isTrans = l => !!l.is_translated;
+const snapshot = () => ({ lines: JSON.parse(JSON.stringify(State.lines)), selected: new Set(State.selected) });
+
+State.updateCount = () => {
+  State.translatedCount = State.lines.filter(isTrans).length;
+};
+
+State.rebuild = () => {
+  State.byNum.clear();
+  State.fileLines.clear();
+  State.rows = [];
+  const grouped = new Map(State.files.map(f => [f, []]));
+  State.lines.forEach(l => {
+    State.byNum.set(l.line_num, l);
+    if (grouped.has(l.file)) grouped.get(l.file).push(l);
+  });
+  for (const [file, lines] of grouped.entries()) {
+    State.fileLines.set(file, lines);
+    if (lines.length) {
+      State.rows.push({ type: 'separator', file });
+      lines.forEach(l => State.rows.push({ type: 'line', line: l }));
+    }
+  }
+};
+
+State.queueSave = () => {
+  if (!State.projectId) return;
+  clearTimeout(State.saveTimer);
+  State.saveTimer = setTimeout(() => {
+    const idle = window.requestIdleCallback || (fn => setTimeout(fn, 0));
+    idle(() => {
+      Storage.save(State.projectId, State.toData()).then(() => {
+        App.flashSaved();
+      });
     });
-  }
+  }, 500);
+};
 
-  static toggleModalVisibility(element, showModal) {
-    if (showModal) {
-      element.classList.remove("closing");
-      element.classList.add("open");
-    } else {
-      element.classList.add("closing");
-      element.classList.remove("open");
-      setTimeout(() => element.classList.remove("closing"), 180);
-    }
-  }
+const Storage = {
+  root: () => navigator.storage.getDirectory(),
 
-  static flashStatusMessage(messageText, keepAlive = false) {
-    UI.elements.copyStatus.textContent = messageText;
-    UI.elements.copyStatus.classList.remove("empty");
-    let currentToken = ++UI.hintTokenCounter;
-    if (!keepAlive) {
-      setTimeout(() => {
-        if (UI.hintTokenCounter === currentToken) {
-          UI.elements.copyStatus.classList.add("empty");
-        }
-      }, 3000);
-    }
-  }
-
-  static createDomNode(tagName, className, attributesObject = {}) {
-    let domNode = document.createElement(tagName);
-    if (className) domNode.className = className;
-    for (let attributeKey in attributesObject) {
-      domNode.setAttribute(attributeKey, attributesObject[attributeKey]);
-    }
-    return domNode;
-  }
-
-  static isAnyModalOpen() {
-    return document.querySelectorAll('.modal-backdrop.open').length > 0;
-  }
-
-  static getTopmostOpenModal() {
-    let openModals = Array.from(document.querySelectorAll('.modal-backdrop.open'));
-    if (!openModals.length) return null;
-    return openModals.sort((a, b) => {
-      let za = parseInt(getComputedStyle(a).zIndex) || 0;
-      let zb = parseInt(getComputedStyle(b).zIndex) || 0;
-      return zb - za;
-    })[0];
-  }
-}
-
-class StorageManager {
-  static async getRootDirectory() {
-    return await navigator.storage.getDirectory();
-  }
-
-  static async saveProjectData(projectId, projectData) {
+  async save(id, data) {
     try {
-      projectData.updatedAt = Date.now();
-      let rootDirectory = await StorageManager.getRootDirectory();
-      let fileHandle = await rootDirectory.getFileHandle(projectId, { create: true });
-      let writableStream = await fileHandle.createWritable();
-      await writableStream.write(JSON.stringify(projectData));
-      await writableStream.close();
-    } catch (error) {
-      UI.flashStatusMessage("Gagal menyimpan ke storage!");
+      data.updatedAt = Date.now();
+      const root = await Storage.root();
+      const h = await root.getFileHandle(id, { create: true });
+      const w = await h.createWritable();
+      await w.write(JSON.stringify(data));
+      await w.close();
+    } catch {
+      App.flash('Gagal menyimpan ke storage!');
     }
-  }
+  },
 
-  static async fetchAllProjects() {
-    let rootDirectory = await StorageManager.getRootDirectory();
-    let projectsList = [];
-    for await (let [fileName, fileHandle] of rootDirectory.entries()) {
-      if (fileName.endsWith(".cstl") && fileHandle.kind === 'file') {
-        try {
-          let fileObject = await fileHandle.getFile();
-          let projectData = JSON.parse(await fileObject.text());
-          projectsList.push({
-            id: fileName,
-            name: projectData.projectName || fileName.replace(".cstl", ''),
-            updatedAt: projectData.updatedAt || fileObject.lastModified,
-            fileCount: projectData.imported_files?.length || 0,
-            lineCount: projectData.lines?.length || 0,
-            data: projectData
-          });
-        } catch (error) {}
-      }
-    }
-    return projectsList.sort((projectA, projectB) => projectB.updatedAt - projectA.updatedAt);
-  }
-
-  static async removeProjectData(projectId, epubIdentifier) {
-    let rootDirectory = await StorageManager.getRootDirectory();
-    if (epubIdentifier) {
+  async list() {
+    const root = await Storage.root();
+    const items = [];
+    for await (const [name, h] of root.entries()) {
+      if (!name.endsWith('.cstl') || h.kind !== 'file') continue;
       try {
-        await rootDirectory.removeEntry(epubIdentifier);
-      } catch (error) {}
+        const f = await h.getFile();
+        const data = JSON.parse(await f.text());
+        items.push({
+          id: name,
+          name: data.projectName || name.replace('.cstl', ''),
+          updatedAt: data.updatedAt || f.lastModified,
+          fileCount: data.imported_files?.length || 0,
+          lineCount: data.lines?.length || 0,
+          translatedCount: data.lines?.filter(l => l.is_translated).length || 0,
+          data
+        });
+      } catch {}
     }
-    await rootDirectory.removeEntry(projectId);
+    return items.sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  async remove(id, epubId) {
+    const root = await Storage.root();
+    if (epubId) { try { await root.removeEntry(epubId); } catch {} }
+    await root.removeEntry(id);
   }
-}
+};
 
-class AppState {
-  static currentProjectId = null;
-  static projectName = "";
-  static projectType = "uninitialized";
-  static epubTags = "p";
-  static epubSourceId = null;
-  static lines = [];
-  static importedFiles = [];
-  static aiInstructionHeader = DEFAULT_PROMPT;
-  static ignoreNameTranslation = false;
-  static aiPromptEnabled = true;
-  static referenceEnabled = false;
-  static vndbEnabled = false;
-  static vndbId = "";
-  static vndbGlossary = [];
-  static customEnabled = false;
-  static customRaw = "";
-  static customGlossary = [];
-  static jumpToContext = false;
-  static hideTools = false;
-  static proofreadScope = "all";
-  static proofreadRegex = false;
-  static proofreadCaseSensitive = false;
-  static proofreadExactMatch = false;
-  static proofreadTranslatedOnly = true;
-  static undoSnapshot = null;
-  static redoSnapshot = null;
-  static selectedLines = new Set();
-  static displayRows = [];
-  static lineByNum = new Map();
-  static filesLinesCache = new Map();
-  static proofreadMatches = [];
-  static saveTimeout = null;
-  static translatedCount = 0;
-  static namesDirty = true;
+class Scroller {
+  constructor(viewport, container, create, update) {
+    this.vp = viewport;
+    this.container = container;
+    this.create = create;
+    this.update = update;
+    this.items = [];
+    this.heights = new Float32Array(0);
+    this.pos = new Float32Array(0);
+    this.els = [];
+    this.indices = [];
+    this.defaultH = 80;
+    this.gap = 8;
+    this.topPad = 8;
+    this.botPad = 12;
+    this.overscan = 12;
+    this.scrollTop = 0;
+    this.totalH = 0;
+    this.scheduled = false;
+    this.lastW = 0;
+    this.lastH = 0;
 
-  static toProjectData() {
-    return {
-      version: 12,
-      projectName: AppState.projectName,
-      projectType: AppState.projectType,
-      epubTags: AppState.epubTags,
-      epubSourceId: AppState.epubSourceId,
-      imported_files: AppState.importedFiles,
-      lines: AppState.lines,
-      prompt_header: AppState.aiInstructionHeader,
-      ignoreNameTranslation: AppState.ignoreNameTranslation,
-      promptEnabled: AppState.aiPromptEnabled,
-      referenceEnabled: AppState.referenceEnabled,
-      vndbEnabled: AppState.vndbEnabled,
-      vndbId: AppState.vndbId,
-      vndbGlossary: AppState.vndbGlossary,
-      customEnabled: AppState.customEnabled,
-      customRaw: AppState.customRaw,
-      customGlossary: AppState.customGlossary,
-      jumpToContext: AppState.jumpToContext,
-      hideTools: AppState.hideTools,
-      proofreadScope: AppState.proofreadScope,
-      proofreadRegex: AppState.proofreadRegex,
-      proofreadCaseSensitive: AppState.proofreadCaseSensitive,
-      proofreadExactMatch: AppState.proofreadExactMatch,
-      proofreadTranslatedOnly: AppState.proofreadTranslatedOnly
-    };
-  }
-
-  static isTranslated(lineData) {
-    return !!lineData.is_translated;
-  }
-
-  static normalizeLine(lineData) {
-    return {
-      line_num: Number(lineData.line_num),
-      file: String(lineData.file),
-      name: lineData.name == null ? null : String(lineData.name).replace(/\r?\n/g, "\\n").trim(),
-      message: String(lineData.message || "").replace(/\r?\n/g, "\\n").trim(),
-      trans_name: lineData.trans_name == null ? null : String(lineData.trans_name).replace(/\r?\n/g, "\\n").trim(),
-      trans_message: lineData.trans_message == null ? null : String(lineData.trans_message).replace(/\r?\n/g, "\\n").trim(),
-      is_translated: Boolean(lineData.is_translated)
-    };
-  }
-
-  static updateTranslatedCount() {
-    AppState.translatedCount = AppState.lines.filter(lineData => lineData.is_translated).length;
-  }
-
-  static rebuildCache() {
-    AppState.lineByNum.clear();
-    AppState.filesLinesCache.clear();
-    AppState.displayRows = [];
-
-    let groupedFiles = new Map(AppState.importedFiles.map(fileName => [fileName, []]));
-    AppState.lines.forEach(lineData => {
-      AppState.lineByNum.set(lineData.line_num, lineData);
-      if (groupedFiles.has(lineData.file)) {
-        groupedFiles.get(lineData.file).push(lineData);
-      }
-    });
-
-    for (let [fileName, fileRows] of groupedFiles.entries()) {
-      AppState.filesLinesCache.set(fileName, fileRows);
-      if (fileRows.length) {
-        AppState.displayRows.push({ type: "separator", file: fileName });
-        fileRows.forEach(lineData => AppState.displayRows.push({ type: "line", line: lineData }));
-      }
-    }
-  }
-
-  static queueAutoSave() {
-    if (!AppState.currentProjectId) return;
-    clearTimeout(AppState.saveTimeout);
-    AppState.saveTimeout = setTimeout(() => {
-      if (window.requestIdleCallback) {
-        window.requestIdleCallback(AppState.executeAutoSave);
-      } else {
-        setTimeout(AppState.executeAutoSave, 0);
-      }
-    }, 500);
-  }
-
-  static async executeAutoSave() {
-    await StorageManager.saveProjectData(AppState.currentProjectId, AppState.toProjectData());
-    UI.elements.statusBar.textContent = UI.elements.statusBar.textContent.replace(" | Tersimpan!", "") + " | Tersimpan!";
-    setTimeout(AppController.updateStatusBar, 2000);
-  }
-}
-
-class VirtualScroller {
-  constructor(viewportElement, containerElement, createRowFunction, updateRowFunction) {
-    this.viewportElement = viewportElement;
-    this.containerElement = containerElement;
-    this.createRowFunction = createRowFunction;
-    this.updateRowFunction = updateRowFunction;
-    this.itemsArray = [];
-    this.rowHeights = new Float32Array(0);
-    this.rowPositions = new Float32Array(0);
-    this.domElementsArray = [];
-    this.elementDataIndices = [];
-    this.defaultRowHeight = 80;
-    this.rowGap = 8;
-    this.topPadding = 8;
-    this.bottomPadding = 12;
-    this.overscanCount = 12;
-    this.currentScrollTop = 0;
-    this.totalContentHeight = 0;
-    this.rafScheduled = false;
-    this.scrollRafId = 0;
-    this.lastViewportWidth = 0;
-    this.lastViewportHeight = 0;
-
-    this.viewportElement.addEventListener('scroll', () => {
-      this.currentScrollTop = this.viewportElement.scrollTop;
-      this.scheduleRender();
+    viewport.addEventListener('scroll', () => {
+      this.scrollTop = viewport.scrollTop;
+      this.schedule();
     }, { passive: true });
 
     if (window.ResizeObserver) {
-      this.resizeObserver = new ResizeObserver(() => {
-        let newWidth = this.viewportElement.clientWidth;
-        let newHeight = this.viewportElement.clientHeight;
-        if (newWidth === this.lastViewportWidth && newHeight === this.lastViewportHeight) return;
-        this.lastViewportWidth = newWidth;
-        this.lastViewportHeight = newHeight;
-        this.invalidateAll();
-        this.scheduleRender();
+      this.ro = new ResizeObserver(() => {
+        const w = viewport.clientWidth, h = viewport.clientHeight;
+        if (w === this.lastW && h === this.lastH) return;
+        this.lastW = w; this.lastH = h;
+        this.invalidate();
+        this.schedule();
       });
-      this.resizeObserver.observe(this.viewportElement);
-      this.lastViewportWidth = this.viewportElement.clientWidth;
-      this.lastViewportHeight = this.viewportElement.clientHeight;
+      this.ro.observe(viewport);
+      this.lastW = viewport.clientWidth;
+      this.lastH = viewport.clientHeight;
     }
   }
 
-  scheduleRender() {
-    if (this.rafScheduled) return;
-    this.rafScheduled = true;
-    window.requestAnimationFrame(() => {
-      this.rafScheduled = false;
-      this.render();
-    });
+  schedule() {
+    if (this.scheduled) return;
+    this.scheduled = true;
+    requestAnimationFrame(() => { this.scheduled = false; this.render(); });
   }
 
-  setItems(itemsArray, keepState = false) {
-    let previousScrollTop = keepState ? this.viewportElement.scrollTop : 0;
-    let keepHeights = keepState && this.rowHeights.length === itemsArray.length;
-    let previousHeights = keepHeights ? this.rowHeights : null;
-
-    this.itemsArray = itemsArray;
-
-    if (previousHeights) {
-      this.rowHeights = previousHeights;
-    } else {
-      this.rowHeights = new Float32Array(itemsArray.length);
-      for (let i = 0; i < itemsArray.length; i++) {
-        this.rowHeights[i] = itemsArray[i] && itemsArray[i].type === "separator" ? 21 : this.defaultRowHeight;
+  setItems(items, keep = false) {
+    const prev = keep ? this.vp.scrollTop : 0;
+    const keepH = keep && this.heights.length === items.length;
+    this.items = items;
+    this.heights = keepH ? this.heights : new Float32Array(items.length);
+    if (!keepH) {
+      for (let i = 0; i < items.length; i++) {
+        this.heights[i] = items[i]?.type === 'separator' ? 24 : this.defaultH;
       }
     }
-    this.rowPositions = new Float32Array(itemsArray.length);
-    this.updatePositions();
-
-    if (keepState) {
-      let maxScroll = Math.max(0, this.totalContentHeight - this.viewportElement.clientHeight);
-      this.viewportElement.scrollTop = Math.min(previousScrollTop, maxScroll);
+    this.pos = new Float32Array(items.length);
+    this.updatePos();
+    if (keep) {
+      const max = Math.max(0, this.totalH - this.vp.clientHeight);
+      this.vp.scrollTop = Math.min(prev, max);
     } else {
-      this.viewportElement.scrollTop = 0;
+      this.vp.scrollTop = 0;
     }
-    this.currentScrollTop = this.viewportElement.scrollTop;
-
-    this.invalidateAll();
+    this.scrollTop = this.vp.scrollTop;
+    this.invalidate();
     this.render();
   }
 
-  invalidateAll() {
-    for (let i = 0; i < this.elementDataIndices.length; i++) {
-      this.elementDataIndices[i] = -1;
-    }
+  invalidate() {
+    for (let i = 0; i < this.indices.length; i++) this.indices[i] = -1;
   }
 
-  updatePositions() {
-    let currentPosition = this.topPadding;
-    let n = this.itemsArray.length;
+  updatePos() {
+    let cur = this.topPad;
+    const n = this.items.length;
     for (let i = 0; i < n; i++) {
-      this.rowPositions[i] = currentPosition;
-      currentPosition += this.rowHeights[i];
+      this.pos[i] = cur;
+      cur += this.heights[i];
     }
-    this.totalContentHeight = currentPosition + this.bottomPadding;
-    this.containerElement.style.height = `${this.totalContentHeight}px`;
+    this.totalH = cur + this.botPad;
+    this.container.style.height = `${this.totalH}px`;
   }
 
-  findStartIndex(scrollTop) {
-    let n = this.itemsArray.length;
+  findStart(scrollTop) {
+    const n = this.items.length;
     if (n === 0) return 0;
     let lo = 0, hi = n - 1;
     while (lo < hi) {
-      let mid = (lo + hi) >> 1;
-      let end = this.rowPositions[mid] + this.rowHeights[mid];
-      if (end <= scrollTop) {
-        lo = mid + 1;
-      } else {
-        hi = mid;
-      }
+      const mid = (lo + hi) >> 1;
+      const end = this.pos[mid] + this.heights[mid];
+      if (end <= scrollTop) lo = mid + 1; else hi = mid;
     }
     return lo;
   }
 
-  findEndIndex(startIndex, viewportHeight) {
-    let endIndex = startIndex;
-    let accumulated = 0;
-    while (endIndex < this.itemsArray.length && accumulated < viewportHeight) {
-      accumulated += this.rowHeights[endIndex];
-      endIndex++;
-    }
-    return endIndex;
+  findEnd(start, vh) {
+    let i = start, acc = 0;
+    while (i < this.items.length && acc < vh) { acc += this.heights[i]; i++; }
+    return i;
   }
 
   render() {
-    let rerenders = 0;
-    let needsMore = false;
+    let rerenders = 0, more = false;
     while (rerenders < 5) {
-      needsMore = this._doRender();
-      if (!needsMore) break;
+      more = this._render();
+      if (!more) break;
       rerenders++;
     }
-    if (needsMore) this.scheduleRender();
+    if (more) this.schedule();
   }
 
-  _doRender() {
-    if (!this.itemsArray.length) {
-      for (let i = 0; i < this.domElementsArray.length; i++) {
-        this.domElementsArray[i].style.transform = 'translateY(-9999px)';
-        this.elementDataIndices[i] = -1;
+  _render() {
+    if (!this.items.length) {
+      for (let i = 0; i < this.els.length; i++) {
+        this.els[i].style.transform = 'translateY(-9999px)';
+        this.indices[i] = -1;
       }
-      this.containerElement.style.height = '0px';
-      this.totalContentHeight = 0;
+      this.container.style.height = '0px';
+      this.totalH = 0;
       return false;
     }
+    let vh = this.vp.clientHeight || 800;
+    if (vh === 0) vh = 800;
+    const scrollTop = this.scrollTop;
+    const vStart = this.findStart(scrollTop);
+    const vEnd = this.findEnd(vStart, vh);
+    const rStart = Math.max(0, vStart - this.overscan);
+    const rEnd = Math.min(this.items.length, vEnd + this.overscan);
+    const need = rEnd - rStart;
 
-    let viewportHeight = this.viewportElement.clientHeight || 800;
-    if (viewportHeight === 0) viewportHeight = 800;
-
-    let scrollTop = this.currentScrollTop;
-    let visibleStart = this.findStartIndex(scrollTop);
-    let visibleEnd = this.findEndIndex(visibleStart, viewportHeight);
-    let renderStart = Math.max(0, visibleStart - this.overscanCount);
-    let renderEnd = Math.min(this.itemsArray.length, visibleEnd + this.overscanCount);
-    let requiredCount = renderEnd - renderStart;
-
-    while (this.domElementsArray.length < requiredCount) {
-      let newElement = this.createRowFunction();
-      newElement.style.transform = 'translateY(-9999px)';
-      this.domElementsArray.push(newElement);
-      this.elementDataIndices.push(-1);
-      this.containerElement.appendChild(newElement);
+    while (this.els.length < need) {
+      const el = this.create();
+      el.style.transform = 'translateY(-9999px)';
+      this.els.push(el);
+      this.indices.push(-1);
+      this.container.appendChild(el);
     }
 
-    let justUpdated = false;
-    for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
-      let dataIndex = renderStart + elementIndex;
-      let element = this.domElementsArray[elementIndex];
-      if (this.elementDataIndices[elementIndex] !== dataIndex) {
-        this.updateRowFunction(element, this.itemsArray[dataIndex], dataIndex);
-        this.elementDataIndices[elementIndex] = dataIndex;
-        element._needsMeasure = true;
-        justUpdated = true;
+    let updated = false;
+    for (let i = 0; i < need; i++) {
+      const di = rStart + i;
+      if (this.indices[i] !== di) {
+        this.update(this.els[i], this.items[di], di);
+        this.indices[i] = di;
+        this.els[i]._measure = true;
+        updated = true;
       }
     }
 
-    for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
-      let dataIndex = renderStart + elementIndex;
-      this.domElementsArray[elementIndex].style.transform = `translateY(${this.rowPositions[dataIndex]}px)`;
+    for (let i = 0; i < need; i++) {
+      const di = rStart + i;
+      this.els[i].style.transform = `translateY(${this.pos[di]}px)`;
     }
 
-    for (let elementIndex = requiredCount; elementIndex < this.domElementsArray.length; elementIndex++) {
-      if (this.elementDataIndices[elementIndex] !== -1) {
-        this.domElementsArray[elementIndex].style.transform = 'translateY(-9999px)';
-        this.elementDataIndices[elementIndex] = -1;
+    for (let i = need; i < this.els.length; i++) {
+      if (this.indices[i] !== -1) {
+        this.els[i].style.transform = 'translateY(-9999px)';
+        this.indices[i] = -1;
       }
     }
 
-    let heightsChanged = false;
-    let scrollAdjustment = 0;
-
-    if (justUpdated) {
-      for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
-        let element = this.domElementsArray[elementIndex];
-        if (!element._needsMeasure) continue;
-        element._needsMeasure = false;
-        let dataIndex = renderStart + elementIndex;
-        let measuredHeight = element.offsetHeight;
-        if (measuredHeight === 0) continue;
-        let isSeparator = this.itemsArray[dataIndex] && this.itemsArray[dataIndex].type === "separator";
-        let totalWithGap = isSeparator ? measuredHeight : measuredHeight + this.rowGap;
-        if (Math.abs(totalWithGap - this.rowHeights[dataIndex]) > 1) {
-          let diff = totalWithGap - this.rowHeights[dataIndex];
-          if (this.rowPositions[dataIndex] < scrollTop) {
-            scrollAdjustment += diff;
-          }
-          this.rowHeights[dataIndex] = totalWithGap;
+    let heightsChanged = false, adjust = 0;
+    if (updated) {
+      for (let i = 0; i < need; i++) {
+        const el = this.els[i];
+        if (!el._measure) continue;
+        el._measure = false;
+        const di = rStart + i;
+        const h = el.offsetHeight;
+        if (h === 0) continue;
+        const sep = this.items[di]?.type === 'separator';
+        const total = sep ? h : h + this.gap;
+        if (Math.abs(total - this.heights[di]) > 1) {
+          const diff = total - this.heights[di];
+          if (this.pos[di] < scrollTop) adjust += diff;
+          this.heights[di] = total;
           heightsChanged = true;
         }
       }
     }
 
     if (heightsChanged) {
-      this.updatePositions();
-      if (scrollAdjustment !== 0) {
-        this.viewportElement.scrollTop += scrollAdjustment;
-        this.currentScrollTop = this.viewportElement.scrollTop;
+      this.updatePos();
+      if (adjust !== 0) {
+        this.vp.scrollTop += adjust;
+        this.scrollTop = this.vp.scrollTop;
       }
-      for (let elementIndex = 0; elementIndex < requiredCount; elementIndex++) {
-        let dataIndex = renderStart + elementIndex;
-        this.domElementsArray[elementIndex].style.transform = `translateY(${this.rowPositions[dataIndex]}px)`;
+      for (let i = 0; i < need; i++) {
+        const di = rStart + i;
+        this.els[i].style.transform = `translateY(${this.pos[di]}px)`;
       }
-
-      let viewportBottom = this.currentScrollTop + viewportHeight;
-      let lastRenderedBottom = renderEnd < this.itemsArray.length
-        ? this.rowPositions[renderEnd - 1] + this.rowHeights[renderEnd - 1]
-        : this.totalContentHeight;
-      if (lastRenderedBottom < viewportBottom) {
-        return true;
-      }
+      const vBot = this.scrollTop + vh;
+      const lastBot = rEnd < this.items.length
+        ? this.pos[rEnd - 1] + this.heights[rEnd - 1]
+        : this.totalH;
+      if (lastBot < vBot) return true;
     }
-
     return false;
   }
 
-  scrollToIndex(targetIndex) {
-    if (targetIndex < 0 || targetIndex >= this.itemsArray.length) return;
-    let viewportHeight = this.viewportElement.clientHeight || 800;
-    let targetPosition = this.rowPositions[targetIndex] || 0;
-    let targetScrollTop = targetPosition - (viewportHeight / 2) + (this.rowHeights[targetIndex] / 2);
-    this.viewportElement.scrollTop = Math.max(0, targetScrollTop);
-    this.currentScrollTop = this.viewportElement.scrollTop;
+  scrollToIndex(idx) {
+    if (idx < 0 || idx >= this.items.length) return;
+    const vh = this.vp.clientHeight || 800;
+    const target = this.pos[idx] || 0;
+    this.vp.scrollTop = Math.max(0, target - (vh / 2) + (this.heights[idx] / 2));
+    this.scrollTop = this.vp.scrollTop;
     this.render();
-    if (this.scrollRafId) cancelAnimationFrame(this.scrollRafId);
-    this.scrollRafId = window.requestAnimationFrame(() => {
-      this.scrollRafId = 0;
-      let newPosition = this.rowPositions[targetIndex] || 0;
-      let newScrollTop = newPosition - (viewportHeight / 2) + (this.rowHeights[targetIndex] / 2);
-      this.viewportElement.scrollTop = Math.max(0, newScrollTop);
-      this.currentScrollTop = this.viewportElement.scrollTop;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = requestAnimationFrame(() => {
+      this.raf = 0;
+      const t = this.pos[idx] || 0;
+      this.vp.scrollTop = Math.max(0, t - (vh / 2) + (this.heights[idx] / 2));
+      this.scrollTop = this.vp.scrollTop;
       this.render();
     });
   }
 
-  forceUpdate() {
-    this.invalidateAll();
-    this.render();
-  }
+  forceUpdate() { this.invalidate(); this.render(); }
 }
 
-class Importer {
-  static decodeBuffer(bufferData) {
-    let encodings = ["utf-8", "shift_jis", "windows-31j", "cp932"];
-    for (let encodingFormat of encodings) {
-      try {
-        return new TextDecoder(encodingFormat, { fatal: true }).decode(bufferData);
-      } catch (error) {}
-    }
-    return new TextDecoder("utf-8").decode(bufferData);
-  }
-
-  static getBaseName(filePath) {
-    return String(filePath || "").replace(/\\/g, "/").split("/").pop();
-  }
-
-  static parseJsonData(jsonArray, fileName, startLineNum) {
-    if (!Array.isArray(jsonArray)) {
-      throw new Error(`File ${fileName} bukan array JSON.`);
-    }
-    return jsonArray.filter(entry => entry && typeof entry === "object" && Object.hasOwn(entry, "message")).map(entry => ({
-      line_num: startLineNum++,
-      file: fileName,
-      name: entry.name == null ? null : String(entry.name).replace(/\r?\n/g, "\\n").trim(),
-      message: String(entry.message || "").replace(/\r?\n/g, "\\n").trim(),
+const Importer = {
+  parseJson(arr, file, start) {
+    if (!Array.isArray(arr)) throw new Error(`File ${file} bukan array JSON.`);
+    return arr.filter(e => e && typeof e === 'object' && Object.hasOwn(e, 'message')).map(e => ({
+      line_num: start++,
+      file,
+      name: e.name == null ? null : String(e.name).replace(/\r?\n/g, '\\n').trim(),
+      message: String(e.message || '').replace(/\r?\n/g, '\\n').trim(),
       trans_name: null,
       trans_message: null,
       is_translated: false
     }));
-  }
+  },
 
-  static async processImport(filesObject, isZipArchive = false) {
-    UI.flashStatusMessage("Memproses file...", true);
-    document.body.style.cursor = "wait";
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  async process(input, isZip = false) {
+    App.flash('Memproses file...', true);
+    document.body.style.cursor = 'wait';
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     try {
-      let currentLineNum = AppState.lines.length ? AppState.lines.reduce((maxId, lineData) => Math.max(maxId, lineData.line_num), 0) + 1 : 1;
-      let importedLines = [];
-      let existingFiles = new Set(AppState.importedFiles);
-      let skippedFiles = [];
+      let cur = State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) + 1 : 1;
+      const imported = [];
+      const existing = new Set(State.files);
+      const skipped = [];
 
-      if (isZipArchive && filesObject instanceof File && window.JSZip) {
-        if (AppState.projectType !== "uninitialized" && AppState.projectType !== "json") {
-          alert("Project ini sudah diatur sebagai project EPUB. Tidak bisa mencampur file JSON.");
-          document.body.style.cursor = "default";
-          UI.elements.copyStatus.classList.add("empty");
+      if (isZip && input instanceof File && window.JSZip) {
+        if (State.projectType !== 'uninitialized' && State.projectType !== 'json') {
+          alert('Project ini sudah diatur sebagai project EPUB. Tidak bisa mencampur file JSON.');
+          document.body.style.cursor = 'default';
+          $('copyStatus').classList.add('empty');
           return;
         }
-        if (AppState.projectType === "uninitialized") {
-          AppState.projectType = "json";
-        }
-        let zipArchive = new window.JSZip();
-        await zipArchive.loadAsync(filesObject);
-        for (let zipFileName of Object.keys(zipArchive.files).filter(fileName => fileName.endsWith(".json")).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))) {
-          let baseName = Importer.getBaseName(zipFileName);
-          if (existingFiles.has(baseName)) {
-            skippedFiles.push(baseName);
-            continue;
-          }
-          let jsonContent = JSON.parse(Importer.decodeBuffer(await zipArchive.file(zipFileName).async("uint8array")));
-          let parsedLines = Importer.parseJsonData(jsonContent, baseName, currentLineNum);
-          if (parsedLines.length) {
-            existingFiles.add(baseName);
-            importedLines.push(...parsedLines);
-            currentLineNum += parsedLines.length;
-          }
+        if (State.projectType === 'uninitialized') State.projectType = 'json';
+        const zip = new window.JSZip();
+        await zip.loadAsync(input);
+        const names = Object.keys(zip.files).filter(n => n.endsWith('.json'))
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+        for (const name of names) {
+          const bn = baseName(name);
+          if (existing.has(bn)) { skipped.push(bn); continue; }
+          const json = JSON.parse(decodeBuffer(await zip.file(name).async('uint8array')));
+          const parsed = Importer.parseJson(json, bn, cur);
+          if (parsed.length) { existing.add(bn); imported.push(...parsed); cur += parsed.length; }
         }
       } else {
-        for (let uploadedFile of Array.from(filesObject).sort((fileA, fileB) => fileA.name.localeCompare(fileB.name, undefined, { numeric: true, sensitivity: "base" }))) {
-          if (uploadedFile.name.toLowerCase().endsWith(".epub")) {
-            if (AppState.projectType !== "uninitialized" && AppState.projectType !== "epub") {
-              alert("Project ini sudah memuat file JSON. Tidak bisa mencampur file EPUB.");
+        const files = Array.from(input).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        for (const f of files) {
+          if (f.name.toLowerCase().endsWith('.epub')) {
+            if (State.projectType !== 'uninitialized' && State.projectType !== 'epub') {
+              alert('Project ini sudah memuat file JSON. Tidak bisa mencampur file EPUB.');
               continue;
             }
-            if (AppState.projectType === "epub" && AppState.epubSourceId) {
-              alert("Project ini sudah memuat EPUB.");
+            if (State.projectType === 'epub' && State.epubSourceId) {
+              alert('Project ini sudah memuat EPUB.');
               continue;
             }
-            if (AppState.projectType === "uninitialized") {
-              AppState.projectType = "epub";
-              AppState.epubSourceId = "epub_" + Date.now() + ".epub";
+            if (State.projectType === 'uninitialized') {
+              State.projectType = 'epub';
+              State.epubSourceId = 'epub_' + Date.now() + '.epub';
             }
-            let rootDirectory = await StorageManager.getRootDirectory();
-            let fileHandle = await rootDirectory.getFileHandle(AppState.epubSourceId, { create: true });
-            let writableStream = await fileHandle.createWritable();
-            await writableStream.write(uploadedFile);
-            await writableStream.close();
+            const root = await Storage.root();
+            const h = await root.getFileHandle(State.epubSourceId, { create: true });
+            const w = await h.createWritable();
+            await w.write(f);
+            await w.close();
 
-            let zipArchive = new window.JSZip();
-            await zipArchive.loadAsync(uploadedFile);
-            let containerXmlContent = await zipArchive.file("META-INF/container.xml").async("text");
-            let rootFileNode = new DOMParser().parseFromString(containerXmlContent, "application/xml").querySelector("rootfile");
-            if (!rootFileNode) throw new Error("EPUB tidak valid.");
+            const zip = new window.JSZip();
+            await zip.loadAsync(f);
+            const container = await zip.file('META-INF/container.xml').async('text');
+            const rootFile = new DOMParser().parseFromString(container, 'application/xml').querySelector('rootfile');
+            if (!rootFile) throw new Error('EPUB tidak valid.');
 
-            let opfPathString = decodeURIComponent(rootFileNode.getAttribute("full-path"));
-            let opfDirectoryPath = opfPathString.includes("/") ? opfPathString.substring(0, opfPathString.lastIndexOf("/")) + "/" : "";
-            let opfDocumentNode = new DOMParser().parseFromString(await zipArchive.file(opfPathString).async("text"), "application/xml");
-            let manifestDict = {};
-
-            Array.from(opfDocumentNode.querySelectorAll("manifest > item")).forEach(manifestItem => {
-              manifestDict[manifestItem.getAttribute("id")] = decodeURIComponent(manifestItem.getAttribute("href"));
+            const opfPath = decodeURIComponent(rootFile.getAttribute('full-path'));
+            const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
+            const opf = new DOMParser().parseFromString(await zip.file(opfPath).async('text'), 'application/xml');
+            const manifest = {};
+            Array.from(opf.querySelectorAll('manifest > item')).forEach(it => {
+              manifest[it.getAttribute('id')] = decodeURIComponent(it.getAttribute('href'));
             });
+            const htmls = Array.from(opf.querySelectorAll('spine > itemref'))
+              .map(it => manifest[it.getAttribute('idref')] ? opfDir + manifest[it.getAttribute('idref')] : null)
+              .filter(Boolean);
+            const tags = State.epubTags || 'p';
 
-            let htmlFilePaths = Array.from(opfDocumentNode.querySelectorAll("spine > itemref")).map(spineItem => manifestDict[spineItem.getAttribute("idref")] ? opfDirectoryPath + manifestDict[spineItem.getAttribute("idref")] : null).filter(Boolean);
-            let targetTags = AppState.epubTags || "p";
-
-            for (let htmlFilePath of htmlFilePaths) {
-              if (existingFiles.has(htmlFilePath)) {
-                skippedFiles.push(htmlFilePath);
-                continue;
-              }
-              let fileEntryItem = zipArchive.file(htmlFilePath);
-              if (!fileEntryItem) continue;
-
-              let parsedDocument = new DOMParser().parseFromString(await fileEntryItem.async("text"), htmlFilePath.endsWith('.xhtml') ? "application/xhtml+xml" : "text/html");
-              let hasContentFlag = false;
-
-              Array.from(parsedDocument.querySelectorAll(targetTags)).forEach(htmlElement => {
-                let extractedText = htmlElement.textContent.replace(/\r?\n/g, " ").trim();
-                if (extractedText) {
-                  importedLines.push({
-                    line_num: currentLineNum++,
-                    file: htmlFilePath,
+            for (const path of htmls) {
+              if (existing.has(path)) { skipped.push(path); continue; }
+              const entry = zip.file(path);
+              if (!entry) continue;
+              const doc = new DOMParser().parseFromString(await entry.async('text'), path.endsWith('.xhtml') ? 'application/xhtml+xml' : 'text/html');
+              let has = false;
+              Array.from(doc.querySelectorAll(tags)).forEach(el => {
+                const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
+                if (txt) {
+                  imported.push({
+                    line_num: cur++,
+                    file: path,
                     name: null,
-                    message: extractedText,
+                    message: txt,
                     trans_name: null,
                     trans_message: null,
                     is_translated: false
                   });
-                  hasContentFlag = true;
+                  has = true;
                 }
               });
-              if (hasContentFlag) existingFiles.add(htmlFilePath);
+              if (has) existing.add(path);
             }
-          } else if (uploadedFile.name.toLowerCase().endsWith(".json")) {
-            if (AppState.projectType !== "uninitialized" && AppState.projectType !== "json") {
-              alert("Project ini sudah memuat file EPUB. Tidak bisa mencampur file JSON.");
+          } else if (f.name.toLowerCase().endsWith('.json')) {
+            if (State.projectType !== 'uninitialized' && State.projectType !== 'json') {
+              alert('Project ini sudah memuat file EPUB. Tidak bisa mencampur file JSON.');
               continue;
             }
-            if (AppState.projectType === "uninitialized") {
-              AppState.projectType = "json";
-            }
-            let baseName = Importer.getBaseName(uploadedFile.name);
-            if (existingFiles.has(baseName)) {
-              skippedFiles.push(baseName);
-              continue;
-            }
-            let parsedLines = Importer.parseJsonData(JSON.parse(Importer.decodeBuffer(await uploadedFile.arrayBuffer())), baseName, currentLineNum);
-            if (parsedLines.length) {
-              existingFiles.add(baseName);
-              importedLines.push(...parsedLines);
-              currentLineNum += parsedLines.length;
-            }
+            if (State.projectType === 'uninitialized') State.projectType = 'json';
+            const bn = baseName(f.name);
+            if (existing.has(bn)) { skipped.push(bn); continue; }
+            const parsed = Importer.parseJson(JSON.parse(decodeBuffer(await f.arrayBuffer())), bn, cur);
+            if (parsed.length) { existing.add(bn); imported.push(...parsed); cur += parsed.length; }
           }
         }
       }
 
-      if (importedLines.length) {
-        AppState.lines.push(...importedLines);
-        AppState.importedFiles = Array.from(existingFiles);
-        AppState.namesDirty = true;
-        AppController.refreshWorkspace(true);
-        AppState.queueAutoSave();
-        UI.flashStatusMessage(`Berhasil impor ${importedLines.length} baris.${skippedFiles.length ? ` (${skippedFiles.length} file duplikat diabaikan)` : ""}`);
-      } else if (skippedFiles.length) {
-        UI.elements.copyStatus.classList.add("empty");
-        setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${skippedFiles.slice(0, 5).join('\n- ')}`), 10);
+      if (imported.length) {
+        State.lines.push(...imported);
+        State.files = Array.from(existing);
+        State.namesDirty = true;
+        App.refresh(true);
+        State.queueSave();
+        App.flash(`Berhasil impor ${imported.length} baris.${skipped.length ? ` (${skipped.length} file duplikat diabaikan)` : ''}`);
+      } else if (skipped.length) {
+        $('copyStatus').classList.add('empty');
+        setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${skipped.slice(0, 5).join('\n- ')}`), 10);
       } else {
-        UI.flashStatusMessage("Tidak ada data valid.", false);
+        App.flash('Tidak ada data valid.', false);
       }
-    } catch (error) {
-      UI.elements.copyStatus.classList.add("empty");
-      setTimeout(() => alert(`Error:\n${error.message}`), 10);
+    } catch (e) {
+      $('copyStatus').classList.add('empty');
+      setTimeout(() => alert(`Error:\n${e.message}`), 10);
     } finally {
-      document.body.style.cursor = "default";
+      document.body.style.cursor = 'default';
     }
   }
-}
+};
 
-class Exporter {
-  static async exportData() {
-    if (!AppState.lines.length) return;
-
-    if (AppState.projectType === "epub" && AppState.epubSourceId) {
+const Exporter = {
+  async run() {
+    if (!State.lines.length) return;
+    if (State.projectType === 'epub' && State.epubSourceId) {
       try {
-        UI.flashStatusMessage("Membuat EPUB...", true);
-        document.body.style.cursor = "wait";
-        let rootDirectory = await StorageManager.getRootDirectory();
-        let fileHandle = await rootDirectory.getFileHandle(AppState.epubSourceId);
-        let epubFileObject = await fileHandle.getFile();
-        let zipArchive = new window.JSZip();
-        await zipArchive.loadAsync(epubFileObject);
+        App.flash('Membuat EPUB...', true);
+        document.body.style.cursor = 'wait';
+        const root = await Storage.root();
+        const h = await root.getFileHandle(State.epubSourceId);
+        const f = await h.getFile();
+        const zip = new window.JSZip();
+        await zip.loadAsync(f);
 
-        let linesByFileDict = {};
-        AppState.lines.forEach(lineData => {
-          if (!linesByFileDict[lineData.file]) linesByFileDict[lineData.file] = [];
-          linesByFileDict[lineData.file].push(lineData);
-        });
+        const byFile = {};
+        State.lines.forEach(l => { (byFile[l.file] ||= []).push(l); });
+        const tags = State.epubTags || 'p';
 
-        let targetTags = AppState.epubTags || "p";
-
-        for (let [htmlFilePath, fileLinesArray] of Object.entries(linesByFileDict)) {
-          let zipFileEntry = zipArchive.file(htmlFilePath);
-          if (!zipFileEntry) continue;
-
-          let htmlTextContent = await zipFileEntry.async("text");
-          let xmlMatchResult = htmlTextContent.match(/^<\?xml.*?\?>/i);
-          let parsedHtmlDocument = new DOMParser().parseFromString(htmlTextContent, htmlFilePath.endsWith('.xhtml') ? "application/xhtml+xml" : "text/html");
-          let lineIndex = 0;
-
-          Array.from(parsedHtmlDocument.querySelectorAll(targetTags)).forEach(htmlElement => {
-            if (htmlElement.textContent.replace(/\r?\n/g, " ").trim() === "") return;
-            let lineData = fileLinesArray[lineIndex++];
-            if (lineData && lineData.is_translated && lineData.trans_message) {
-              htmlElement.textContent = lineData.trans_message;
-            }
+        for (const [path, lines] of Object.entries(byFile)) {
+          const entry = zip.file(path);
+          if (!entry) continue;
+          const html = await entry.async('text');
+          const xmlMatch = html.match(/^<\?xml.*?\?>/i);
+          const doc = new DOMParser().parseFromString(html, path.endsWith('.xhtml') ? 'application/xhtml+xml' : 'text/html');
+          let idx = 0;
+          Array.from(doc.querySelectorAll(tags)).forEach(el => {
+            if (el.textContent.replace(/\r?\n/g, ' ').trim() === '') return;
+            const l = lines[idx++];
+            if (l && isTrans(l) && l.trans_message) el.textContent = l.trans_message;
           });
-
-          let newHtmlContent = new XMLSerializer().serializeToString(parsedHtmlDocument);
-          if (xmlMatchResult && !newHtmlContent.startsWith("<?xml")) {
-            newHtmlContent = xmlMatchResult[0] + "\n" + newHtmlContent;
-          }
-          zipArchive.file(htmlFilePath, newHtmlContent);
+          let out = new XMLSerializer().serializeToString(doc);
+          if (xmlMatch && !out.startsWith('<?xml')) out = xmlMatch[0] + '\n' + out;
+          zip.file(path, out);
         }
 
-        if (zipArchive.file("mimetype")) {
-          zipArchive.file("mimetype", await zipArchive.file("mimetype").async("text"), { compression: "STORE" });
+        if (zip.file('mimetype')) {
+          zip.file('mimetype', await zip.file('mimetype').async('text'), { compression: 'STORE' });
         }
 
-        let blobUrl = URL.createObjectURL(await zipArchive.generateAsync({ type: "blob", mimeType: "application/epub+zip", compression: "DEFLATE", compressionOptions: { level: 9 } }));
-        let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${Utils.sanitizeFileName(AppState.projectName)}_tl.epub` });
-        downloadAnchor.click();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-        UI.flashStatusMessage("Ekspor EPUB berhasil!");
-      } catch (error) {
-        alert("Ekspor EPUB gagal: " + error.message);
+        const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
+        download(url, `${sanitizeName(State.projectName)}_tl.epub`);
+        App.flash('Ekspor EPUB berhasil!');
+      } catch (e) {
+        alert('Ekspor EPUB gagal: ' + e.message);
       } finally {
-        document.body.style.cursor = "default";
+        document.body.style.cursor = 'default';
       }
     } else {
-      let groupedLinesMap = new Map();
-      AppState.lines.forEach(lineData => {
-        if (!groupedLinesMap.has(lineData.file)) groupedLinesMap.set(lineData.file, []);
-        groupedLinesMap.get(lineData.file).push(lineData);
+      const grouped = new Map();
+      State.lines.forEach(l => {
+        if (!grouped.has(l.file)) grouped.set(l.file, []);
+        grouped.get(l.file).push(l);
       });
 
-      let exportResults = Array.from(groupedLinesMap.entries()).map(([exportFileName, fileLinesArray]) => ({
-        fileNameProperty: `${exportFileName.replace(/\.xhtml|\.html/g, '')}.json`,
-        fileContentProperty: JSON.stringify(fileLinesArray.map(lineData => {
-          let exportEntry = {};
-          let characterName = AppState.isTranslated(lineData) ? (lineData.trans_name || lineData.name) : lineData.name;
-          let characterMessage = AppState.isTranslated(lineData) ? lineData.trans_message : lineData.message;
-          if (characterName != null) exportEntry.name = characterName.replace(/\\n/g, "\n");
-          exportEntry.message = characterMessage != null ? characterMessage.replace(/\\n/g, "\n") : "";
-          return exportEntry;
+      const results = Array.from(grouped.entries()).map(([file, lines]) => ({
+        name: `${file.replace(/\.(xhtml|html|json)$/g, '')}.json`,
+        content: JSON.stringify(lines.map(l => {
+          const out = {};
+          const n = isTrans(l) ? (l.trans_name || l.name) : l.name;
+          const m = isTrans(l) ? l.trans_message : l.message;
+          if (n != null) out.name = n.replace(/\\n/g, '\n');
+          out.message = m != null ? m.replace(/\\n/g, '\n') : '';
+          return out;
         }), null, 2)
       }));
 
-      if (window.JSZip && exportResults.length > 1) {
-        let zipArchive = new window.JSZip();
-        exportResults.forEach(exportItem => zipArchive.file(exportItem.fileNameProperty, exportItem.fileContentProperty));
-        let blobUrl = URL.createObjectURL(await zipArchive.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } }));
-        let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${Utils.sanitizeFileName(AppState.projectName)}_export.zip` });
-        downloadAnchor.click();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      if (window.JSZip && results.length > 1) {
+        const zip = new window.JSZip();
+        results.forEach(r => zip.file(r.name, r.content));
+        const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
+        download(url, `${sanitizeName(State.projectName)}_export.zip`);
       } else {
-        exportResults.forEach(exportItem => {
-          let blobUrl = URL.createObjectURL(new Blob([exportItem.fileContentProperty], { type: "application/json" }));
-          let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: exportItem.fileNameProperty });
-          downloadAnchor.click();
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        results.forEach(r => {
+          const url = URL.createObjectURL(new Blob([r.content], { type: 'application/json' }));
+          download(url, r.name);
         });
       }
     }
   }
+};
+
+function download(url, name) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-class VndbService {
-  static isJapanese(textString) {
-    return /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(textString);
-  }
-
-  static async fetchCharacters(vndbIdentifier) {
-    let allCharactersList = [];
-    let pageNumber = 1;
-    let hasMorePages = true;
-
-    while (hasMorePages) {
-      let apiResponse = await fetch("https://api.vndb.org/kana/character", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+const Vndb = {
+  async fetchCharacters(id) {
+    const all = [];
+    let page = 1, more = true;
+    while (more) {
+      const res = await fetch('https://api.vndb.org/kana/character', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          filters: ["vn", "=", ["id", "=", vndbIdentifier]],
-          fields: "name, original, aliases",
+          filters: ['vn', '=', ['id', '=', id]],
+          fields: 'name, original, aliases',
           results: 100,
-          page: pageNumber
+          page
         })
       });
-      if (!apiResponse.ok) throw new Error(`Status: ${apiResponse.status}`);
-      let responseData = await apiResponse.json();
-      if (responseData.results) allCharactersList.push(...responseData.results);
-      hasMorePages = responseData.more || false;
-      pageNumber++;
+      if (!res.ok) throw new Error(`Status: ${res.status}`);
+      const data = await res.json();
+      if (data.results) all.push(...data.results);
+      more = data.more || false;
+      page++;
     }
-    return allCharactersList;
-  }
+    return all;
+  },
 
-  static buildGlossary(charactersArray) {
-    let glossaryMap = new Map();
-    let addGlossaryEntry = (japaneseText, romajiText) => {
-      japaneseText = (japaneseText || "").trim();
-      romajiText = (romajiText || "").trim();
-      if (japaneseText && romajiText && VndbService.isJapanese(japaneseText) && !glossaryMap.has(japaneseText)) {
-        glossaryMap.set(japaneseText, romajiText);
-      }
+  buildGlossary(chars) {
+    const map = new Map();
+    const add = (jp, en) => {
+      jp = (jp || '').trim();
+      en = (en || '').trim();
+      if (jp && en && isJapanese(jp) && !map.has(jp)) map.set(jp, en);
     };
-
-    for (let characterItem of charactersArray) {
-      if (!characterItem.name || !characterItem.original) continue;
-      addGlossaryEntry(characterItem.original, characterItem.name);
-
-      if (characterItem.original.includes(' ') && characterItem.name.includes(' ')) {
-        let kanaParts = characterItem.original.split(' ');
-        let romajiParts = characterItem.name.split(' ');
-        if (kanaParts.length === romajiParts.length) {
-          kanaParts.forEach((kanaWord, wordIndex) => addGlossaryEntry(kanaWord, romajiParts[wordIndex]));
-        }
+    for (const c of chars) {
+      if (!c.name || !c.original) continue;
+      add(c.original, c.name);
+      if (c.original.includes(' ') && c.name.includes(' ')) {
+        const kana = c.original.split(' '), en = c.name.split(' ');
+        if (kana.length === en.length) kana.forEach((k, i) => add(k, en[i]));
       }
-
-      let japaneseAliases = (characterItem.aliases || []).filter(aliasItem => VndbService.isJapanese(aliasItem));
-      let romajiAliases = (characterItem.aliases || []).filter(aliasItem => !VndbService.isJapanese(aliasItem));
-      let fallbackName = characterItem.name.split(' ').pop() || characterItem.name;
-
-      japaneseAliases.forEach((japaneseAlias, aliasIndex) => addGlossaryEntry(japaneseAlias, romajiAliases[aliasIndex] || fallbackName));
+      const ja = (c.aliases || []).filter(isJapanese);
+      const en = (c.aliases || []).filter(a => !isJapanese(a));
+      const fallback = c.name.split(' ').pop() || c.name;
+      ja.forEach((j, i) => add(j, en[i] || fallback));
     }
-    return Array.from(glossaryMap.entries()).sort((entryA, entryB) => entryB[0].length - entryA[0].length);
+    return Array.from(map.entries()).sort((a, b) => b[0].length - a[0].length);
   }
-}
+};
 
-class AppController {
-  static mainScroller = null;
-  static proofreadScroller = null;
-  static activeEditorLineNum = null;
-  static currentHighlightRegex = null;
-  static tempVndbGlossary = [];
-  static tempCustomRaw = "";
-  static tempCustomGlossary = [];
-  static lastSearchQuery = "";
-  static _lastFileBadge = null;
-  static _fileBadgeCache = null;
+const App = {
+  main: null,
+  pr: null,
+  activeLine: null,
+  highlightRe: null,
+  tmpVndb: [],
+  tmpCustomRaw: '',
+  tmpCustom: [],
+  lastQuery: '',
+  lastFile: null,
+  fileCache: null,
+  toastToken: 0,
 
-  static async createNewProject() {
-    let newProjectName = prompt("Nama project baru:");
-    if (!newProjectName?.trim()) return;
-    newProjectName = newProjectName.trim();
+  flash(msg, keep = false) {
+    const el = $('copyStatus');
+    el.textContent = msg;
+    el.classList.remove('empty');
+    const t = ++App.toastToken;
+    if (!keep) setTimeout(() => { if (App.toastToken === t) el.classList.add('empty'); }, 3000);
+  },
 
-    let newProjectId = "proj_" + Date.now() + ".cstl";
-    let newProjectData = {
-      version: 12,
-      projectName: newProjectName,
-      projectType: "uninitialized",
-      epubTags: "p",
+  toggleModal(el, show) {
+    if (show) { el.classList.remove('closing'); el.classList.add('open'); }
+    else {
+      el.classList.add('closing');
+      el.classList.remove('open');
+      setTimeout(() => el.classList.remove('closing'), 180);
+    }
+  },
+
+  anyModalOpen() {
+    return document.querySelectorAll('.backdrop.open').length > 0;
+  },
+
+  topModal() {
+    const arr = Array.from(document.querySelectorAll('.backdrop.open'));
+    if (!arr.length) return null;
+    return arr.sort((a, b) => (parseInt(getComputedStyle(b).zIndex) || 0) - (parseInt(getComputedStyle(a).zIndex) || 0))[0];
+  },
+
+  debounce(fn, ms = 200) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+  },
+
+  async createProject() {
+    let name = prompt('Nama project baru:');
+    if (!name?.trim()) return;
+    name = name.trim();
+    const id = 'proj_' + Date.now() + '.cstl';
+    const data = {
+      version: 14,
+      projectName: name,
+      projectType: 'uninitialized',
+      epubTags: 'p',
       epubSourceId: null,
       updatedAt: Date.now(),
       imported_files: [],
       lines: [],
-      prompt_header: AppState.aiInstructionHeader,
+      prompt_header: State.prompt,
       ignoreNameTranslation: false,
       promptEnabled: true,
       referenceEnabled: false,
       vndbEnabled: false,
-      vndbId: "",
+      vndbId: '',
       vndbGlossary: [],
       customEnabled: false,
-      customRaw: "",
+      customRaw: '',
       customGlossary: [],
       jumpToContext: false,
       hideTools: false
     };
+    await Storage.save(id, data);
+    App.open(id, data);
+  },
 
-    await StorageManager.saveProjectData(newProjectId, newProjectData);
-    AppController.openProject(newProjectId, newProjectData);
-  }
-
-  static async init() {
-    UI.cacheElements();
+  async init() {
     if (!navigator.storage?.getDirectory) {
-      UI.elements.projectList.innerHTML = `<p class="hint" style="grid-column:1/-1;color:var(--danger);">Browser tidak mendukung OPFS.</p>`;
+      $('projectList').innerHTML = `<p class="hint" style="grid-column:1/-1;color:var(--danger);">Browser tidak mendukung OPFS.</p>`;
       return;
     }
+    App.main = new Scroller($('previewViewport'), $('previewContainer'), App.createMainRow, App.updateMainRow);
+    App.pr = new Scroller($('proofreadContainer').closest('.proofread-results-wrap'), $('proofreadContainer'), App.createPrRow, App.updatePrRow);
+    App.bind();
+    await App.loadDashboard();
+  },
 
-    AppController.mainScroller = new VirtualScroller(UI.elements.previewViewport, UI.elements.previewContainer, AppController.createMainRow, AppController.updateMainRow);
-    AppController.proofreadScroller = new VirtualScroller(UI.elements.proofreadContainer.closest('.proofread-results-wrap'), UI.elements.proofreadContainer, AppController.createProofreadRow, AppController.updateProofreadRow);
+  adjustToolbar() {
+    const wrap = $('dynamicToolbarWrap');
+    const actions = $('actionButtons');
+    const more = $('moreGroup');
+    const moreDrop = $('moreDropdown');
+    if (!wrap || !actions || !more || !moreDrop) return;
 
-    AppController.bindEvents();
-    await AppController.loadDashboard();
-  }
+    const items = [$('importGroup'), $('btnExport'), $('btnProofread'), $('btnGlossary'), $('btnSettings')];
+    items.forEach(el => el && actions.appendChild(el));
+    more.style.display = 'none';
 
-  static debounce(targetFunction, delayMs = 200) {
-    let timeoutTimer;
-    return function(...functionArgs) {
-      clearTimeout(timeoutTimer);
-      timeoutTimer = setTimeout(() => targetFunction.apply(this, functionArgs), delayMs);
-    };
-  }
-
-  static adjustToolbar() {
-    let toolbarWrap = UI.elements.dynamicToolbarWrap;
-    let actionButtons = UI.elements.actionButtons;
-    let moreGroup = UI.elements.moreGroup;
-    let moreDropdown = UI.elements.moreDropdown;
-
-    if (!toolbarWrap || !actionButtons || !moreGroup || !moreDropdown) return;
-
-    let toolbarItems = [UI.elements.importGroup, UI.elements.btnExport, UI.elements.btnProofread, UI.elements.btnGlossary, UI.elements.btnSettings];
-    toolbarItems.forEach(toolbarElement => {
-      if (toolbarElement) actionButtons.appendChild(toolbarElement);
-    });
-    moreGroup.style.display = 'none';
-
-    if (actionButtons.scrollWidth > toolbarWrap.clientWidth) {
-      moreGroup.style.display = 'inline-block';
-      for (let itemIndex = toolbarItems.length - 1; itemIndex >= 0; itemIndex--) {
-        if (actionButtons.scrollWidth > toolbarWrap.clientWidth && actionButtons.children.length > 0) {
-          moreDropdown.insertBefore(toolbarItems[itemIndex], moreDropdown.firstChild);
-        } else {
-          break;
-        }
+    if (actions.scrollWidth > wrap.clientWidth) {
+      more.style.display = 'inline-block';
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (actions.scrollWidth > wrap.clientWidth && actions.children.length > 0) {
+          moreDrop.insertBefore(items[i], moreDrop.firstChild);
+        } else break;
       }
     }
-  }
+  },
 
-  static bindEvents() {
-    window.addEventListener('resize', AppController.debounce(() => {
-      if (UI.elements.workspaceView.style.display !== "none") AppController.adjustToolbar();
+  bind() {
+    window.addEventListener('resize', App.debounce(() => {
+      if ($('workspaceView').style.display !== 'none') App.adjustToolbar();
     }, 100));
 
-    UI.elements.btnNewProject.addEventListener("click", AppController.createNewProject);
-    UI.elements.btnBackToDashboard.addEventListener("click", AppController.closeProject);
-    UI.elements.btnRestoreProject.addEventListener("click", () => UI.elements.restoreProjectInput.click());
-    UI.elements.restoreProjectInput.addEventListener("change", AppController.restoreProject);
+    $('btnNewProject').addEventListener('click', App.createProject);
+    $('btnBackToDashboard').addEventListener('click', App.closeProject);
+    $('btnRestoreProject').addEventListener('click', () => $('restoreProjectInput').click());
+    $('restoreProjectInput').addEventListener('change', App.restoreProject);
 
-    document.addEventListener("click", clickEvent => {
-      let isImportButton = clickEvent.target.closest('#btnImportMain');
-      let isMoreButton = clickEvent.target.closest('#btnMore');
-
-      if (isImportButton) {
-        clickEvent.preventDefault();
-        UI.elements.importDropdown?.classList.toggle("show");
+    document.addEventListener('click', e => {
+      if (e.target.closest('#btnImportMain')) {
+        e.preventDefault();
+        $('importDropdown')?.classList.toggle('show');
       }
-      if (isMoreButton) {
-        clickEvent.preventDefault();
-        UI.elements.moreDropdown?.classList.toggle("show");
+      if (e.target.closest('#btnMore')) {
+        e.preventDefault();
+        $('moreDropdown')?.classList.toggle('show');
       }
-      if (!clickEvent.target.closest('#importGroup') && UI.elements.importDropdown) UI.elements.importDropdown.classList.remove("show");
-      if (!clickEvent.target.closest('#moreGroup') && UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
+      if (!e.target.closest('#importGroup') && $('importDropdown')) $('importDropdown').classList.remove('show');
+      if (!e.target.closest('#moreGroup') && $('moreDropdown')) $('moreDropdown').classList.remove('show');
+      const bd = e.target.closest('.backdrop.open');
+      if (bd && e.target === bd) App.toggleModal(bd, false);
+    });
 
-      let backdrop = clickEvent.target.closest('.modal-backdrop.open');
-      if (backdrop && clickEvent.target === backdrop) {
-        UI.toggleModalVisibility(backdrop, false);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && App.anyModalOpen()) {
+        const m = App.topModal();
+        if (m) App.toggleModal(m, false);
       }
     });
 
-    document.addEventListener("keydown", keyEvent => {
-      if (keyEvent.key === "Escape" && UI.isAnyModalOpen()) {
-        let topModal = UI.getTopmostOpenModal();
-        if (topModal) UI.toggleModalVisibility(topModal, false);
-      }
-    });
-
-    ["btnImportFile", "btnImportFolder", "btnImportZip"].forEach((buttonId, index) => {
-      let fileInputs = [UI.elements.importFileInput, UI.elements.importFolderInput, UI.elements.importZipInput];
-      UI.elements[buttonId].addEventListener("click", () => {
-        UI.elements.importDropdown.classList.remove("show");
-        if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
-        fileInputs[index].click();
+    ['btnImportFile', 'btnImportFolder', 'btnImportZip'].forEach((id, i) => {
+      const inputs = [$('importFileInput'), $('importFolderInput'), $('importZipInput')];
+      $(id).addEventListener('click', () => {
+        $('importDropdown').classList.remove('show');
+        $('moreDropdown')?.classList.remove('show');
+        inputs[i].click();
       });
-      fileInputs[index].addEventListener("change", async changeEvent => {
-        if (!changeEvent.target.files.length) return;
-        await Importer.processImport(buttonId === "btnImportZip" ? changeEvent.target.files[0] : changeEvent.target.files, buttonId === "btnImportZip");
-        changeEvent.target.value = "";
+      inputs[i].addEventListener('change', async e => {
+        if (!e.target.files.length) return;
+        await Importer.process(id === 'btnImportZip' ? e.target.files[0] : e.target.files, id === 'btnImportZip');
+        e.target.value = '';
       });
     });
 
-    UI.elements.btnExport.addEventListener("click", () => {
-      if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
-      Exporter.exportData();
+    $('btnExport').addEventListener('click', () => { $('moreDropdown')?.classList.remove('show'); Exporter.run(); });
+    $('btnCopyForAi').addEventListener('click', App.copyForAi);
+    $('btnApply').addEventListener('click', App.applyTranslation);
+    $('btnUndo').addEventListener('click', App.undo);
+    $('btnRedo').addEventListener('click', App.redo);
+    $('btnProofread').addEventListener('click', () => { $('moreDropdown')?.classList.remove('show'); App.openProofread(); });
+
+    $('btnSelectAll').addEventListener('click', () => {
+      State.lines.forEach(l => { if (!isTrans(l)) State.selected.add(l.line_num); });
+      App.syncCheckboxes();
+    });
+    $('btnClearSelection').addEventListener('click', () => { State.selected.clear(); App.syncCheckboxes(); });
+    $('btnSelectRange').addEventListener('click', App.selectRange);
+
+    $('btnGlossary').addEventListener('click', () => {
+      $('moreDropdown')?.classList.remove('show');
+      $('glossaryVndbCheck').checked = State.vndbEnabled;
+      $('glossaryVndbIdInput').value = State.vndbId || '';
+      App.tmpVndb = [...State.vndbGlossary];
+      $('glossaryVndbPreviewArea').value = App.tmpVndb.map(g => `${g[0]}: ${g[1]}`).join('\n');
+      $('glossaryVndbWrap').classList.toggle('section-disabled', !State.vndbEnabled);
+      $('glossaryVndbIdInput').disabled = $('btnGlossaryVndbFetch').disabled = App.tmpVndb.length > 0;
+      $('glossaryCustomCheck').checked = State.customEnabled;
+      App.tmpCustomRaw = State.customRaw || '';
+      App.tmpCustom = [...State.customGlossary];
+      $('glossaryCustomInput').value = App.tmpCustomRaw;
+      $('glossaryCustomWrap').classList.toggle('section-disabled', !State.customEnabled);
+      $('btnGlossaryCustomApply').disabled = true;
+      App.toggleModal($('glossaryModal'), true);
     });
 
-    UI.elements.btnCopyForAi.addEventListener("click", AppController.copyForAi);
-    UI.elements.btnApply.addEventListener("click", AppController.applyTranslation);
-    UI.elements.btnUndo.addEventListener("click", AppController.undoTranslation);
-    UI.elements.btnRedo.addEventListener("click", AppController.redoTranslation);
-
-    UI.elements.btnProofread.addEventListener("click", () => {
-      if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
-      AppController.openProofread();
+    $('btnSettings').addEventListener('click', () => {
+      $('moreDropdown')?.classList.remove('show');
+      $('settingsIgnoreNameCheck').checked = State.ignoreName;
+      $('settingsPromptCheck').checked = State.promptEnabled;
+      $('settingsReferenceCheck').checked = State.referenceEnabled;
+      $('settingsJumpToContextCheck').checked = State.jumpToContext;
+      $('settingsHideToolsCheck').checked = State.hideTools;
+      $('settingsPromptInput').value = State.prompt;
+      $('settingsEpubTagsInput').value = State.epubTags || 'p';
+      App.toggleModal($('settingsModal'), true);
     });
 
-    UI.elements.btnSelectAll.addEventListener("click", () => {
-      AppState.lines.forEach(lineData => {
-        if (!AppState.isTranslated(lineData)) AppState.selectedLines.add(lineData.line_num);
-      });
-      AppController.syncCheckboxes();
+    $('btnSettingsDasarReset').addEventListener('click', () => {
+      $('settingsIgnoreNameCheck').checked = false;
+      $('settingsPromptCheck').checked = true;
+      $('settingsReferenceCheck').checked = false;
+      $('settingsJumpToContextCheck').checked = false;
+      $('settingsHideToolsCheck').checked = false;
+    });
+    $('btnSettingsPromptReset').addEventListener('click', () => { $('settingsPromptInput').value = DEFAULT_PROMPT; });
+    $('btnSettingsEpubReset').addEventListener('click', () => { $('settingsEpubTagsInput').value = 'p'; });
+
+    $('btnSettingsCancel').addEventListener('click', () => App.toggleModal($('settingsModal'), false));
+    $('btnSettingsSave').addEventListener('click', () => {
+      State.ignoreName = $('settingsIgnoreNameCheck').checked;
+      State.promptEnabled = $('settingsPromptCheck').checked;
+      State.referenceEnabled = $('settingsReferenceCheck').checked;
+      State.jumpToContext = $('settingsJumpToContextCheck').checked;
+      State.hideTools = $('settingsHideToolsCheck').checked;
+      State.prompt = $('settingsPromptInput').value.trim();
+      State.epubTags = $('settingsEpubTagsInput').value.trim() || 'p';
+      App.applyHideTools();
+      App.toggleModal($('settingsModal'), false);
+      State.queueSave();
     });
 
-    UI.elements.btnClearSelection.addEventListener("click", () => {
-      AppState.selectedLines.clear();
-      AppController.syncCheckboxes();
+    $('glossaryVndbCheck').addEventListener('change', e => {
+      $('glossaryVndbWrap').classList.toggle('section-disabled', !e.target.checked);
     });
 
-    UI.elements.btnSelectRange.addEventListener("click", AppController.selectRange);
-
-    UI.elements.btnGlossary.addEventListener("click", () => {
-      if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
-      UI.elements.glossaryVndbCheck.checked = AppState.vndbEnabled;
-      UI.elements.glossaryVndbIdInput.value = AppState.vndbId || "";
-      AppController.tempVndbGlossary = [...AppState.vndbGlossary];
-      UI.elements.glossaryVndbPreviewArea.value = AppController.tempVndbGlossary.map(glossaryEntry => `${glossaryEntry[0]}: ${glossaryEntry[1]}`).join("\n");
-      UI.elements.glossaryVndbWrap.classList.toggle("section-disabled", !AppState.vndbEnabled);
-      UI.elements.glossaryVndbIdInput.disabled = UI.elements.btnGlossaryVndbFetch.disabled = AppController.tempVndbGlossary.length > 0;
-      UI.elements.glossaryCustomCheck.checked = AppState.customEnabled;
-      AppController.tempCustomRaw = AppState.customRaw || "";
-      AppController.tempCustomGlossary = [...AppState.customGlossary];
-      UI.elements.glossaryCustomInput.value = AppController.tempCustomRaw;
-      UI.elements.glossaryCustomWrap.classList.toggle("section-disabled", !AppState.customEnabled);
-      UI.elements.btnGlossaryCustomApply.disabled = true;
-      UI.toggleModalVisibility(UI.elements.glossaryModal, true);
-    });
-
-    UI.elements.btnSettings.addEventListener("click", () => {
-      if (UI.elements.moreDropdown) UI.elements.moreDropdown.classList.remove("show");
-      UI.elements.settingsIgnoreNameCheck.checked = AppState.ignoreNameTranslation;
-      UI.elements.settingsPromptCheck.checked = AppState.aiPromptEnabled;
-      UI.elements.settingsReferenceCheck.checked = AppState.referenceEnabled;
-      UI.elements.settingsJumpToContextCheck.checked = AppState.jumpToContext;
-      UI.elements.settingsHideToolsCheck.checked = AppState.hideTools;
-      UI.elements.settingsPromptInput.value = AppState.aiInstructionHeader;
-      UI.elements.settingsEpubTagsInput.value = AppState.epubTags || "p";
-      UI.toggleModalVisibility(UI.elements.settingsModal, true);
-    });
-
-    UI.elements.btnSettingsDasarReset.addEventListener("click", () => {
-      UI.elements.settingsIgnoreNameCheck.checked = false;
-      UI.elements.settingsPromptCheck.checked = true;
-      UI.elements.settingsReferenceCheck.checked = false;
-      UI.elements.settingsJumpToContextCheck.checked = false;
-      UI.elements.settingsHideToolsCheck.checked = false;
-    });
-
-    UI.elements.btnSettingsPromptReset.addEventListener("click", () => {
-      UI.elements.settingsPromptInput.value = DEFAULT_PROMPT;
-    });
-
-    UI.elements.btnSettingsEpubReset.addEventListener("click", () => {
-      UI.elements.settingsEpubTagsInput.value = "p";
-    });
-
-    UI.elements.btnSettingsCancel.addEventListener("click", () => UI.toggleModalVisibility(UI.elements.settingsModal, false));
-    UI.elements.btnSettingsSave.addEventListener("click", () => {
-      AppState.ignoreNameTranslation = UI.elements.settingsIgnoreNameCheck.checked;
-      AppState.aiPromptEnabled = UI.elements.settingsPromptCheck.checked;
-      AppState.referenceEnabled = UI.elements.settingsReferenceCheck.checked;
-      AppState.jumpToContext = UI.elements.settingsJumpToContextCheck.checked;
-      AppState.hideTools = UI.elements.settingsHideToolsCheck.checked;
-      AppState.aiInstructionHeader = UI.elements.settingsPromptInput.value.trim();
-      AppState.epubTags = UI.elements.settingsEpubTagsInput.value.trim() || "p";
-      AppController.applyHideTools();
-      UI.toggleModalVisibility(UI.elements.settingsModal, false);
-      AppState.queueAutoSave();
-    });
-
-    UI.elements.glossaryVndbCheck.addEventListener("change", changeEvent => {
-      UI.elements.glossaryVndbWrap.classList.toggle("section-disabled", !changeEvent.target.checked);
-    });
-
-    UI.elements.btnGlossaryVndbFetch.addEventListener("click", async () => {
-      let vndbIdentifier = UI.elements.glossaryVndbIdInput.value.trim();
-      if (!vndbIdentifier) return;
-      if (!vndbIdentifier.startsWith("v")) vndbIdentifier = "v" + vndbIdentifier;
+    $('btnGlossaryVndbFetch').addEventListener('click', async () => {
+      let id = $('glossaryVndbIdInput').value.trim();
+      if (!id) return;
+      if (!id.startsWith('v')) id = 'v' + id;
       try {
-        UI.elements.btnGlossaryVndbFetch.disabled = UI.elements.glossaryVndbIdInput.disabled = true;
-        UI.elements.glossaryVndbStatus.textContent = "Mengambil data...";
-        UI.elements.glossaryVndbStatus.className = "status-toast";
-        UI.elements.glossaryVndbStatus.classList.add("info");
-
-        let allCharactersList = await VndbService.fetchCharacters(vndbIdentifier);
-        if (!allCharactersList.length) throw new Error("Karakter tidak ditemukan.");
-
-        AppController.tempVndbGlossary = VndbService.buildGlossary(allCharactersList);
-        UI.elements.glossaryVndbPreviewArea.value = AppController.tempVndbGlossary.map(glossaryEntry => `${glossaryEntry[0]}: ${glossaryEntry[1]}`).join("\n");
-        UI.elements.glossaryVndbStatus.textContent = `Ditemukan ${AppController.tempVndbGlossary.length} entri.`;
-        UI.elements.glossaryVndbStatus.classList.remove("info");
-        UI.elements.glossaryVndbStatus.classList.add("success");
-      } catch (error) {
-        UI.elements.glossaryVndbStatus.textContent = error.message;
-        UI.elements.glossaryVndbStatus.classList.remove("info", "success");
-        UI.elements.glossaryVndbStatus.classList.add("error");
-        UI.elements.btnGlossaryVndbFetch.disabled = UI.elements.glossaryVndbIdInput.disabled = false;
+        $('btnGlossaryVndbFetch').disabled = $('glossaryVndbIdInput').disabled = true;
+        const status = $('glossaryVndbStatus');
+        status.textContent = 'Mengambil data...';
+        status.className = 'toast info';
+        const chars = await Vndb.fetchCharacters(id);
+        if (!chars.length) throw new Error('Karakter tidak ditemukan.');
+        App.tmpVndb = Vndb.buildGlossary(chars);
+        $('glossaryVndbPreviewArea').value = App.tmpVndb.map(g => `${g[0]}: ${g[1]}`).join('\n');
+        status.textContent = `Ditemukan ${App.tmpVndb.length} entri.`;
+        status.className = 'toast success';
+      } catch (e) {
+        const status = $('glossaryVndbStatus');
+        status.textContent = e.message;
+        status.className = 'toast error';
+        $('btnGlossaryVndbFetch').disabled = $('glossaryVndbIdInput').disabled = false;
       }
     });
 
-    UI.elements.btnGlossaryVndbReset.addEventListener("click", () => {
-      UI.elements.glossaryVndbCheck.checked = false;
-      UI.elements.glossaryVndbIdInput.value = "";
-      UI.elements.glossaryVndbPreviewArea.value = "";
-      AppController.tempVndbGlossary = [];
-      UI.elements.glossaryVndbStatus.className = "status-toast empty mb-2";
-      UI.elements.glossaryVndbIdInput.disabled = UI.elements.btnGlossaryVndbFetch.disabled = false;
-      UI.elements.glossaryVndbWrap.classList.add("section-disabled");
+    $('btnGlossaryVndbReset').addEventListener('click', () => {
+      $('glossaryVndbCheck').checked = false;
+      $('glossaryVndbIdInput').value = '';
+      $('glossaryVndbPreviewArea').value = '';
+      App.tmpVndb = [];
+      $('glossaryVndbStatus').className = 'toast empty mb-2';
+      $('glossaryVndbIdInput').disabled = $('btnGlossaryVndbFetch').disabled = false;
+      $('glossaryVndbWrap').classList.add('section-disabled');
     });
 
-    UI.elements.glossaryCustomCheck.addEventListener("change", changeEvent => {
-      let isEnabled = changeEvent.target.checked;
-      UI.elements.glossaryCustomWrap.classList.toggle("section-disabled", !isEnabled);
-      if (!isEnabled) {
-        UI.elements.btnGlossaryCustomApply.disabled = true;
-      } else {
-        UI.elements.glossaryCustomInput.dispatchEvent(new Event("input"));
-      }
+    $('glossaryCustomCheck').addEventListener('change', e => {
+      const on = e.target.checked;
+      $('glossaryCustomWrap').classList.toggle('section-disabled', !on);
+      if (!on) $('btnGlossaryCustomApply').disabled = true;
+      else $('glossaryCustomInput').dispatchEvent(new Event('input'));
     });
 
-    UI.elements.btnGlossaryCustomReset.addEventListener("click", () => {
-      UI.elements.glossaryCustomCheck.checked = false;
-      UI.elements.glossaryCustomInput.value = "";
-      UI.elements.glossaryCustomWrap.classList.add("section-disabled");
-      UI.elements.btnGlossaryCustomApply.disabled = true;
-      AppController.tempCustomRaw = "";
-      AppController.tempCustomGlossary = [];
+    $('btnGlossaryCustomReset').addEventListener('click', () => {
+      $('glossaryCustomCheck').checked = false;
+      $('glossaryCustomInput').value = '';
+      $('glossaryCustomWrap').classList.add('section-disabled');
+      $('btnGlossaryCustomApply').disabled = true;
+      App.tmpCustomRaw = '';
+      App.tmpCustom = [];
     });
 
-    UI.elements.glossaryCustomInput.addEventListener("input", () => {
-      let rawInputText = UI.elements.glossaryCustomInput.value;
-      let isSectionEnabled = UI.elements.glossaryCustomCheck.checked;
-      let isValidFormat = true;
-      let hasContent = false;
-
-      for (let textLine of rawInputText.split(/\r?\n/)) {
-        textLine = textLine.trim();
-        if (!textLine) continue;
-        hasContent = true;
-        let colonIndex = textLine.indexOf(":");
-        if (colonIndex <= 0 || colonIndex === textLine.length - 1 || !textLine.substring(0, colonIndex).trim() || !textLine.substring(colonIndex + 1).trim()) {
-          isValidFormat = false;
+    $('glossaryCustomInput').addEventListener('input', () => {
+      const raw = $('glossaryCustomInput').value;
+      const on = $('glossaryCustomCheck').checked;
+      let valid = true, has = false;
+      for (let line of raw.split(/\r?\n/)) {
+        line = line.trim();
+        if (!line) continue;
+        has = true;
+        const i = line.indexOf(':');
+        if (i <= 0 || i === line.length - 1 || !line.substring(0, i).trim() || !line.substring(i + 1).trim()) {
+          valid = false;
           break;
         }
       }
-      UI.elements.btnGlossaryCustomApply.disabled = (!isSectionEnabled || rawInputText === AppController.tempCustomRaw || (!isValidFormat && hasContent));
+      $('btnGlossaryCustomApply').disabled = (!on || raw === App.tmpCustomRaw || (!valid && has));
     });
 
-    UI.elements.btnGlossaryCustomApply.addEventListener("click", () => {
-      let rawInputText = UI.elements.glossaryCustomInput.value;
-      let processedGlossary = [];
-      rawInputText.split(/\r?\n/).forEach(textLine => {
-        textLine = textLine.trim();
-        let colonIndex = textLine.indexOf(":");
-        if (colonIndex > 0) {
-          let originalWord = textLine.substring(0, colonIndex).trim();
-          let translatedWord = textLine.substring(colonIndex + 1).trim();
-          if (originalWord && translatedWord) processedGlossary.push([originalWord, translatedWord]);
+    $('btnGlossaryCustomApply').addEventListener('click', () => {
+      const raw = $('glossaryCustomInput').value;
+      const out = [];
+      raw.split(/\r?\n/).forEach(line => {
+        line = line.trim();
+        const i = line.indexOf(':');
+        if (i > 0) {
+          const a = line.substring(0, i).trim(), b = line.substring(i + 1).trim();
+          if (a && b) out.push([a, b]);
         }
       });
-      AppController.tempCustomRaw = rawInputText;
-      AppController.tempCustomGlossary = processedGlossary;
-      UI.elements.btnGlossaryCustomApply.disabled = true;
+      App.tmpCustomRaw = raw;
+      App.tmpCustom = out;
+      $('btnGlossaryCustomApply').disabled = true;
     });
 
-    UI.elements.btnGlossaryCancel.addEventListener("click", () => UI.toggleModalVisibility(UI.elements.glossaryModal, false));
-    UI.elements.btnGlossarySave.addEventListener("click", () => {
-      AppState.vndbEnabled = UI.elements.glossaryVndbCheck.checked;
-      AppState.vndbId = UI.elements.glossaryVndbIdInput.value.trim();
-      AppState.vndbGlossary = AppController.tempVndbGlossary;
-      AppState.customEnabled = UI.elements.glossaryCustomCheck.checked;
-      AppState.customRaw = AppController.tempCustomRaw;
-      AppState.customGlossary = AppController.tempCustomGlossary;
-      UI.toggleModalVisibility(UI.elements.glossaryModal, false);
-      AppState.queueAutoSave();
+    $('btnGlossaryCancel').addEventListener('click', () => App.toggleModal($('glossaryModal'), false));
+    $('btnGlossarySave').addEventListener('click', () => {
+      State.vndbEnabled = $('glossaryVndbCheck').checked;
+      State.vndbId = $('glossaryVndbIdInput').value.trim();
+      State.vndbGlossary = App.tmpVndb;
+      State.customEnabled = $('glossaryCustomCheck').checked;
+      State.customRaw = App.tmpCustomRaw;
+      State.customGlossary = App.tmpCustom;
+      App.toggleModal($('glossaryModal'), false);
+      State.queueSave();
     });
 
-    UI.elements.btnLineCancel.addEventListener("click", () => UI.toggleModalVisibility(UI.elements.lineEditorModal, false));
-    UI.elements.btnLineSave.addEventListener("click", AppController.saveLineEditor);
-    UI.elements.btnProofreadClose.addEventListener("click", () => UI.toggleModalVisibility(UI.elements.proofreadModal, false));
+    $('btnLineCancel').addEventListener('click', () => App.toggleModal($('lineEditorModal'), false));
+    $('btnLineSave').addEventListener('click', App.saveLineEditor);
+    $('btnProofreadClose').addEventListener('click', () => App.toggleModal($('proofreadModal'), false));
 
-    UI.elements.btnProofreadReset.addEventListener("click", () => {
-      UI.elements.proofreadSearchInput.value = "";
-      UI.elements.proofreadReplaceInput.value = "";
-      UI.elements.proofreadScope.value = "all";
-      UI.elements.proofreadRegexCheck.checked = false;
-      UI.elements.proofreadCaseCheck.checked = false;
-      UI.elements.proofreadExactCheck.checked = false;
-      UI.elements.proofreadTranslatedOnlyCheck.checked = true;
-      AppController.syncProofreadSettings();
-      AppController.renderProofread();
+    $('btnProofreadReset').addEventListener('click', () => {
+      $('proofreadSearchInput').value = '';
+      $('proofreadReplaceInput').value = '';
+      $('proofreadScope').value = 'all';
+      $('proofreadRegexCheck').checked = false;
+      $('proofreadCaseCheck').checked = false;
+      $('proofreadExactCheck').checked = false;
+      $('proofreadTranslatedOnlyCheck').checked = true;
+      App.syncProofread();
+      App.renderProofread();
     });
 
-    UI.elements.btnProofreadReplaceAll.addEventListener("click", AppController.execReplaceAll);
+    $('btnProofreadReplaceAll').addEventListener('click', App.replaceAll);
 
-    let delayedSearch = AppController.debounce(AppController.renderProofread, 200);
-    UI.elements.proofreadSearchInput.addEventListener("input", delayedSearch);
+    const delayed = App.debounce(App.renderProofread, 200);
+    $('proofreadSearchInput').addEventListener('input', delayed);
 
-    ["proofreadScope", "proofreadRegexCheck", "proofreadCaseCheck", "proofreadExactCheck", "proofreadTranslatedOnlyCheck"].forEach(elementId => {
-      UI.elements[elementId].addEventListener("change", () => {
-        AppController.syncProofreadSettings();
-        AppController.renderProofread();
-      });
+    ['proofreadScope', 'proofreadRegexCheck', 'proofreadCaseCheck', 'proofreadExactCheck', 'proofreadTranslatedOnlyCheck'].forEach(id => {
+      $(id).addEventListener('change', () => { App.syncProofread(); App.renderProofread(); });
     });
 
-    UI.elements.previewContainer.addEventListener("change", clickEvent => {
-      if (clickEvent.target.closest('.checkbox-cell') && clickEvent.target.type === 'checkbox') {
-        let targetLineNumber = Number(clickEvent.target.dataset.num);
-        if (clickEvent.target.checked) AppState.selectedLines.add(targetLineNumber);
-        else AppState.selectedLines.delete(targetLineNumber);
-        AppController.syncCheckboxes();
+    $('previewContainer').addEventListener('change', e => {
+      if (e.target.closest('.checkbox-cell') && e.target.type === 'checkbox') {
+        const n = Number(e.target.dataset.num);
+        if (e.target.checked) State.selected.add(n); else State.selected.delete(n);
+        App.syncCheckboxes();
       }
     });
 
-    UI.elements.stickyFileCheckbox.addEventListener("change", changeEvent => {
-      let fileName = changeEvent.target.dataset.file;
-      if (!fileName) return;
-      let fileLinesArray = AppState.filesLinesCache.get(fileName) || [];
-      fileLinesArray.forEach(lineData => {
-        if (!AppState.isTranslated(lineData)) {
-          if (changeEvent.target.checked) AppState.selectedLines.add(lineData.line_num);
-          else AppState.selectedLines.delete(lineData.line_num);
+    $('stickyFileCheckbox').addEventListener('change', e => {
+      const file = e.target.dataset.file;
+      if (!file) return;
+      const lines = State.fileLines.get(file) || [];
+      lines.forEach(l => {
+        if (!isTrans(l)) {
+          if (e.target.checked) State.selected.add(l.line_num);
+          else State.selected.delete(l.line_num);
         }
       });
-      AppController.syncCheckboxes();
+      App.syncCheckboxes();
     });
 
-    UI.elements.previewContainer.addEventListener("click", clickEvent => {
-      let textContentWrap = clickEvent.target.closest('.text-content');
-      if (textContentWrap) {
-        let rowElement = textContentWrap.closest('.preview-row');
-        if (rowElement && !rowElement.classList.contains('separator')) {
-          let checkboxElement = rowElement.querySelector('input[type="checkbox"]');
-          if (checkboxElement?.dataset.num) AppController.openLineEditor(Number(checkboxElement.dataset.num));
+    $('previewContainer').addEventListener('click', e => {
+      const wrap = e.target.closest('.text-content');
+      if (wrap) {
+        const row = wrap.closest('.preview-row');
+        if (row && !row.classList.contains('separator')) {
+          const cb = row.querySelector('input[type="checkbox"]');
+          if (cb?.dataset.num) App.openLineEditor(Number(cb.dataset.num));
         }
       }
     });
 
-    let fileBadgeRaf = 0;
-    UI.elements.previewViewport.addEventListener("scroll", () => {
-      if (fileBadgeRaf) return;
-      fileBadgeRaf = requestAnimationFrame(() => {
-        fileBadgeRaf = 0;
-        AppController.updateCurrentFileBadge();
-      });
+    let raf = 0;
+    $('previewViewport').addEventListener('scroll', () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; App.updateFileBadge(); });
     }, { passive: true });
 
-    UI.elements.proofreadContainer.addEventListener("click", clickEvent => {
-      let textContentWrap = clickEvent.target.closest('.text-content');
-      if (textContentWrap?.dataset.num) {
-        let lineNum = Number(textContentWrap.dataset.num);
-        if (AppState.jumpToContext) {
-          UI.toggleModalVisibility(UI.elements.proofreadModal, false);
-          let rowIndex = AppState.displayRows.findIndex(rowData => rowData.type === "line" && rowData.line.line_num === lineNum);
-          if (rowIndex !== -1) {
-            AppController.mainScroller.scrollToIndex(rowIndex);
+    $('proofreadContainer').addEventListener('click', e => {
+      const wrap = e.target.closest('.text-content');
+      if (wrap?.dataset.num) {
+        const n = Number(wrap.dataset.num);
+        if (State.jumpToContext) {
+          App.toggleModal($('proofreadModal'), false);
+          const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === n);
+          if (idx !== -1) {
+            App.main.scrollToIndex(idx);
             setTimeout(() => {
-              let rowHtmlElement = UI.elements.previewContainer.querySelector(`input[data-num="${lineNum}"]`)?.closest('.preview-row');
-              if (rowHtmlElement) {
-                rowHtmlElement.classList.add("row-flash");
-                setTimeout(() => rowHtmlElement.classList.remove("row-flash"), 800);
-              }
+              const el = $('previewContainer').querySelector(`input[data-num="${n}"]`)?.closest('.preview-row');
+              if (el) { el.classList.add('row-flash'); setTimeout(() => el.classList.remove('row-flash'), 800); }
             }, 60);
           }
         } else {
-          AppController.openLineEditor(lineNum);
+          App.openLineEditor(n);
         }
       }
     });
 
-    UI.elements.nameTableBody.addEventListener("click", async clickEvent => {
-      if (clickEvent.target.tagName === "TD") {
-        try {
-          await Utils.safeClipboardWrite(clickEvent.target.textContent);
-          UI.flashStatusMessage(`Nama disalin!`);
-        } catch (error) {
-          alert(`Gagal disalin.`);
-        }
+    $('nameTableBody').addEventListener('click', async e => {
+      if (e.target.tagName === 'TD') {
+        try { await clipboard(e.target.textContent); App.flash('Nama disalin!'); }
+        catch { alert('Gagal disalin.'); }
       }
     });
 
-    UI.elements.btnCopyAllNames.addEventListener("click", async () => {
-      let uniqueNamesSet = new Set();
-      AppState.lines.forEach(lineData => {
-        if (lineData.name) uniqueNamesSet.add(lineData.name);
-      });
-      let sortedNamesArray = Array.from(uniqueNamesSet).sort();
-      if (!sortedNamesArray.length) return;
-      try {
-        await Utils.safeClipboardWrite(sortedNamesArray.join('\n'));
-        UI.flashStatusMessage(`${sortedNamesArray.length} nama disalin!`);
-      } catch (error) {
-        alert("Clipboard diblokir.");
-      }
+    $('btnCopyAllNames').addEventListener('click', async () => {
+      const names = new Set();
+      State.lines.forEach(l => { if (l.name) names.add(l.name); });
+      const arr = Array.from(names).sort();
+      if (!arr.length) return;
+      try { await clipboard(arr.join('\n')); App.flash(`${arr.length} nama disalin!`); }
+      catch { alert('Clipboard diblokir.'); }
     });
-  }
+  },
 
-  static async backupProject(savedProject) {
+  async backup(p) {
     try {
-      document.body.style.cursor = "wait";
-      let backupZipArchive = new window.JSZip();
-      backupZipArchive.file("metadata.json", JSON.stringify(Utils.extractMetadata(savedProject.data)));
+      document.body.style.cursor = 'wait';
+      const zip = new window.JSZip();
+      const meta = { ...p.data };
+      delete meta.lines;
+      delete meta.proofreadScope;
+      delete meta.proofreadRegex;
+      delete meta.proofreadCaseSensitive;
+      delete meta.proofreadExactMatch;
+      delete meta.proofreadTranslatedOnly;
+      zip.file('metadata.json', JSON.stringify(meta));
 
-      let originalTextString = "";
-      let translateTextString = "";
-      let nameTextString = "";
-
-      for (let fileName of (savedProject.data.imported_files || [])) {
-        originalTextString += `<filename>${fileName}</filename>\n`;
-        translateTextString += `<filename>${fileName}</filename>\n`;
-        nameTextString += `<filename>${fileName}</filename>\n`;
-        savedProject.data.lines.filter(lineData => lineData.file === fileName).forEach(lineData => {
-          originalTextString += `${lineData.message || ""}\n`;
-          translateTextString += `${lineData.trans_message || ""}\n`;
-          nameTextString += ((lineData.name || "") || (lineData.trans_name || "")) ? `<original>${lineData.name || ""}</original><translate>${lineData.trans_name || ""}</translate>\n` : `\n`;
+      let orig = '', trans = '', names = '';
+      for (const file of (p.data.imported_files || [])) {
+        orig += `<filename>${file}</filename>\n`;
+        trans += `<filename>${file}</filename>\n`;
+        names += `<filename>${file}</filename>\n`;
+        p.data.lines.filter(l => l.file === file).forEach(l => {
+          orig += `${l.message || ''}\n`;
+          trans += `${l.trans_message || ''}\n`;
+          names += ((l.name || '') || (l.trans_name || '')) ? `<original>${l.name || ''}</original><translate>${l.trans_name || ''}</translate>\n` : '\n';
         });
       }
+      zip.file('original.txt', orig);
+      zip.file('translate.txt', trans);
+      zip.file('name.txt', names);
 
-      backupZipArchive.file("original.txt", originalTextString);
-      backupZipArchive.file("translate.txt", translateTextString);
-      backupZipArchive.file("name.txt", nameTextString);
-
-      if (savedProject.data.projectType === "epub" && savedProject.data.epubSourceId) {
-        let rootDirectory = await StorageManager.getRootDirectory();
-        let fileHandle = await rootDirectory.getFileHandle(savedProject.data.epubSourceId);
-        let epubFileObject = await fileHandle.getFile();
-        backupZipArchive.file(savedProject.data.epubSourceId, epubFileObject);
+      if (p.data.projectType === 'epub' && p.data.epubSourceId) {
+        const root = await Storage.root();
+        const h = await root.getFileHandle(p.data.epubSourceId);
+        const f = await h.getFile();
+        zip.file(p.data.epubSourceId, f);
       }
 
-      let blobUrl = URL.createObjectURL(await backupZipArchive.generateAsync({ type: "blob", mimeType: "application/octet-stream", compression: "DEFLATE", compressionOptions: { level: 9 } }));
-      let downloadAnchor = UI.createDomNode("a", null, { href: blobUrl, download: `${Utils.sanitizeFileName(savedProject.name)}_backup.cstl` });
-      downloadAnchor.click();
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-    } catch (error) {
-      alert("Gagal backup: " + error.message);
+      const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
+      download(url, `${sanitizeName(p.name)}_backup.cstl`);
+    } catch (e) {
+      alert('Gagal backup: ' + e.message);
     } finally {
-      document.body.style.cursor = "default";
+      document.body.style.cursor = 'default';
     }
-  }
+  },
 
-  static async loadDashboard() {
-    UI.elements.projectList.innerHTML = "";
-    const dashboardContent = UI.elements.projectList.parentElement;
+  async loadDashboard() {
+    const list = $('projectList');
+    list.innerHTML = '';
+    const content = list.parentElement;
     try {
-      let savedProjects = await StorageManager.fetchAllProjects();
-      if (!savedProjects.length) {
-        dashboardContent.classList.add("is-empty");
-        UI.elements.projectList.innerHTML = `<p class="hint" style="grid-column:1/-1;">Belum ada Project. Buat atau Pulihkan!</p>`;
+      const items = await Storage.list();
+      if (!items.length) {
+        content.classList.add('is-empty');
+        list.innerHTML = `<p class="hint" style="grid-column:1/-1;">Belum ada Project. Buat atau Pulihkan!</p>`;
         return;
       }
-      dashboardContent.classList.remove("is-empty");
-      savedProjects.forEach(savedProject => {
-        let projectCard = UI.createDomNode("div", "project-card");
-        let projectBadgeHtml = savedProject.fileCount || savedProject.lineCount ? (savedProject.data.projectType === 'epub' ? `<span class="badge badge-epub">EPUB</span>` : (savedProject.data.projectType === 'json' ? `<span class="badge badge-json">JSON-VNTP</span>` : '')) : '';
-
-        projectCard.innerHTML = `
+      content.classList.remove('is-empty');
+      items.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'project-card';
+        const badge = p.fileCount || p.lineCount
+          ? (p.data.projectType === 'epub' ? '<span class="badge badge-epub">EPUB</span>'
+            : p.data.projectType === 'json' ? '<span class="badge badge-json">JSON-VNTP</span>' : '')
+          : '';
+        card.innerHTML = `
           <div class="project-card-main">
-            <h3>${Utils.escapeHtml(savedProject.name)}</h3>
+            <h3>${escapeHtml(p.name)}</h3>
             <div class="project-meta mt-2">
-              ${projectBadgeHtml ? `<div style="margin-bottom:8px;">${projectBadgeHtml}</div>` : ''}
-              Diubah: ${new Date(savedProject.updatedAt).toLocaleString('id-ID')}<br>
-              File: ${savedProject.fileCount} | Baris: ${savedProject.lineCount}
+              ${badge ? `<div style="margin-bottom:8px;">${badge}</div>` : ''}
+              Diubah: ${new Date(p.updatedAt).toLocaleString('id-ID')}<br>
+              File: ${p.fileCount}<br>
+              Baris: ${p.translatedCount}/${p.lineCount} (${p.lineCount ? Math.floor(p.translatedCount / p.lineCount * 100) : 0}%)
             </div>
           </div>
           <div class="project-actions">
             <button class="btn btn-primary btn-sm btn-open">Buka</button>
-            <button class="btn btn-outline btn-sm btn-rename">Ubah</button>
-            <button class="btn btn-outline btn-sm btn-backup">Backup</button>
+            <button class="btn btn-ghost btn-sm btn-rename">Ubah</button>
+            <button class="btn btn-ghost btn-sm btn-backup">Backup</button>
             <button class="btn btn-danger btn-sm btn-delete">Hapus</button>
           </div>
         `;
-
-        projectCard.querySelector(".btn-open").addEventListener("click", () => AppController.openProject(savedProject.id, savedProject.data));
-
-        projectCard.querySelector(".btn-rename").addEventListener("click", async () => {
-          let updatedProjectName = prompt("Nama baru:", savedProject.name);
-          if (updatedProjectName?.trim() && updatedProjectName !== savedProject.name) {
-            savedProject.data.projectName = updatedProjectName.trim();
-            await StorageManager.saveProjectData(savedProject.id, savedProject.data);
-            AppController.loadDashboard();
+        card.querySelector('.btn-open').addEventListener('click', () => App.open(p.id, p.data));
+        card.querySelector('.btn-rename').addEventListener('click', async () => {
+          const name = prompt('Nama baru:', p.name);
+          if (name?.trim() && name !== p.name) {
+            p.data.projectName = name.trim();
+            await Storage.save(p.id, p.data);
+            App.loadDashboard();
           }
         });
-
-        projectCard.querySelector(".btn-backup").addEventListener("click", () => AppController.backupProject(savedProject));
-
-        projectCard.querySelector(".btn-delete").addEventListener("click", async () => {
-          if (confirm("Hapus permanen?")) {
-            await StorageManager.removeProjectData(savedProject.id, savedProject.data.epubSourceId);
-            AppController.loadDashboard();
+        card.querySelector('.btn-backup').addEventListener('click', () => App.backup(p));
+        card.querySelector('.btn-delete').addEventListener('click', async () => {
+          if (confirm('Hapus permanen?')) {
+            await Storage.remove(p.id, p.data.epubSourceId);
+            App.loadDashboard();
           }
         });
-
-        UI.elements.projectList.appendChild(projectCard);
+        list.appendChild(card);
       });
-    } catch (error) {
-      UI.elements.projectList.innerHTML = `<p class="hint" style="color:var(--danger);">Gagal akses storage.</p>`;
+    } catch {
+      list.innerHTML = `<p class="hint" style="color:var(--danger);">Gagal akses storage.</p>`;
     }
-  }
+  },
 
-  static async restoreProject(changeEvent) {
-    let uploadedFile = changeEvent.target.files?.[0];
-    if (!uploadedFile) return;
-
+  async restoreProject(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
     try {
-      document.body.style.cursor = "wait";
-      let zipArchive = new window.JSZip();
-      await zipArchive.loadAsync(uploadedFile);
+      document.body.style.cursor = 'wait';
+      const zip = new window.JSZip();
+      await zip.loadAsync(file);
+      const metaFile = zip.file('metadata.json');
+      const origFile = zip.file('original.txt');
+      const transFile = zip.file('translate.txt');
+      const nameFile = zip.file('name.txt');
+      if (!metaFile || !origFile || !transFile || !nameFile) throw new Error('Format arsip tidak valid.');
 
-      let metaFileEntry = zipArchive.file("metadata.json");
-      let originalFileEntry = zipArchive.file("original.txt");
-      let translateFileEntry = zipArchive.file("translate.txt");
-      let nameFileEntry = zipArchive.file("name.txt");
+      const meta = JSON.parse(await metaFile.async('text'));
+      const orig = (await origFile.async('text')).split(/\r?\n/);
+      const trans = (await transFile.async('text')).split(/\r?\n/);
+      const names = (await nameFile.async('text')).split(/\r?\n/);
+      [orig, trans, names].forEach(arr => { if (arr[arr.length - 1] === '') arr.pop(); });
+      if (orig.length !== trans.length || orig.length !== names.length) throw new Error('Baris tidak sinkron.');
 
-      if (!metaFileEntry || !originalFileEntry || !translateFileEntry || !nameFileEntry) throw new Error("Format arsip tidak valid.");
-
-      let metadataJson = JSON.parse(await metaFileEntry.async("text"));
-      let originalLinesArray = (await originalFileEntry.async("text")).split(/\r?\n/);
-      let translateLinesArray = (await translateFileEntry.async("text")).split(/\r?\n/);
-      let nameLinesArray = (await nameFileEntry.async("text")).split(/\r?\n/);
-
-      if (originalLinesArray[originalLinesArray.length - 1] === "") originalLinesArray.pop();
-      if (translateLinesArray[translateLinesArray.length - 1] === "") translateLinesArray.pop();
-      if (nameLinesArray[nameLinesArray.length - 1] === "") nameLinesArray.pop();
-
-      if (originalLinesArray.length !== translateLinesArray.length || originalLinesArray.length !== nameLinesArray.length) {
-        throw new Error("Baris tidak sinkron.");
-      }
-
-      let parsedLinesArray = [];
-      let currentFileName = "unknown";
-      let currentLineNumber = 1;
-
-      for (let arrayIndex = 0; arrayIndex < originalLinesArray.length; arrayIndex++) {
-        let originalLine = originalLinesArray[arrayIndex];
-        let fileMatch = originalLine.match(/^<filename>(.*?)<\/filename>$/);
-
-        if (fileMatch) {
-          if (translateLinesArray[arrayIndex] !== originalLine || nameLinesArray[arrayIndex] !== originalLine) {
-            throw new Error("Header file tidak sinkron.");
-          }
-          currentFileName = fileMatch[1];
+      const lines = [];
+      let file = 'unknown', n = 1;
+      for (let i = 0; i < orig.length; i++) {
+        const o = orig[i];
+        const m = o.match(/^<filename>(.*?)<\/filename>$/);
+        if (m) {
+          if (trans[i] !== o || names[i] !== o) throw new Error('Header file tidak sinkron.');
+          file = m[1];
         } else {
-          let parsedOriginalName = null;
-          let parsedTranslateName = null;
-          let nameLine = nameLinesArray[arrayIndex].trim();
-
-          if (nameLine) {
-            let origMatch = nameLine.match(/<original>(.*?)<\/original>/);
-            let transMatch = nameLine.match(/<translate>(.*?)<\/translate>/);
-            parsedOriginalName = origMatch ? origMatch[1] : null;
-            parsedTranslateName = transMatch ? transMatch[1] : null;
+          let on = null, tn = null;
+          const nl = names[i].trim();
+          if (nl) {
+            const om = nl.match(/<original>(.*?)<\/original>/);
+            const tm = nl.match(/<translate>(.*?)<\/translate>/);
+            on = om ? om[1] : null;
+            tn = tm ? tm[1] : null;
           }
-
-          parsedLinesArray.push({
-            line_num: currentLineNumber++,
-            file: currentFileName,
-            name: parsedOriginalName,
-            message: originalLine,
-            trans_name: parsedTranslateName,
-            trans_message: translateLinesArray[arrayIndex] || null,
-            is_translated: !!translateLinesArray[arrayIndex]?.trim()
+          lines.push({
+            line_num: n++,
+            file,
+            name: on,
+            message: o,
+            trans_name: tn,
+            trans_message: trans[i] || null,
+            is_translated: !!trans[i]?.trim()
           });
         }
       }
 
-      let restoredProjectName = metadataJson.projectName || uploadedFile.name.replace(".cstl", '');
-
-      if (metadataJson.projectType === "epub" && metadataJson.epubSourceId) {
-        let epubFileEntry = zipArchive.file(metadataJson.epubSourceId);
-        if (epubFileEntry) {
-          let newEpubId = "epub_" + Date.now() + ".epub";
-          let rootDirectory = await StorageManager.getRootDirectory();
-          let fileHandle = await rootDirectory.getFileHandle(newEpubId, { create: true });
-          let writableStream = await fileHandle.createWritable();
-          await writableStream.write(await epubFileEntry.async("blob"));
-          await writableStream.close();
-          metadataJson.epubSourceId = newEpubId;
+      const name = meta.projectName || file.name.replace('.cstl', '');
+      if (meta.projectType === 'epub' && meta.epubSourceId) {
+        const entry = zip.file(meta.epubSourceId);
+        if (entry) {
+          const newId = 'epub_' + Date.now() + '.epub';
+          const root = await Storage.root();
+          const h = await root.getFileHandle(newId, { create: true });
+          const w = await h.createWritable();
+          await w.write(await entry.async('blob'));
+          await w.close();
+          meta.epubSourceId = newId;
         }
       }
 
-      await StorageManager.saveProjectData("proj_" + Date.now() + ".cstl", {
-        version: 12,
-        projectName: restoredProjectName,
-        projectType: metadataJson.projectType || "uninitialized",
-        epubTags: metadataJson.epubTags || "p",
-        epubSourceId: metadataJson.epubSourceId || null,
-        imported_files: metadataJson.imported_files || [],
-        lines: parsedLinesArray.map(AppState.normalizeLine),
-        prompt_header: metadataJson.prompt_header || AppState.aiInstructionHeader,
-        ignoreNameTranslation: metadataJson.ignoreNameTranslation ?? false,
-        promptEnabled: metadataJson.promptEnabled ?? true,
-        referenceEnabled: metadataJson.referenceEnabled ?? false,
-        vndbEnabled: metadataJson.vndbEnabled ?? false,
-        vndbId: metadataJson.vndbId || "",
-        vndbGlossary: metadataJson.vndbGlossary || [],
-        customEnabled: metadataJson.customEnabled ?? false,
-        customRaw: metadataJson.customRaw || "",
-        customGlossary: metadataJson.customGlossary || [],
-        jumpToContext: metadataJson.jumpToContext ?? false,
-        hideTools: metadataJson.hideTools ?? false
+      await Storage.save('proj_' + Date.now() + '.cstl', {
+        version: 14,
+        projectName: name,
+        projectType: meta.projectType || 'uninitialized',
+        epubTags: meta.epubTags || 'p',
+        epubSourceId: meta.epubSourceId || null,
+        imported_files: meta.imported_files || [],
+        lines: lines.map(normalizeLine),
+        prompt_header: meta.prompt_header || State.prompt,
+        ignoreNameTranslation: meta.ignoreNameTranslation ?? false,
+        promptEnabled: meta.promptEnabled ?? true,
+        referenceEnabled: meta.referenceEnabled ?? false,
+        vndbEnabled: meta.vndbEnabled ?? false,
+        vndbId: meta.vndbId || '',
+        vndbGlossary: meta.vndbGlossary || [],
+        customEnabled: meta.customEnabled ?? false,
+        customRaw: meta.customRaw || '',
+        customGlossary: meta.customGlossary || [],
+        jumpToContext: meta.jumpToContext ?? false,
+        hideTools: meta.hideTools ?? false
       });
-
-      await AppController.loadDashboard();
-      alert(`Project "${restoredProjectName}" dipulihkan!`);
-    } catch (error) {
-      alert("File korup: " + error.message);
+      await App.loadDashboard();
+      alert(`Project "${name}" dipulihkan!`);
+    } catch (e) {
+      alert('File korup: ' + e.message);
     } finally {
-      document.body.style.cursor = "default";
-      changeEvent.target.value = "";
+      document.body.style.cursor = 'default';
+      e.target.value = '';
     }
-  }
+  },
 
-  static openProject(targetProjectId, targetProjectData) {
-    AppState.currentProjectId = targetProjectId;
-    AppState.projectName = targetProjectData.projectName || "Unknown";
-    AppState.projectType = targetProjectData.projectType || "uninitialized";
-    AppState.epubTags = targetProjectData.epubTags || "p";
-    AppState.epubSourceId = targetProjectData.epubSourceId || null;
-    AppState.lines = (targetProjectData.lines || []).map(AppState.normalizeLine);
-    AppState.importedFiles = targetProjectData.imported_files || [];
-    AppState.aiInstructionHeader = targetProjectData.prompt_header || AppState.aiInstructionHeader;
-    AppState.ignoreNameTranslation = targetProjectData.ignoreNameTranslation ?? false;
-    AppState.aiPromptEnabled = targetProjectData.promptEnabled ?? true;
-    AppState.referenceEnabled = targetProjectData.referenceEnabled ?? false;
-    AppState.vndbEnabled = targetProjectData.vndbEnabled ?? false;
-    AppState.vndbId = targetProjectData.vndbId || "";
-    AppState.vndbGlossary = targetProjectData.vndbGlossary || [];
-    AppState.customEnabled = targetProjectData.customEnabled ?? false;
-    AppState.customRaw = targetProjectData.customRaw || "";
-    AppState.customGlossary = targetProjectData.customGlossary || [];
-    AppState.jumpToContext = targetProjectData.jumpToContext ?? false;
-    AppState.hideTools = targetProjectData.hideTools ?? false;
-    AppState.proofreadScope = targetProjectData.proofreadScope || "all";
-    AppState.proofreadRegex = targetProjectData.proofreadRegex ?? false;
-    AppState.proofreadCaseSensitive = targetProjectData.proofreadCaseSensitive ?? false;
-    AppState.proofreadExactMatch = targetProjectData.proofreadExactMatch ?? false;
-    AppState.proofreadTranslatedOnly = targetProjectData.proofreadTranslatedOnly ?? true;
-    AppState.selectedLines.clear();
-    AppState.undoSnapshot = AppState.redoSnapshot = null;
-    AppState.namesDirty = true;
+  open(id, data) {
+    State.projectId = id;
+    State.projectName = data.projectName || 'Unknown';
+    State.projectType = data.projectType || 'uninitialized';
+    State.epubTags = data.epubTags || 'p';
+    State.epubSourceId = data.epubSourceId || null;
+    State.lines = (data.lines || []).map(normalizeLine);
+    State.files = data.imported_files || [];
+    State.prompt = data.prompt_header || State.prompt;
+    State.ignoreName = data.ignoreNameTranslation ?? false;
+    State.promptEnabled = data.promptEnabled ?? true;
+    State.referenceEnabled = data.referenceEnabled ?? false;
+    State.vndbEnabled = data.vndbEnabled ?? false;
+    State.vndbId = data.vndbId || '';
+    State.vndbGlossary = data.vndbGlossary || [];
+    State.customEnabled = data.customEnabled ?? false;
+    State.customRaw = data.customRaw || '';
+    State.customGlossary = data.customGlossary || [];
+    State.jumpToContext = data.jumpToContext ?? false;
+    State.hideTools = data.hideTools ?? false;
+    State.prScope = data.proofreadScope || 'all';
+    State.prRegex = data.proofreadRegex ?? false;
+    State.prCase = data.proofreadCaseSensitive ?? false;
+    State.prExact = data.proofreadExactMatch ?? false;
+    State.prTranslatedOnly = data.proofreadTranslatedOnly ?? true;
+    State.selected.clear();
+    State.undo = State.redo = null;
+    State.namesDirty = true;
 
-    UI.elements.projectNameDisplay.textContent = AppState.projectName;
-    UI.elements.dashboardView.classList.remove("open");
-    UI.elements.workspaceView.style.display = "flex";
-    AppController.applyHideTools();
+    $('projectNameDisplay').textContent = State.projectName;
+    $('dashboardView').classList.remove('open');
+    $('workspaceView').style.display = 'flex';
+    App.applyHideTools();
+    requestAnimationFrame(() => App.adjustToolbar());
+    App.refresh(false);
+  },
 
-    requestAnimationFrame(() => AppController.adjustToolbar());
-    AppController.refreshWorkspace(false);
-  }
+  applyHideTools() {
+    const split = document.querySelector('.split');
+    if (!split) return;
+    split.classList.toggle('hide-tools', State.hideTools);
+    if (App.main) requestAnimationFrame(() => { App.main.invalidate(); App.main.render(); });
+  },
 
-  static applyHideTools() {
-    let splitLayout = document.querySelector('.split-layout');
-    if (!splitLayout) return;
-    splitLayout.classList.toggle('hide-tools', AppState.hideTools);
-    if (AppController.mainScroller) {
-      requestAnimationFrame(() => {
-        AppController.mainScroller.invalidateAll();
-        AppController.mainScroller.render();
-      });
+  closeProject() {
+    if (State.saveTimer) {
+      clearTimeout(State.saveTimer);
+      Storage.save(State.projectId, State.toData()).then(App.finishClose).catch(App.finishClose);
+    } else App.finishClose();
+  },
+
+  finishClose() {
+    State.saveTimer = null;
+    State.projectId = null;
+    State.epubSourceId = null;
+    State.undo = State.redo = null;
+    State.projectName = '';
+    State.lines = [];
+    State.files = [];
+    State.rows = [];
+    State.matches = [];
+    State.selected.clear();
+    State.byNum.clear();
+    State.fileLines.clear();
+    State.translatedCount = 0;
+    State.prScope = 'all';
+    State.prRegex = State.prCase = State.prExact = false;
+    State.prTranslatedOnly = true;
+    State.hideTools = false;
+    State.namesDirty = true;
+
+    App.main?.setItems([], false);
+    App.pr?.setItems([], false);
+    $('nameTableBody').replaceChildren();
+    $('pasteArea').value = '';
+    $('copyStatus').classList.add('empty');
+    $('stickyFileName').textContent = '';
+    $('stickyFileName').title = '';
+    $('stickyFileRange').textContent = '';
+    $('stickyFileHeader').classList.add('empty');
+    $('stickyFileCheckbox').checked = false;
+    $('stickyFileCheckbox').disabled = true;
+    delete $('stickyFileCheckbox').dataset.file;
+    App.lastFile = null;
+    App.fileCache = null;
+    $('workspaceView').style.display = 'none';
+    const split = document.querySelector('.split');
+    if (split) split.classList.remove('hide-tools');
+    $('dashboardView').classList.add('open');
+    App.loadDashboard();
+  },
+
+  refresh(keep = true) {
+    State.updateCount();
+    State.rebuild();
+    App.main.setItems(State.rows, keep);
+    App.updateFileBadge();
+    App.updateButtons();
+    if (State.namesDirty) { App.renderNames(); State.namesDirty = false; }
+    App.updateStatusBar();
+    $('btnUndo').disabled = !State.undo;
+    $('btnRedo').disabled = !State.redo;
+  },
+
+  updateButtons() {
+    const has = State.lines.length > 0;
+    const sel = State.selected.size > 0;
+    $('btnExport').disabled = !has;
+    $('btnProofread').disabled = !has;
+    $('btnSelectAll').disabled = !has;
+    $('pasteArea').disabled = !has;
+    $('btnApply').disabled = !has;
+    $('rangeFromInput').disabled = !has;
+    $('rangeToInput').disabled = !has;
+    $('btnSelectRange').disabled = !has;
+    $('btnClearSelection').disabled = !sel;
+    $('btnCopyForAi').disabled = !sel;
+    const n = State.selected.size;
+    $('btnCopyForAi').textContent = n > 0 ? `Copy ${n} Baris` : 'Copy';
+  },
+
+  updateStatusBar() {
+    const total = State.lines.length;
+    const tl = State.translatedCount;
+    const pct = total ? Math.floor((tl / total) * 100) : 0;
+    const mode = State.projectType === 'uninitialized' ? '-' : (State.projectType === 'epub' ? 'EPUB' : 'JSON');
+    const fileRaw = State.files.length > 1 ? `${State.files.length} files` : (State.files[0] || '-');
+    const file = baseName(fileRaw);
+    $('statusBar').textContent = `${mode} · ${file} · ${tl}/${total} (${pct}%)`;
+    $('progressFill').style.width = `${pct}%`;
+    $('progressText').textContent = `${tl}/${total}`;
+  },
+
+  flashSaved() {
+    const bar = $('statusBar');
+    if (!bar || !State.projectId) return;
+    bar.classList.remove('saved');
+    void bar.offsetWidth;
+    bar.classList.add('saved');
+    clearTimeout(App._savedTimer);
+    App._savedTimer = setTimeout(() => bar.classList.remove('saved'), 1800);
+  },
+
+  updateFileBadge() {
+    const header = $('stickyFileHeader');
+    const nameEl = $('stickyFileName');
+    const rangeEl = $('stickyFileRange');
+    const cb = $('stickyFileCheckbox');
+    if (!header || !nameEl || !App.main) return;
+    const top = App.main.findStart($('previewViewport').scrollTop);
+    let file = null;
+    if (State.rows.length && top < State.rows.length) {
+      const row = State.rows[top];
+      if (row.type === 'separator') file = row.file;
+      else if (row.type === 'line') file = row.line.file;
     }
-  }
-
-  static closeProject() {
-    if (AppState.saveTimeout) {
-      clearTimeout(AppState.saveTimeout);
-      StorageManager.saveProjectData(AppState.currentProjectId, AppState.toProjectData())
-        .then(AppController.finishClose)
-        .catch(AppController.finishClose);
-    } else {
-      AppController.finishClose();
-    }
-  }
-
-  static finishClose() {
-    AppState.saveTimeout = null;
-    AppState.currentProjectId = null;
-    AppState.epubSourceId = null;
-    AppState.undoSnapshot = null;
-    AppState.redoSnapshot = null;
-    AppState.projectName = "";
-    AppState.lines = [];
-    AppState.importedFiles = [];
-    AppState.displayRows = [];
-    AppState.proofreadMatches = [];
-    AppState.selectedLines.clear();
-    AppState.lineByNum.clear();
-    AppState.filesLinesCache.clear();
-    AppState.translatedCount = 0;
-    AppState.proofreadScope = "all";
-    AppState.proofreadRegex = false;
-    AppState.proofreadCaseSensitive = false;
-    AppState.proofreadExactMatch = false;
-    AppState.proofreadTranslatedOnly = true;
-    AppState.hideTools = false;
-    AppState.namesDirty = true;
-
-    if (AppController.mainScroller) AppController.mainScroller.setItems([], false);
-    if (AppController.proofreadScroller) AppController.proofreadScroller.setItems([], false);
-
-    UI.elements.nameTableBody.replaceChildren();
-    UI.elements.pasteArea.value = "";
-    UI.elements.copyStatus.classList.add("empty");
-    UI.elements.stickyFileName.textContent = "";
-    UI.elements.stickyFileName.title = "";
-    if (UI.elements.stickyFileRange) UI.elements.stickyFileRange.textContent = "";
-    UI.elements.stickyFileHeader.classList.add("empty");
-    UI.elements.stickyFileCheckbox.checked = false;
-    UI.elements.stickyFileCheckbox.disabled = true;
-    delete UI.elements.stickyFileCheckbox.dataset.file;
-    AppController._lastFileBadge = null;
-    AppController._fileBadgeCache = null;
-    UI.elements.workspaceView.style.display = "none";
-    let splitLayout = document.querySelector('.split-layout');
-    if (splitLayout) splitLayout.classList.remove('hide-tools');
-    UI.elements.dashboardView.classList.add("open");
-    AppController.loadDashboard();
-  }
-
-  static refreshWorkspace(keepScroll = true) {
-    AppState.updateTranslatedCount();
-    AppState.rebuildCache();
-    AppController.mainScroller.setItems(AppState.displayRows, keepScroll);
-    AppController.updateCurrentFileBadge();
-    AppController.updateButtons();
-    if (AppState.namesDirty) {
-      AppController.renderNameTable();
-      AppState.namesDirty = false;
-    }
-    AppController.updateStatusBar();
-    UI.elements.btnUndo.disabled = !AppState.undoSnapshot;
-    UI.elements.btnRedo.disabled = !AppState.redoSnapshot;
-  }
-
-  static updateButtons() {
-    let hasProjectData = AppState.lines.length > 0;
-    let hasSelectedLines = AppState.selectedLines.size > 0;
-
-    UI.elements.btnExport.disabled = !hasProjectData;
-    UI.elements.btnProofread.disabled = !hasProjectData;
-    UI.elements.btnSelectAll.disabled = !hasProjectData;
-    UI.elements.pasteArea.disabled = !hasProjectData;
-    UI.elements.btnApply.disabled = !hasProjectData;
-    UI.elements.rangeFromInput.disabled = !hasProjectData;
-    UI.elements.rangeToInput.disabled = !hasProjectData;
-    UI.elements.btnSelectRange.disabled = !hasProjectData;
-
-    UI.elements.btnClearSelection.disabled = !hasSelectedLines;
-    UI.elements.btnCopyForAi.disabled = !hasSelectedLines;
-    let copyCount = AppState.selectedLines.size;
-    UI.elements.btnCopyForAi.textContent = copyCount > 0 ? `Copy ${copyCount} Baris` : "Copy";
-  }
-
-  static updateStatusBar() {
-    let totalLinesCount = AppState.lines.length;
-    let translatedLinesCount = AppState.translatedCount;
-    let translationPercentage = totalLinesCount ? Math.floor((translatedLinesCount / totalLinesCount) * 100) : 0;
-    let displayModeText = AppState.projectType === "uninitialized" ? "-" : (AppState.projectType === "epub" ? "EPUB" : "JSON-VNTP");
-    let displayFileText = AppState.importedFiles.length > 1 ? AppState.importedFiles.length : (AppState.importedFiles[0] || "-");
-
-    UI.elements.statusBar.textContent = `Mode: ${displayModeText} | File: ${displayFileText} | Baris: ${totalLinesCount} | TL: ${translatedLinesCount}/${totalLinesCount} (${translationPercentage}%)`;
-    UI.elements.progressFill.style.width = `${translationPercentage}%`;
-    UI.elements.progressText.textContent = `${translatedLinesCount}/${totalLinesCount}`;
-  }
-
-  static updateCurrentFileBadge() {
-    let header = UI.elements.stickyFileHeader;
-    let nameEl = UI.elements.stickyFileName;
-    let rangeEl = UI.elements.stickyFileRange;
-    let checkbox = UI.elements.stickyFileCheckbox;
-    if (!header || !nameEl || !AppController.mainScroller) return;
-    let scrollTop = UI.elements.previewViewport.scrollTop;
-    let visibleIndex = AppController.mainScroller.findStartIndex(scrollTop);
-    let currentFile = null;
-    if (AppState.displayRows.length && visibleIndex < AppState.displayRows.length) {
-      let topRow = AppState.displayRows[visibleIndex];
-      if (topRow.type === "separator") currentFile = topRow.file;
-      else if (topRow.type === "line") currentFile = topRow.line.file;
-    }
-    if (currentFile !== AppController._lastFileBadge) {
-      if (currentFile) {
-        let baseName = String(currentFile).replace(/\\/g, "/").split("/").pop();
-        nameEl.textContent = baseName;
-        nameEl.title = currentFile;
-        if (rangeEl) {
-          let fileLinesArray = AppState.filesLinesCache.get(currentFile) || [];
-          if (fileLinesArray.length) {
-            let firstLine = fileLinesArray[0].line_num;
-            let lastLine = fileLinesArray[fileLinesArray.length - 1].line_num;
-            rangeEl.textContent = `${firstLine}-${lastLine}`;
-          } else {
-            rangeEl.textContent = "";
-          }
-        }
-        header.classList.remove("empty");
-        checkbox.dataset.file = currentFile;
+    if (file !== App.lastFile) {
+      if (file) {
+        const bn = baseName(file);
+        nameEl.textContent = bn;
+        nameEl.title = file;
+        const lines = State.fileLines.get(file) || [];
+        rangeEl.textContent = lines.length ? `${lines[0].line_num}-${lines[lines.length - 1].line_num}` : '';
+        header.classList.remove('empty');
+        cb.dataset.file = file;
       } else {
-        nameEl.textContent = "";
-        nameEl.title = "";
-        if (rangeEl) rangeEl.textContent = "";
-        header.classList.add("empty");
-        delete checkbox.dataset.file;
+        nameEl.textContent = '';
+        nameEl.title = '';
+        rangeEl.textContent = '';
+        header.classList.add('empty');
+        delete cb.dataset.file;
       }
-      AppController._lastFileBadge = currentFile;
-      AppController._fileBadgeCache = null;
+      App.lastFile = file;
+      App.fileCache = null;
     }
-    if (currentFile && checkbox) {
-      let cacheKey = `${currentFile}:${AppState.selectedLines.size}:${AppState.translatedCount}`;
-      if (!AppController._fileBadgeCache || AppController._fileBadgeCache.key !== cacheKey) {
-        let fileLinesArray = AppState.filesLinesCache.get(currentFile) || [];
-        let selectedCount = 0;
-        let untranslatedCount = 0;
-        fileLinesArray.forEach(lineData => {
-          if (!AppState.isTranslated(lineData)) {
-            untranslatedCount++;
-            if (AppState.selectedLines.has(lineData.line_num)) selectedCount++;
-          }
-        });
-        AppController._fileBadgeCache = { key: cacheKey, selectedCount, untranslatedCount };
+    if (file && cb) {
+      const key = `${file}:${State.selected.size}:${State.translatedCount}`;
+      if (!App.fileCache || App.fileCache.key !== key) {
+        const lines = State.fileLines.get(file) || [];
+        let sel = 0, un = 0;
+        lines.forEach(l => { if (!isTrans(l)) { un++; if (State.selected.has(l.line_num)) sel++; } });
+        App.fileCache = { key, sel, un };
       }
-      let { selectedCount, untranslatedCount } = AppController._fileBadgeCache;
-      checkbox.disabled = untranslatedCount === 0;
-      checkbox.checked = untranslatedCount > 0 && selectedCount === untranslatedCount;
-      checkbox.indeterminate = selectedCount > 0 && selectedCount < untranslatedCount;
+      const { sel, un } = App.fileCache;
+      cb.disabled = un === 0;
+      cb.checked = un > 0 && sel === un;
+      cb.indeterminate = sel > 0 && sel < un;
     }
-  }
+  },
 
-  static createMainRow() {
-    let mainRow = document.createElement("div");
-    mainRow.className = "preview-row";
+  createMainRow() {
+    const row = document.createElement('div');
+    row.className = 'preview-row';
+    const cell = document.createElement('div');
+    cell.className = 'checkbox-cell';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    const content = document.createElement('div');
+    content.className = 'text-content';
+    const orig = document.createElement('div');
+    orig.className = 'original';
+    const trans = document.createElement('div');
+    trans.className = 'translated';
+    content.append(orig, trans);
+    cell.append(cb, content);
+    row.append(cell);
+    row._cell = cell;
+    row._cb = cb;
+    row._orig = orig;
+    row._trans = trans;
+    return row;
+  },
 
-    let checkboxCell = document.createElement("div");
-    checkboxCell.className = "checkbox-cell";
-
-    let checkboxElement = document.createElement("input");
-    checkboxElement.type = "checkbox";
-
-    let textContentWrap = document.createElement("div");
-    textContentWrap.className = "text-content";
-
-    let originalDiv = document.createElement("div");
-    originalDiv.className = "original";
-
-    let translatedDiv = document.createElement("div");
-    translatedDiv.className = "translated";
-
-    textContentWrap.append(originalDiv, translatedDiv);
-    checkboxCell.append(checkboxElement, textContentWrap);
-    mainRow.append(checkboxCell);
-
-    mainRow.checkboxCellElement = checkboxCell;
-    mainRow.checkboxElement = checkboxElement;
-    mainRow.originalDivElement = originalDiv;
-    mainRow.translatedDivElement = translatedDiv;
-
-    return mainRow;
-  }
-
-  static updateMainRow(rowElement, rowData) {
-    if (rowData.type === "separator") {
-      rowElement.className = "preview-row separator";
-      rowElement.checkboxCellElement.style.display = "none";
+  updateMainRow(row, data) {
+    if (data.type === 'separator') {
+      row.className = 'preview-row separator';
+      row._cell.style.display = 'none';
     } else {
-      let lineData = rowData.line;
-      let rowClasses = "preview-row";
-
-      if (AppState.isTranslated(lineData)) rowClasses += " row-translated";
-      if (AppState.selectedLines.has(lineData.line_num)) rowClasses += " row-selected";
-
-      rowElement.className = rowClasses;
-      rowElement.checkboxCellElement.style.display = "flex";
-      rowElement.checkboxElement.dataset.num = lineData.line_num;
-      rowElement.checkboxElement.checked = AppState.selectedLines.has(lineData.line_num);
-      rowElement.checkboxElement.disabled = AppState.isTranslated(lineData);
-
-      rowElement.originalDivElement.textContent = lineData.name ? `${lineData.line_num}. ${lineData.name}: ${lineData.message}` : `${lineData.line_num}. ${lineData.message}`;
-
-      if (AppState.isTranslated(lineData)) {
-        rowElement.translatedDivElement.classList.remove("cell-muted");
-        let translatedCharacterName = lineData.trans_name || lineData.name;
-        rowElement.translatedDivElement.textContent = translatedCharacterName ? `${lineData.line_num}. ${translatedCharacterName}: ${lineData.trans_message}` : `${lineData.line_num}. ${lineData.trans_message}`;
+      const l = data.line;
+      let cls = 'preview-row';
+      if (isTrans(l)) cls += ' row-translated';
+      if (State.selected.has(l.line_num)) cls += ' row-selected';
+      row.className = cls;
+      row._cell.style.display = 'flex';
+      row._cb.dataset.num = l.line_num;
+      row._cb.checked = State.selected.has(l.line_num);
+      row._cb.disabled = isTrans(l);
+      row._orig.textContent = l.name ? `${l.line_num}. ${l.name}: ${l.message}` : `${l.line_num}. ${l.message}`;
+      if (isTrans(l)) {
+        row._trans.classList.remove('cell-muted');
+        const n = l.trans_name || l.name;
+        row._trans.textContent = n ? `${l.line_num}. ${n}: ${l.trans_message}` : `${l.line_num}. ${l.trans_message}`;
       } else {
-        rowElement.translatedDivElement.classList.add("cell-muted");
-        rowElement.translatedDivElement.textContent = "——";
+        row._trans.classList.add('cell-muted');
+        row._trans.textContent = '——';
       }
     }
-  }
+  },
 
-  static syncCheckboxes() {
-    AppController.mainScroller.forceUpdate();
-    AppController.updateCurrentFileBadge();
-    AppController.updateButtons();
-  }
+  syncCheckboxes() {
+    App.main.forceUpdate();
+    App.updateFileBadge();
+    App.updateButtons();
+  },
 
-  static renderNameTable() {
-    let uniqueNamesSet = new Set();
-    AppState.lines.forEach(lineData => {
-      if (lineData.name) uniqueNamesSet.add(lineData.name);
+  renderNames() {
+    const set = new Set();
+    State.lines.forEach(l => { if (l.name) set.add(l.name); });
+    const arr = Array.from(set).sort();
+    $('nameTotalCount').textContent = arr.length;
+    $('btnCopyAllNames').disabled = !arr.length;
+    const body = $('nameTableBody');
+    body.replaceChildren();
+    const frag = document.createDocumentFragment();
+    arr.forEach(name => {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.className = 'mono';
+      td.textContent = name;
+      td.title = 'Klik untuk copy';
+      tr.appendChild(td);
+      frag.appendChild(tr);
     });
+    body.appendChild(frag);
+  },
 
-    let sortedNamesArray = Array.from(uniqueNamesSet).sort();
-    UI.elements.nameTotalCount.textContent = sortedNamesArray.length;
-    UI.elements.btnCopyAllNames.disabled = !sortedNamesArray.length;
-    UI.elements.nameTableBody.replaceChildren();
+  selectRange() {
+    const from = parseInt($('rangeFromInput').value);
+    const to = parseInt($('rangeToInput').value);
+    const max = State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) : 0;
+    if (isNaN(from) || isNaN(to) || from > to || from < 1 || from > max || to > max) return alert('Range tidak valid.');
 
-    let documentFragment = document.createDocumentFragment();
-    sortedNamesArray.forEach(characterName => {
-      let tableRow = document.createElement("tr");
-      let tableCell = document.createElement("td");
-      tableCell.className = "mono";
-      tableCell.textContent = characterName;
-      tableCell.title = "Klik untuk copy";
-      tableRow.appendChild(tableCell);
-      documentFragment.appendChild(tableRow);
-    });
-    UI.elements.nameTableBody.appendChild(documentFragment);
-  }
-
-  static selectRange() {
-    let fromLineNumber = parseInt(UI.elements.rangeFromInput.value);
-    let toLineNumber = parseInt(UI.elements.rangeToInput.value);
-    let maxLineNumber = AppState.lines.length ? AppState.lines.reduce((maxId, lineData) => Math.max(maxId, lineData.line_num), 0) : 0;
-
-    if (isNaN(fromLineNumber) || isNaN(toLineNumber) || fromLineNumber > toLineNumber || fromLineNumber < 1 || fromLineNumber > maxLineNumber || toLineNumber > maxLineNumber) {
-      return alert("Range tidak valid.");
+    State.selected.clear();
+    for (let n = from; n <= to; n++) {
+      const l = State.byNum.get(n);
+      if (l && !isTrans(l)) State.selected.add(n);
     }
+    App.syncCheckboxes();
 
-    AppState.selectedLines.clear();
-    for (let lineNumber = fromLineNumber; lineNumber <= toLineNumber; lineNumber++) {
-      let lineData = AppState.lineByNum.get(lineNumber);
-      if (lineData && !AppState.isTranslated(lineData)) AppState.selectedLines.add(lineNumber);
-    }
-
-    AppController.syncCheckboxes();
-
-    let rowIndex = AppState.displayRows.findIndex(rowData => rowData.type === "line" && rowData.line.line_num === fromLineNumber);
-    if (rowIndex !== -1) {
-      AppController.mainScroller.scrollToIndex(rowIndex);
+    const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === from);
+    if (idx !== -1) {
+      App.main.scrollToIndex(idx);
       setTimeout(() => {
-        let rowHtmlElement = UI.elements.previewContainer.querySelector(`input[data-num="${fromLineNumber}"]`)?.closest('.preview-row');
-        if (rowHtmlElement) {
-          rowHtmlElement.classList.add("row-flash");
-          setTimeout(() => rowHtmlElement.classList.remove("row-flash"), 800);
-        }
+        const el = $('previewContainer').querySelector(`input[data-num="${from}"]`)?.closest('.preview-row');
+        if (el) { el.classList.add('row-flash'); setTimeout(() => el.classList.remove('row-flash'), 800); }
       }, 50);
     }
-  }
+  },
 
-  static buildGlossaryMap() {
-    let glossaryMap = new Map();
-    if (AppState.vndbEnabled && AppState.vndbGlossary?.length) {
-      AppState.vndbGlossary.forEach(entry => glossaryMap.set(entry[0], entry[1]));
-    }
-    if (AppState.customEnabled && AppState.customGlossary?.length) {
-      AppState.customGlossary.forEach(entry => glossaryMap.set(entry[0], entry[1]));
-    }
-    return glossaryMap;
-  }
+  buildGlossaryMap() {
+    const map = new Map();
+    if (State.vndbEnabled && State.vndbGlossary?.length) State.vndbGlossary.forEach(e => map.set(e[0], e[1]));
+    if (State.customEnabled && State.customGlossary?.length) State.customGlossary.forEach(e => map.set(e[0], e[1]));
+    return map;
+  },
 
-  static buildReferenceMap(selectedLinesArray, glossaryMap) {
-    let referenceMap = new Map();
-    let selectedNames = new Set();
-    let selectedTrigrams = new Set();
-
-    selectedLinesArray.forEach(line => {
-      if (line.name) selectedNames.add(line.name);
-      let tri = Utils.getTrigrams(line.message);
-      tri.forEach(t => selectedTrigrams.add(t));
+  buildReferenceMap(sel, gloss) {
+    const ref = new Map();
+    const names = new Set();
+    const trigrams = new Set();
+    sel.forEach(l => {
+      if (l.name) names.add(l.name);
+      getTrigrams(l.message).forEach(t => trigrams.add(t));
     });
 
-    if (selectedNames.size > 0) {
-      let translatedLinesReversed = [...AppState.lines].filter(l => AppState.isTranslated(l)).reverse();
-      selectedNames.forEach(name => {
-        if (!glossaryMap.has(name)) {
-          let match = translatedLinesReversed.find(l => l.name === name && l.trans_name);
-          if (match && match.trans_name) {
-            referenceMap.set(name, match.trans_name);
-          }
+    if (names.size > 0) {
+      const translated = [...State.lines].filter(isTrans).reverse();
+      names.forEach(name => {
+        if (!gloss.has(name)) {
+          const m = translated.find(l => l.name === name && l.trans_name);
+          if (m && m.trans_name) ref.set(name, m.trans_name);
         }
       });
     }
 
-    let scoredMessages = [];
-    let translatedLines = AppState.lines.filter(l => AppState.isTranslated(l));
-
-    translatedLines.forEach(line => {
-      if (line.message && !glossaryMap.has(line.message)) {
-        let lineTrigrams = Utils.getTrigrams(line.message);
+    const scored = [];
+    State.lines.filter(isTrans).forEach(l => {
+      if (l.message && !gloss.has(l.message)) {
+        const tri = getTrigrams(l.message);
         let score = 0;
-        for (let t of lineTrigrams) {
-          if (selectedTrigrams.has(t)) score++;
-        }
-        if (score > 0) {
-          scoredMessages.push({ orig: line.message, trans: line.trans_message, score: score });
-        }
+        for (const t of tri) if (trigrams.has(t)) score++;
+        if (score > 0) scored.push({ orig: l.message, trans: l.trans_message, score });
       }
     });
+    scored.sort((a, b) => b.score - a.score);
 
-    scoredMessages.sort((a, b) => b.score - a.score);
+    let added = 0;
+    const seen = new Set();
+    for (const m of scored) {
+      if (added >= 5) break;
+      if (!seen.has(m.orig)) {
+        seen.add(m.orig);
+        ref.set(m.orig, m.trans);
+        added++;
+      }
+    }
+    return ref;
+  },
 
-    let addedCount = 0;
-    let seenOrig = new Set();
-    for (let msg of scoredMessages) {
-      if (addedCount >= 5) break;
-      if (!seenOrig.has(msg.orig)) {
-        seenOrig.add(msg.orig);
-        referenceMap.set(msg.orig, msg.trans);
-        addedCount++;
+  formatLine(l) {
+    return l.name ? `${l.line_num}. ${l.name}: ${l.message}` : `${l.line_num}. ${l.message}`;
+  },
+
+  async copyForAi() {
+    const sel = State.lines.filter(l => State.selected.has(l.line_num));
+    const parts = [];
+    if (State.promptEnabled && State.prompt.trim()) parts.push(State.prompt.trim());
+
+    const gloss = App.buildGlossaryMap();
+    if (gloss.size > 0) {
+      const lines = [];
+      gloss.forEach((v, k) => lines.push(`${k}: ${v}`));
+      parts.push(`Glossary:\n${lines.join('\n')}`);
+    }
+
+    if (State.referenceEnabled) {
+      const ref = App.buildReferenceMap(sel, gloss);
+      if (ref.size > 0) {
+        const lines = [];
+        ref.forEach((v, k) => lines.push(`${k}: ${v}`));
+        parts.push(`Reference:\n${lines.join('\n')}`);
       }
     }
 
-    return referenceMap;
-  }
-
-  static formatLineForAi(line) {
-    return line.name
-      ? `${line.line_num}. ${line.name}: ${line.message}`
-      : `${line.line_num}. ${line.message}`;
-  }
-
-  static async copyForAi() {
-    let selectedLinesArray = AppState.lines.filter(lineData => AppState.selectedLines.has(lineData.line_num));
-    let promptParts = [];
-
-    if (AppState.aiPromptEnabled && AppState.aiInstructionHeader.trim()) {
-      promptParts.push(AppState.aiInstructionHeader.trim());
-    }
-
-    let glossaryMap = AppController.buildGlossaryMap();
-    if (glossaryMap.size > 0) {
-      let glossaryLines = [];
-      glossaryMap.forEach((val, key) => glossaryLines.push(`${key}: ${val}`));
-      promptParts.push(`Glossary:\n${glossaryLines.join('\n')}`);
-    }
-
-    if (AppState.referenceEnabled) {
-      let referenceMap = AppController.buildReferenceMap(selectedLinesArray, glossaryMap);
-      if (referenceMap.size > 0) {
-        let refLines = [];
-        referenceMap.forEach((val, key) => refLines.push(`${key}: ${val}`));
-        promptParts.push(`Reference:\n${refLines.join('\n')}`);
-      }
-    }
-
-    let textLines = selectedLinesArray.map(AppController.formatLineForAi);
-    promptParts.push(textLines.join('\n'));
-
-    let promptText = promptParts.join('\n\n');
+    parts.push(sel.map(App.formatLine).join('\n'));
+    const text = parts.join('\n\n');
 
     try {
-      await Utils.safeClipboardWrite(promptText);
-      UI.flashStatusMessage(`Disalin ${selectedLinesArray.length} baris.`);
-    } catch (error) {
-      UI.elements.pasteArea.value = promptText;
+      await clipboard(text);
+      App.flash(`Disalin ${sel.length} baris.`);
+    } catch {
+      $('pasteArea').value = text;
       alert("Clipboard diblokir. Teks dipindah ke kolom 'Paste hasil AI'.");
     }
-  }
+  },
 
-  static parseAiResponse(rawText, lineByNum) {
-    let cleanedText = rawText.replace(/```(?:json|text)?\s*([\s\S]*?)```/g, '$1').trim();
-    let parsedResults = [];
-    let validationErrors = [];
-    let seenLineNumbers = new Set();
-
-    let lineRegex = /^(\d+)\.\s+(.*)$/;
-    let lines = cleanedText.split(/\r?\n/);
+  parseAi(raw, byNum) {
+    const cleaned = raw.replace(/```(?:json|text)?\s*([\s\S]*?)```/g, '$1').trim();
+    const results = [];
+    const errors = [];
+    const seen = new Set();
+    const re = /^(\d+)\.\s+(.*)$/;
+    const lines = cleaned.split(/\r?\n/);
 
     for (let i = 0; i < lines.length; i++) {
-      let line = lines[i].trim();
+      const line = lines[i].trim();
       if (!line) continue;
+      const m = line.match(re);
+      if (!m) { errors.push(`Baris ${i + 1}: Format tidak valid (harus "N. ...").`); continue; }
+      const num = Number(m[1]);
+      const rest = m[2].trim();
+      if (!Number.isInteger(num) || num <= 0) { errors.push(`Baris ${i + 1}: ID tidak valid.`); continue; }
+      if (seen.has(num)) { errors.push(`Baris ${num}: Duplikat ID.`); continue; }
+      seen.add(num);
 
-      let match = line.match(lineRegex);
-      if (!match) {
-        validationErrors.push(`Baris ${i + 1}: Format tidak valid (harus "N. ...").`);
-        continue;
+      const orig = byNum ? byNum.get(num) : null;
+      let name = null, msg = rest;
+      if (orig && orig.name) {
+        const ci = rest.indexOf(': ');
+        if (ci > 0) { name = rest.substring(0, ci).trim(); msg = rest.substring(ci + 2).trim(); }
+        else if (rest.endsWith(':')) { name = rest.substring(0, rest.length - 1).trim(); msg = ''; }
       }
+      results.push({ num, name, msg });
+    }
+    return { results, errors, seen };
+  },
 
-      let targetLineNumber = Number(match[1]);
-      let restText = match[2].trim();
+  applyTranslation() {
+    if (!State.lines.length) return;
+    const raw = $('pasteArea').value.trim();
+    if (!raw) return alert('Teks kosong.');
 
-      if (!Number.isInteger(targetLineNumber) || targetLineNumber <= 0) {
-        validationErrors.push(`Baris ${i + 1}: ID tidak valid.`);
-        continue;
-      }
-
-      if (seenLineNumbers.has(targetLineNumber)) {
-        validationErrors.push(`Baris ${targetLineNumber}: Duplikat ID.`);
-        continue;
-      }
-      seenLineNumbers.add(targetLineNumber);
-
-      let originalLine = lineByNum ? lineByNum.get(targetLineNumber) : null;
-      let name = null;
-      let message = restText;
-
-      if (originalLine && originalLine.name) {
-        let colonIndex = restText.indexOf(": ");
-        if (colonIndex > 0) {
-          name = restText.substring(0, colonIndex).trim();
-          message = restText.substring(colonIndex + 2).trim();
-        } else if (restText.endsWith(":")) {
-          let trailingColon = restText.length - 1;
-          name = restText.substring(0, trailingColon).trim();
-          message = "";
-        }
-      }
-
-      parsedResults.push({ num: targetLineNumber, name: name, msg: message });
+    const { results, errors, seen } = App.parseAi(raw, State.byNum);
+    if (!results.length) {
+      if (errors.length) return alert('DITOLAK:\n' + errors.slice(0, 10).join('\n') + (errors.length > 10 ? `\n+${errors.length - 10} error lainnya` : ''));
+      return alert('Tidak ada data valid.');
     }
 
-    return { parsedResults, validationErrors, seenLineNumbers };
-  }
+    if (results.length !== State.selected.size) errors.push(`Jumlah entry (${results.length}) ≠ jumlah centang (${State.selected.size}).`);
+    State.selected.forEach(n => { if (!seen.has(n)) errors.push(`Baris ${n}: Dilewati AI.`); });
+    seen.forEach(n => { if (!State.selected.has(n)) errors.push(`Baris ${n}: ID tidak dicentang.`); });
 
-  static applyTranslation() {
-    if (!AppState.lines.length) return;
-
-    let rawInputText = UI.elements.pasteArea.value.trim();
-    if (!rawInputText) return alert("Teks kosong.");
-
-    let { parsedResults, validationErrors, seenLineNumbers } = AppController.parseAiResponse(rawInputText, AppState.lineByNum);
-
-    if (!parsedResults.length) {
-      if (validationErrors.length) {
-        return alert("DITOLAK:\n" + validationErrors.slice(0, 10).join("\n") + (validationErrors.length > 10 ? `\n+${validationErrors.length - 10} error lainnya` : ""));
-      }
-      return alert("Tidak ada data valid.");
-    }
-
-    if (parsedResults.length !== AppState.selectedLines.size) {
-      validationErrors.push(`Jumlah entry (${parsedResults.length}) ≠ jumlah centang (${AppState.selectedLines.size}).`);
-    }
-
-    AppState.selectedLines.forEach(targetLineNumber => {
-      if (!seenLineNumbers.has(targetLineNumber)) validationErrors.push(`Baris ${targetLineNumber}: Dilewati AI.`);
+    const updates = [];
+    results.forEach(r => {
+      const l = State.byNum.get(r.num);
+      if (!l) { errors.push(`Baris ${r.num}: ID tidak ada.`); return; }
+      if (State.ignoreName && l.name) r.name = l.name;
+      const hasOn = !!(l.name || '').trim();
+      const hasTn = !!(r.name || '').trim();
+      const hasMsg = !!(l.message || '').trim();
+      if (hasOn && !hasTn) errors.push(`Baris ${r.num}: Nama dihapus AI.`);
+      else if (!hasOn && hasTn) errors.push(`Baris ${r.num}: Narasi tapi ada nama.`);
+      else if (!r.msg && hasMsg) errors.push(`Baris ${r.num}: Pesan kosong.`);
+      else updates.push({ line: l, item: r });
     });
 
-    seenLineNumbers.forEach(targetLineNumber => {
-      if (!AppState.selectedLines.has(targetLineNumber)) validationErrors.push(`Baris ${targetLineNumber}: ID tidak dicentang.`);
+    if (errors.length) return alert('DITOLAK:\n' + errors.slice(0, 10).join('\n') + (errors.length > 10 ? `\n+${errors.length - 10} error lainnya` : ''));
+
+    State.undo = snapshot();
+    State.redo = null;
+    updates.forEach(({ line, item }) => {
+      line.trans_message = item.msg;
+      line.is_translated = true;
+      if (item.name) line.trans_name = State.ignoreName ? null : item.name;
+      State.selected.delete(line.line_num);
     });
 
-    let translationUpdates = [];
-    parsedResults.forEach(resultItem => {
-      let targetLineData = AppState.lineByNum.get(resultItem.num);
-      if (!targetLineData) {
-        validationErrors.push(`Baris ${resultItem.num}: ID tidak ada.`);
-        return;
-      }
+    $('pasteArea').value = '';
+    State.namesDirty = true;
+    App.refresh(true);
+    State.queueSave();
+    App.flash(`${updates.length} baris sukses diterapkan.`);
+  },
 
-      if (AppState.ignoreNameTranslation && targetLineData.name) {
-        resultItem.name = targetLineData.name;
-      }
+  undo() {
+    if (!State.undo) return;
+    State.redo = snapshot();
+    State.lines = State.undo.lines.map(normalizeLine);
+    State.selected = new Set(State.undo.selected);
+    State.undo = null;
+    State.namesDirty = true;
+    App.refresh(true);
+    State.queueSave();
+  },
 
-      let hasOriginalName = !!(targetLineData.name || "").trim();
-      let hasTranslatedName = !!(resultItem.name || "").trim();
-      let originalHasMessage = !!(targetLineData.message || "").trim();
+  redo() {
+    if (!State.redo) return;
+    State.undo = snapshot();
+    State.lines = State.redo.lines.map(normalizeLine);
+    State.selected = new Set(State.redo.selected);
+    State.redo = null;
+    State.namesDirty = true;
+    App.refresh(true);
+    State.queueSave();
+  },
 
-      if (hasOriginalName && !hasTranslatedName) validationErrors.push(`Baris ${resultItem.num}: Nama dihapus AI.`);
-      else if (!hasOriginalName && hasTranslatedName) validationErrors.push(`Baris ${resultItem.num}: Narasi tapi ada nama.`);
-      else if (!resultItem.msg && originalHasMessage) validationErrors.push(`Baris ${resultItem.num}: Pesan kosong.`);
-      else translationUpdates.push({ lineData: targetLineData, itemResult: resultItem });
-    });
+  openLineEditor(num) {
+    const l = State.byNum.get(num);
+    if (!l) return;
+    App.activeLine = num;
+    $('lineEditorTitle').textContent = `Edit Baris ${num}`;
+    $('lineOriginalView').value = l.name ? `${l.name}: ${l.message}` : l.message;
+    $('lineNameWrap').style.display = l.name ? 'block' : 'none';
+    $('lineNameInput').value = l.name ? (l.trans_name || '') : '';
+    if (l.name) $('lineNameInput').placeholder = l.name;
+    $('lineMessageInput').value = (l.trans_message || '').trim();
+    $('lineTranslatedCheck').checked = isTrans(l);
+    App.toggleModal($('lineEditorModal'), true);
+  },
 
-    if (validationErrors.length) {
-      return alert("DITOLAK:\n" + validationErrors.slice(0, 10).join("\n") + (validationErrors.length > 10 ? `\n+${validationErrors.length - 10} error lainnya` : ""));
+  saveLineEditor() {
+    const l = State.byNum.get(App.activeLine);
+    if (!l) return;
+    const msg = $('lineMessageInput').value.trim().replace(/\r?\n/g, '\\n');
+    const hasMsg = !!(l.message || '').trim();
+    if ($('lineTranslatedCheck').checked && !msg && hasMsg) return alert('Pesan kosong.');
+
+    State.undo = snapshot();
+    l.trans_message = msg || null;
+    const mark = $('lineTranslatedCheck').checked && (!!msg || !hasMsg);
+    l.is_translated = mark;
+    if (l.name) l.trans_name = $('lineNameInput').value.trim().replace(/\r?\n/g, '\\n') || null;
+
+    State.redo = null;
+    State.namesDirty = true;
+    App.toggleModal($('lineEditorModal'), false);
+    App.refresh(true);
+    if ($('proofreadModal').classList.contains('open')) App.renderProofread();
+    State.queueSave();
+  },
+
+  highlight(text, re) {
+    if (!re) return document.createTextNode(text);
+    const frag = document.createDocumentFragment();
+    let last = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.substring(last, m.index)));
+      const mark = document.createElement('mark');
+      mark.className = 'highlight';
+      mark.textContent = m[0];
+      frag.appendChild(mark);
+      last = m.index + m[0].length;
+      if (m[0].length === 0) re.lastIndex++;
     }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.substring(last)));
+    return frag;
+  },
 
-    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
-    AppState.redoSnapshot = null;
+  syncProofread() {
+    State.prScope = $('proofreadScope').value;
+    State.prRegex = $('proofreadRegexCheck').checked;
+    State.prCase = $('proofreadCaseCheck').checked;
+    State.prExact = $('proofreadExactCheck').checked;
+    State.prTranslatedOnly = $('proofreadTranslatedOnlyCheck').checked;
+    if (State.projectId) State.queueSave();
+  },
 
-    translationUpdates.forEach(({ lineData, itemResult }) => {
-      lineData.trans_message = itemResult.msg;
-      lineData.is_translated = true;
-      if (itemResult.name) lineData.trans_name = AppState.ignoreNameTranslation ? null : itemResult.name;
-      AppState.selectedLines.delete(lineData.line_num);
-    });
+  openProofread() {
+    $('proofreadScope').value = State.prScope;
+    $('proofreadRegexCheck').checked = State.prRegex;
+    $('proofreadCaseCheck').checked = State.prCase;
+    $('proofreadExactCheck').checked = State.prExact;
+    $('proofreadTranslatedOnlyCheck').checked = State.prTranslatedOnly;
+    App.toggleModal($('proofreadModal'), true);
+    setTimeout(() => App.renderProofread(), 340);
+  },
 
-    UI.elements.pasteArea.value = "";
-    AppState.namesDirty = true;
-    AppController.refreshWorkspace(true);
-    AppState.queueAutoSave();
-    UI.flashStatusMessage(`${translationUpdates.length} baris sukses diterapkan.`);
-  }
-
-  static undoTranslation() {
-    if (!AppState.undoSnapshot) return;
-    AppState.redoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
-    AppState.lines = AppState.undoSnapshot.lines.map(AppState.normalizeLine);
-    AppState.selectedLines = new Set(AppState.undoSnapshot.selected);
-    AppState.undoSnapshot = null;
-    AppState.namesDirty = true;
-    AppController.refreshWorkspace(true);
-    AppState.queueAutoSave();
-  }
-
-  static redoTranslation() {
-    if (!AppState.redoSnapshot) return;
-    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
-    AppState.lines = AppState.redoSnapshot.lines.map(AppState.normalizeLine);
-    AppState.selectedLines = new Set(AppState.redoSnapshot.selected);
-    AppState.redoSnapshot = null;
-    AppState.namesDirty = true;
-    AppController.refreshWorkspace(true);
-    AppState.queueAutoSave();
-  }
-
-  static openLineEditor(targetLineNumber) {
-    let targetLineData = AppState.lineByNum.get(targetLineNumber);
-    if (!targetLineData) return;
-
-    AppController.activeEditorLineNum = targetLineNumber;
-    UI.elements.lineEditorTitle.textContent = `Edit Baris ${targetLineNumber}`;
-    UI.elements.lineOriginalView.value = targetLineData.name ? `${targetLineData.name}: ${targetLineData.message}` : targetLineData.message;
-    UI.elements.lineNameWrap.style.display = targetLineData.name ? "block" : "none";
-    UI.elements.lineNameInput.value = targetLineData.name ? (targetLineData.trans_name || "") : "";
-    if (targetLineData.name) UI.elements.lineNameInput.placeholder = targetLineData.name;
-
-    UI.elements.lineMessageInput.value = (targetLineData.trans_message || "").trim();
-    UI.elements.lineTranslatedCheck.checked = AppState.isTranslated(targetLineData);
-    UI.toggleModalVisibility(UI.elements.lineEditorModal, true);
-  }
-
-  static saveLineEditor() {
-    let targetLineData = AppState.lineByNum.get(AppController.activeEditorLineNum);
-    if (!targetLineData) return;
-
-    let translationMessage = UI.elements.lineMessageInput.value.trim().replace(/\r?\n/g, "\\n");
-    let originalHasMessage = !!(targetLineData.message || "").trim();
-    if (UI.elements.lineTranslatedCheck.checked && !translationMessage && originalHasMessage) return alert("Pesan kosong.");
-
-    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
-    targetLineData.trans_message = translationMessage || null;
-    let markTranslated = UI.elements.lineTranslatedCheck.checked && (!!translationMessage || !originalHasMessage);
-    targetLineData.is_translated = markTranslated;
-    if (targetLineData.name) targetLineData.trans_name = UI.elements.lineNameInput.value.trim().replace(/\r?\n/g, "\\n") || null;
-
-    AppState.redoSnapshot = null;
-    AppState.namesDirty = true;
-    UI.toggleModalVisibility(UI.elements.lineEditorModal, false);
-    AppController.refreshWorkspace(true);
-    if (UI.elements.proofreadModal.classList.contains("open")) AppController.renderProofread();
-    AppState.queueAutoSave();
-  }
-
-  static createHighlight(sourceText, highlightRegex) {
-    if (!highlightRegex) return document.createTextNode(sourceText);
-    let documentFragment = document.createDocumentFragment();
-    let lastIndex = 0;
-    let matchResult;
-    highlightRegex.lastIndex = 0;
-    while ((matchResult = highlightRegex.exec(sourceText)) !== null) {
-      if (matchResult.index > lastIndex) {
-        documentFragment.appendChild(document.createTextNode(sourceText.substring(lastIndex, matchResult.index)));
-      }
-      let markElement = document.createElement("mark");
-      markElement.className = "highlight";
-      markElement.textContent = matchResult[0];
-      documentFragment.appendChild(markElement);
-      lastIndex = matchResult.index + matchResult[0].length;
-      if (matchResult[0].length === 0) highlightRegex.lastIndex++;
-    }
-    if (lastIndex < sourceText.length) {
-      documentFragment.appendChild(document.createTextNode(sourceText.substring(lastIndex)));
-    }
-    return documentFragment;
-  }
-
-  static syncProofreadSettings() {
-    AppState.proofreadScope = UI.elements.proofreadScope.value;
-    AppState.proofreadRegex = UI.elements.proofreadRegexCheck.checked;
-    AppState.proofreadCaseSensitive = UI.elements.proofreadCaseCheck.checked;
-    AppState.proofreadExactMatch = UI.elements.proofreadExactCheck.checked;
-    AppState.proofreadTranslatedOnly = UI.elements.proofreadTranslatedOnlyCheck.checked;
-    if (AppState.currentProjectId) AppState.queueAutoSave();
-  }
-
-  static openProofread() {
-    UI.elements.proofreadScope.value = AppState.proofreadScope;
-    UI.elements.proofreadRegexCheck.checked = AppState.proofreadRegex;
-    UI.elements.proofreadCaseCheck.checked = AppState.proofreadCaseSensitive;
-    UI.elements.proofreadExactCheck.checked = AppState.proofreadExactMatch;
-    UI.elements.proofreadTranslatedOnlyCheck.checked = AppState.proofreadTranslatedOnly;
-    UI.toggleModalVisibility(UI.elements.proofreadModal, true);
-    setTimeout(() => AppController.renderProofread(), 340);
-  }
-
-  static buildSearchRegExp(searchQueryText, isRegexSearch, isExactMatchSearch, isCaseSensitiveSearch) {
-    if (!searchQueryText) return null;
+  buildRe(query, regex, exact, caseSensitive) {
+    if (!query) return null;
     try {
-      let regexPatternString = isRegexSearch ? searchQueryText : searchQueryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (isExactMatchSearch) regexPatternString = `(?<![\\p{L}\\p{N}_])${regexPatternString}(?![\\p{L}\\p{N}_])`;
-      return new RegExp(regexPatternString, isCaseSensitiveSearch ? "gu" : "giu");
-    } catch (error) {
-      return null;
-    }
-  }
+      let p = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (exact) p = `(?<![\\p{L}\\p{N}_])${p}(?![\\p{L}\\p{N}_])`;
+      return new RegExp(p, caseSensitive ? 'gu' : 'giu');
+    } catch { return null; }
+  },
 
-  static renderProofread() {
-    if (!UI.elements.proofreadModal.classList.contains("open")) return;
+  renderProofread() {
+    if (!$('proofreadModal').classList.contains('open')) return;
+    const q = $('proofreadSearchInput').value;
+    const regex = $('proofreadRegexCheck').checked;
+    const cs = $('proofreadCaseCheck').checked;
+    const exact = $('proofreadExactCheck').checked;
+    const onlyTrans = $('proofreadTranslatedOnlyCheck').checked;
+    const scope = $('proofreadScope').value;
 
-    let searchQueryText = UI.elements.proofreadSearchInput.value;
-    let isRegexSearch = UI.elements.proofreadRegexCheck.checked;
-    let isCaseSensitiveSearch = UI.elements.proofreadCaseCheck.checked;
-    let isExactMatchSearch = UI.elements.proofreadExactCheck.checked;
-    let onlyTranslatedSearch = UI.elements.proofreadTranslatedOnlyCheck.checked;
-    let searchScopeType = UI.elements.proofreadScope.value;
+    const re = App.buildRe(q, regex, exact, cs);
+    App.highlightRe = re ? new RegExp(re.source, re.flags) : null;
 
-    let searchRegExp = AppController.buildSearchRegExp(searchQueryText, isRegexSearch, isExactMatchSearch, isCaseSensitiveSearch);
-    AppController.currentHighlightRegex = searchRegExp ? new RegExp(searchRegExp.source, searchRegExp.flags) : null;
-
-    AppState.proofreadMatches = AppState.lines.filter(lineData => {
-      if (onlyTranslatedSearch && !AppState.isTranslated(lineData)) return false;
-      let defaultOriginalName = lineData.name || "";
-      let finalTranslatedName = AppState.isTranslated(lineData) ? (lineData.trans_name || "").trim() || lineData.name : null;
-      let targetSearchMessage = onlyTranslatedSearch ? lineData.trans_message : lineData.message;
-      let targetSearchName = onlyTranslatedSearch ? finalTranslatedName : defaultOriginalName;
-
-      if (searchQueryText && searchRegExp) {
-        let isMatchFound = false;
-        searchRegExp.lastIndex = 0;
-        if ((searchScopeType === 'all' || searchScopeType === 'message') && targetSearchMessage && searchRegExp.test(targetSearchMessage)) isMatchFound = true;
-        searchRegExp.lastIndex = 0;
-        if (!isMatchFound && (searchScopeType === 'all' || searchScopeType === 'name') && targetSearchName && searchRegExp.test(targetSearchName)) isMatchFound = true;
-        if (!isMatchFound) return false;
+    State.matches = State.lines.filter(l => {
+      if (onlyTrans && !isTrans(l)) return false;
+      const on = l.name || '';
+      const tn = isTrans(l) ? (l.trans_name || '').trim() || l.name : null;
+      const msg = onlyTrans ? l.trans_message : l.message;
+      const name = onlyTrans ? tn : on;
+      if (q && re) {
+        let found = false;
+        re.lastIndex = 0;
+        if ((scope === 'all' || scope === 'message') && msg && re.test(msg)) found = true;
+        re.lastIndex = 0;
+        if (!found && (scope === 'all' || scope === 'name') && name && re.test(name)) found = true;
+        if (!found) return false;
       }
       return true;
-    }).map(lineData => ({
-      num: lineData.line_num,
-      file: lineData.file,
-      origName: lineData.name || "",
-      origMsg: lineData.message,
-      transName: AppState.isTranslated(lineData) ? (lineData.trans_name || "").trim() || lineData.name : null,
-      transMsg: lineData.trans_message,
-      isTrans: AppState.isTranslated(lineData)
+    }).map(l => ({
+      num: l.line_num,
+      file: l.file,
+      origName: l.name || '',
+      origMsg: l.message,
+      transName: isTrans(l) ? (l.trans_name || '').trim() || l.name : null,
+      transMsg: l.trans_message,
+      isTrans: isTrans(l)
     }));
 
-    UI.elements.proofreadStatus.textContent = `Ditemukan ${AppState.proofreadMatches.length} baris.`;
+    $('proofreadStatus').textContent = `Ditemukan ${State.matches.length} baris.`;
+    const changed = q !== App.lastQuery;
+    App.lastQuery = q;
+    App.pr.setItems(State.matches, !changed);
+  },
 
-    let queryChanged = searchQueryText !== AppController.lastSearchQuery;
-    AppController.lastSearchQuery = searchQueryText;
-    AppController.proofreadScroller.setItems(AppState.proofreadMatches, !queryChanged);
-  }
+  createPrRow() {
+    const row = document.createElement('div');
+    row.className = 'preview-row';
+    const wrap = document.createElement('div');
+    wrap.className = 'text-content';
+    const meta = document.createElement('div');
+    meta.className = 'file-meta';
+    const orig = document.createElement('div');
+    orig.className = 'original';
+    const trans = document.createElement('div');
+    trans.className = 'translated';
+    wrap.append(meta, orig, trans);
+    row.append(wrap);
+    row._wrap = wrap;
+    row._meta = meta;
+    row._orig = orig;
+    row._trans = trans;
+    return row;
+  },
 
-  static createProofreadRow() {
-    let proofreadRow = document.createElement("div");
-    proofreadRow.className = "preview-row";
+  updatePrRow(row, d) {
+    row._wrap.dataset.num = d.num;
+    row._meta.textContent = `File: ${d.file} | Baris: ${d.num}`;
+    row._orig.replaceChildren();
+    row._trans.replaceChildren();
 
-    let contentWrap = document.createElement("div");
-    contentWrap.className = "text-content";
+    const onlyTrans = $('proofreadTranslatedOnlyCheck').checked;
+    const scope = $('proofreadScope').value;
 
-    let metaDiv = document.createElement("div");
-    metaDiv.className = "file-meta";
-
-    let originalDiv = document.createElement("div");
-    originalDiv.className = "original";
-
-    let translatedDiv = document.createElement("div");
-    translatedDiv.className = "translated";
-
-    contentWrap.append(metaDiv, originalDiv, translatedDiv);
-    proofreadRow.append(contentWrap);
-
-    proofreadRow.wrapElement = contentWrap;
-    proofreadRow.metaElement = metaDiv;
-    proofreadRow.originalElement = originalDiv;
-    proofreadRow.translatedElement = translatedDiv;
-
-    return proofreadRow;
-  }
-
-  static updateProofreadRow(rowElement, rowData) {
-    rowElement.wrapElement.dataset.num = rowData.num;
-    rowElement.metaElement.textContent = `File: ${rowData.file} | Baris: ${rowData.num}`;
-    rowElement.originalElement.replaceChildren();
-    rowElement.translatedElement.replaceChildren();
-
-    let onlyTranslatedChecked = UI.elements.proofreadTranslatedOnlyCheck.checked;
-    let searchScopeValue = UI.elements.proofreadScope.value;
-
-    let buildNodeTree = (nameString, messageString, applyHighlight) => {
-      let documentFragment = document.createDocumentFragment();
-      if (nameString) {
-        if (applyHighlight && (searchScopeValue === 'all' || searchScopeValue === 'name')) {
-          documentFragment.appendChild(AppController.createHighlight(nameString, AppController.currentHighlightRegex));
-        } else {
-          documentFragment.appendChild(document.createTextNode(nameString));
-        }
-        documentFragment.appendChild(document.createTextNode(": "));
+    const build = (name, msg, hl) => {
+      const frag = document.createDocumentFragment();
+      if (name) {
+        if (hl && (scope === 'all' || scope === 'name')) frag.appendChild(App.highlight(name, App.highlightRe));
+        else frag.appendChild(document.createTextNode(name));
+        frag.appendChild(document.createTextNode(': '));
       }
-      if (applyHighlight && (searchScopeValue === 'all' || searchScopeValue === 'message')) {
-        documentFragment.appendChild(AppController.createHighlight(messageString, AppController.currentHighlightRegex));
-      } else {
-        documentFragment.appendChild(document.createTextNode(messageString));
-      }
-      return documentFragment;
+      if (hl && (scope === 'all' || scope === 'message')) frag.appendChild(App.highlight(msg, App.highlightRe));
+      else frag.appendChild(document.createTextNode(msg));
+      return frag;
     };
 
-    if (!rowData.isTrans) rowElement.translatedElement.classList.add("cell-muted");
-    else rowElement.translatedElement.classList.remove("cell-muted");
+    if (!d.isTrans) row._trans.classList.add('cell-muted');
+    else row._trans.classList.remove('cell-muted');
 
-    if (onlyTranslatedChecked) {
-      rowElement.originalElement.textContent = rowData.origName ? `${rowData.origName}: ${rowData.origMsg}` : rowData.origMsg;
-      if (rowData.isTrans) rowElement.translatedElement.appendChild(buildNodeTree(rowData.transName, rowData.transMsg, true));
-      else rowElement.translatedElement.textContent = "——";
+    if (onlyTrans) {
+      row._orig.textContent = d.origName ? `${d.origName}: ${d.origMsg}` : d.origMsg;
+      if (d.isTrans) row._trans.appendChild(build(d.transName, d.transMsg, true));
+      else row._trans.textContent = '——';
     } else {
-      rowElement.originalElement.appendChild(buildNodeTree(rowData.origName, rowData.origMsg, true));
-      if (rowData.isTrans) rowElement.translatedElement.textContent = rowData.transName ? `${rowData.transName}: ${rowData.transMsg}` : rowData.transMsg;
-      else rowElement.translatedElement.textContent = "——";
+      row._orig.appendChild(build(d.origName, d.origMsg, true));
+      if (d.isTrans) row._trans.textContent = d.transName ? `${d.transName}: ${d.transMsg}` : d.transMsg;
+      else row._trans.textContent = '——';
     }
-  }
+  },
 
-  static execReplaceAll() {
-    let searchQueryText = UI.elements.proofreadSearchInput.value;
-    let replacementText = UI.elements.proofreadReplaceInput.value;
+  replaceAll() {
+    const q = $('proofreadSearchInput').value;
+    const repl = $('proofreadReplaceInput').value;
+    if (!q) return alert('Pencarian kosong!');
 
-    if (!searchQueryText) return alert("Pencarian kosong!");
+    const re = App.buildRe(q, $('proofreadRegexCheck').checked, $('proofreadExactCheck').checked, $('proofreadCaseCheck').checked);
+    if (!re) return alert('Regex tidak valid.');
 
-    let replaceRegExp = AppController.buildSearchRegExp(
-      searchQueryText,
-      UI.elements.proofreadRegexCheck.checked,
-      UI.elements.proofreadExactCheck.checked,
-      UI.elements.proofreadCaseCheck.checked
-    );
-    if (!replaceRegExp) return alert("Regex tidak valid.");
+    let count = 0;
+    State.undo = snapshot();
+    State.redo = null;
 
-    let replacedCount = 0;
-    AppState.undoSnapshot = { lines: JSON.parse(JSON.stringify(AppState.lines)), selected: new Set(AppState.selectedLines) };
-    AppState.redoSnapshot = null;
+    const onlyTrans = $('proofreadTranslatedOnlyCheck').checked;
+    const scope = $('proofreadScope').value;
 
-    let onlyTranslatedReplace = UI.elements.proofreadTranslatedOnlyCheck.checked;
-    let replaceScopeType = UI.elements.proofreadScope.value;
+    State.lines.forEach(l => {
+      if (onlyTrans && !isTrans(l)) return;
+      let replaced = false;
+      const msgProp = onlyTrans ? 'trans_message' : 'message';
+      const nameProp = onlyTrans ? 'trans_name' : 'name';
 
-    AppState.lines.forEach(lineData => {
-      if (onlyTranslatedReplace && !AppState.isTranslated(lineData)) return;
-
-      let isLineReplaced = false;
-      let targetMessageProperty = onlyTranslatedReplace ? 'trans_message' : 'message';
-      let targetNameProperty = onlyTranslatedReplace ? 'trans_name' : 'name';
-
-      if ((replaceScopeType === 'all' || replaceScopeType === 'message') && lineData[targetMessageProperty]) {
-        let newStringValue = lineData[targetMessageProperty].replace(replaceRegExp, replacementText);
-        if (newStringValue !== lineData[targetMessageProperty]) {
-          lineData[targetMessageProperty] = newStringValue;
-          isLineReplaced = true;
-        }
+      if ((scope === 'all' || scope === 'message') && l[msgProp]) {
+        const v = l[msgProp].replace(re, repl);
+        if (v !== l[msgProp]) { l[msgProp] = v; replaced = true; }
       }
-
-      if ((replaceScopeType === 'all' || replaceScopeType === 'name') && lineData[targetNameProperty]) {
-        let newStringValue = lineData[targetNameProperty].replace(replaceRegExp, replacementText);
-        if (newStringValue !== lineData[targetNameProperty]) {
-          lineData[targetNameProperty] = newStringValue;
-          isLineReplaced = true;
-        }
+      if ((scope === 'all' || scope === 'name') && l[nameProp]) {
+        const v = l[nameProp].replace(re, repl);
+        if (v !== l[nameProp]) { l[nameProp] = v; replaced = true; }
       }
-
-      if (isLineReplaced) replacedCount++;
+      if (replaced) count++;
     });
 
-    if (replacedCount) {
-      AppState.namesDirty = true;
-      AppController.refreshWorkspace(true);
-      AppController.renderProofread();
-      AppState.queueAutoSave();
-      alert(`Berhasil replace ${replacedCount} baris.`);
-    } else {
-      alert(`Tidak ada yang cocok.`);
-    }
+    if (count) {
+      State.namesDirty = true;
+      App.refresh(true);
+      App.renderProofread();
+      State.queueSave();
+      alert(`Berhasil replace ${count} baris.`);
+    } else alert('Tidak ada yang cocok.');
   }
-}
+};
 
-document.addEventListener("DOMContentLoaded", AppController.init);
+document.addEventListener('DOMContentLoaded', App.init);
