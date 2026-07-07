@@ -1,3 +1,4 @@
+const VERSION = 15;
 const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Keep the line numbering and format intact.`;
 
 const $ = id => document.getElementById(id);
@@ -5,6 +6,37 @@ const escapeHtml = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&l
 const sanitizeName = s => String(s || '').replace(/[^\p{L}\p{N}_\-\.]/gu, '_');
 const isJapanese = s => /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(s);
 const baseName = p => String(p || '').replace(/\\/g, '/').split('/').pop();
+const isTrans = l => !!l.is_translated;
+const snapshot = () => ({ lines: JSON.parse(JSON.stringify(State.lines)), selected: new Set(State.selected) });
+const makeProjId = () => 'proj_' + Date.now() + '.cstl';
+const makeEpubId = () => 'epub_' + Date.now() + '.epub';
+
+const SETTINGS_FIELDS = [
+  { id: 'settingsIgnoreNameCheck', key: 'ignoreName', type: 'check', def: false },
+  { id: 'settingsPromptCheck', key: 'promptEnabled', type: 'check', def: true },
+  { id: 'settingsReferenceCheck', key: 'referenceEnabled', type: 'check', def: false },
+  { id: 'settingsJumpToContextCheck', key: 'jumpToContext', type: 'check', def: false },
+  { id: 'settingsHideToolsCheck', key: 'hideTools', type: 'check', def: false },
+  { id: 'settingsPromptInput', key: 'prompt', type: 'value', def: DEFAULT_PROMPT },
+  { id: 'settingsEpubTagsInput', key: 'epubTags', type: 'value', def: 'p' }
+];
+
+const PROOFREAD_FIELDS = [
+  { id: 'proofreadScope', key: 'prScope', type: 'value', def: 'all' },
+  { id: 'proofreadRegexCheck', key: 'prRegex', type: 'check', def: false },
+  { id: 'proofreadCaseCheck', key: 'prCase', type: 'check', def: false },
+  { id: 'proofreadExactCheck', key: 'prExact', type: 'check', def: false },
+  { id: 'proofreadTranslatedOnlyCheck', key: 'prTranslatedOnly', type: 'check', def: false }
+];
+
+const DROPDOWNS = [
+  { trigger: 'btnImportMain', panel: 'importDropdown', group: 'importGroup' },
+  { trigger: 'btnCopyAllNames', panel: 'copyNamesDropdown', group: 'copyNamesGroup' }
+];
+
+const MODAL_CLOSE_MS = 180;
+const TOAST_TIMEOUT_MS = 3000;
+const SAVED_TIMEOUT_MS = 1800;
 
 function clipboard(text) {
   if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
@@ -34,15 +66,54 @@ function decodeBuffer(buf) {
 }
 
 function normalizeLine(l) {
+  const clean = v => v == null ? null : String(v).replace(/\r?\n/g, '\\n').trim();
   return {
     line_num: Number(l.line_num),
     file: String(l.file),
-    name: l.name == null ? null : String(l.name).replace(/\r?\n/g, '\\n').trim(),
+    name: clean(l.name),
     message: String(l.message || '').replace(/\r?\n/g, '\\n').trim(),
-    trans_name: l.trans_name == null ? null : String(l.trans_name).replace(/\r?\n/g, '\\n').trim(),
-    trans_message: l.trans_message == null ? null : String(l.trans_message).replace(/\r?\n/g, '\\n').trim(),
+    trans_name: clean(l.trans_name),
+    trans_message: clean(l.trans_message),
     is_translated: Boolean(l.is_translated)
   };
+}
+
+function defaultProjectData(name) {
+  return {
+    version: VERSION,
+    projectName: name,
+    projectType: 'uninitialized',
+    epubTags: 'p',
+    epubSourceId: null,
+    updatedAt: Date.now(),
+    imported_files: [],
+    lines: [],
+    prompt_header: State.prompt,
+    ignoreNameTranslation: false,
+    promptEnabled: true,
+    referenceEnabled: false,
+    vndbEnabled: false,
+    vndbId: '',
+    vndbGlossary: [],
+    customEnabled: false,
+    customRaw: '',
+    customGlossary: [],
+    jumpToContext: false,
+    hideTools: false
+  };
+}
+
+function download(url, name) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function withBusyCursor(asyncFn) {
+  document.body.style.cursor = 'wait';
+  return Promise.resolve(asyncFn()).finally(() => { document.body.style.cursor = 'default'; });
 }
 
 const State = {
@@ -69,7 +140,7 @@ const State = {
   prRegex: false,
   prCase: false,
   prExact: false,
-  prTranslatedOnly: true,
+  prTranslatedOnly: false,
   undo: null,
   redo: null,
   selected: new Set(),
@@ -83,7 +154,7 @@ const State = {
 };
 
 State.toData = () => ({
-  version: 14,
+  version: VERSION,
   projectName: State.projectName,
   projectType: State.projectType,
   epubTags: State.epubTags,
@@ -108,9 +179,6 @@ State.toData = () => ({
   proofreadExactMatch: State.prExact,
   proofreadTranslatedOnly: State.prTranslatedOnly
 });
-
-const isTrans = l => !!l.is_translated;
-const snapshot = () => ({ lines: JSON.parse(JSON.stringify(State.lines)), selected: new Set(State.selected) });
 
 State.updateCount = () => {
   State.translatedCount = State.lines.filter(isTrans).length;
@@ -139,11 +207,7 @@ State.queueSave = () => {
   clearTimeout(State.saveTimer);
   State.saveTimer = setTimeout(() => {
     const idle = window.requestIdleCallback || (fn => setTimeout(fn, 0));
-    idle(() => {
-      Storage.save(State.projectId, State.toData()).then(() => {
-        App.flashSaved();
-      });
-    });
+    idle(() => { Storage.save(State.projectId, State.toData()).then(() => App.flashSaved()); });
   }, 500);
 };
 
@@ -158,9 +222,7 @@ const Storage = {
       const w = await h.createWritable();
       await w.write(JSON.stringify(data));
       await w.close();
-    } catch {
-      App.flash('Gagal menyimpan ke storage!');
-    }
+    } catch { App.flash('Gagal menyimpan ke storage!'); }
   },
 
   async list() {
@@ -213,6 +275,7 @@ class Scroller {
     this.scheduled = false;
     this.lastW = 0;
     this.lastH = 0;
+    this.raf = 0;
 
     viewport.addEventListener('scroll', () => {
       this.scrollTop = viewport.scrollTop;
@@ -428,142 +491,137 @@ const Importer = {
     }));
   },
 
+  assertProjectType(expected) {
+    if (State.projectType !== 'uninitialized' && State.projectType !== expected) {
+      const cur = State.projectType.toUpperCase();
+      const want = expected.toUpperCase();
+      alert(`Project ini sudah diatur sebagai project ${cur}. Tidak bisa mencampur file ${want}.`);
+      return false;
+    }
+    if (State.projectType === 'uninitialized') State.projectType = expected;
+    return true;
+  },
+
+  async importEpub(f, ctx) {
+    if (!Importer.assertProjectType('epub')) return;
+    if (State.projectType === 'epub' && State.epubSourceId) {
+      alert('Project ini sudah memuat EPUB.');
+      return;
+    }
+    if (State.projectType === 'uninitialized') {
+      State.projectType = 'epub';
+      State.epubSourceId = makeEpubId();
+    }
+    const root = await Storage.root();
+    const h = await root.getFileHandle(State.epubSourceId, { create: true });
+    const w = await h.createWritable();
+    await w.write(f);
+    await w.close();
+
+    const zip = new window.JSZip();
+    await zip.loadAsync(f);
+    const container = await zip.file('META-INF/container.xml').async('text');
+    const rootFile = new DOMParser().parseFromString(container, 'application/xml').querySelector('rootfile');
+    if (!rootFile) throw new Error('EPUB tidak valid.');
+
+    const opfPath = decodeURIComponent(rootFile.getAttribute('full-path'));
+    const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
+    const opf = new DOMParser().parseFromString(await zip.file(opfPath).async('text'), 'application/xml');
+    const manifest = {};
+    Array.from(opf.querySelectorAll('manifest > item')).forEach(it => {
+      manifest[it.getAttribute('id')] = decodeURIComponent(it.getAttribute('href'));
+    });
+    const htmls = Array.from(opf.querySelectorAll('spine > itemref'))
+      .map(it => manifest[it.getAttribute('idref')] ? opfDir + manifest[it.getAttribute('idref')] : null)
+      .filter(Boolean);
+    const tags = State.epubTags || 'p';
+
+    for (const path of htmls) {
+      if (ctx.existing.has(path)) { ctx.skipped.push(path); continue; }
+      const entry = zip.file(path);
+      if (!entry) continue;
+      const doc = new DOMParser().parseFromString(await entry.async('text'), path.endsWith('.xhtml') ? 'application/xhtml+xml' : 'text/html');
+      let has = false;
+      Array.from(doc.querySelectorAll(tags)).forEach(el => {
+        const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
+        if (txt) {
+          ctx.imported.push({ line_num: ctx.cur++, file: path, name: null, message: txt, trans_name: null, trans_message: null, is_translated: false });
+          has = true;
+        }
+      });
+      if (has) ctx.existing.add(path);
+    }
+  },
+
+  async importJsonFile(f, ctx) {
+    if (!Importer.assertProjectType('json')) return;
+    const bn = baseName(f.name);
+    if (ctx.existing.has(bn)) { ctx.skipped.push(bn); return; }
+    const parsed = Importer.parseJson(JSON.parse(decodeBuffer(await f.arrayBuffer())), bn, ctx.cur);
+    if (parsed.length) { ctx.existing.add(bn); ctx.imported.push(...parsed); ctx.cur += parsed.length; }
+  },
+
   async process(input, isZip = false) {
     App.flash('Memproses file...', true);
-    document.body.style.cursor = 'wait';
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await withBusyCursor(async () => {
+      try {
+        const ctx = {
+          cur: State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) + 1 : 1,
+          imported: [],
+          existing: new Set(State.files),
+          skipped: []
+        };
 
-    try {
-      let cur = State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) + 1 : 1;
-      const imported = [];
-      const existing = new Set(State.files);
-      const skipped = [];
-
-      if (isZip && input instanceof File && window.JSZip) {
-        if (State.projectType !== 'uninitialized' && State.projectType !== 'json') {
-          alert('Project ini sudah diatur sebagai project EPUB. Tidak bisa mencampur file JSON.');
-          document.body.style.cursor = 'default';
-          $('copyStatus').classList.add('empty');
-          return;
-        }
-        if (State.projectType === 'uninitialized') State.projectType = 'json';
-        const zip = new window.JSZip();
-        await zip.loadAsync(input);
-        const names = Object.keys(zip.files).filter(n => n.endsWith('.json'))
-          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-        for (const name of names) {
-          const bn = baseName(name);
-          if (existing.has(bn)) { skipped.push(bn); continue; }
-          const json = JSON.parse(decodeBuffer(await zip.file(name).async('uint8array')));
-          const parsed = Importer.parseJson(json, bn, cur);
-          if (parsed.length) { existing.add(bn); imported.push(...parsed); cur += parsed.length; }
-        }
-      } else {
-        const files = Array.from(input).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-        for (const f of files) {
-          if (f.name.toLowerCase().endsWith('.epub')) {
-            if (State.projectType !== 'uninitialized' && State.projectType !== 'epub') {
-              alert('Project ini sudah memuat file JSON. Tidak bisa mencampur file EPUB.');
-              continue;
-            }
-            if (State.projectType === 'epub' && State.epubSourceId) {
-              alert('Project ini sudah memuat EPUB.');
-              continue;
-            }
-            if (State.projectType === 'uninitialized') {
-              State.projectType = 'epub';
-              State.epubSourceId = 'epub_' + Date.now() + '.epub';
-            }
-            const root = await Storage.root();
-            const h = await root.getFileHandle(State.epubSourceId, { create: true });
-            const w = await h.createWritable();
-            await w.write(f);
-            await w.close();
-
-            const zip = new window.JSZip();
-            await zip.loadAsync(f);
-            const container = await zip.file('META-INF/container.xml').async('text');
-            const rootFile = new DOMParser().parseFromString(container, 'application/xml').querySelector('rootfile');
-            if (!rootFile) throw new Error('EPUB tidak valid.');
-
-            const opfPath = decodeURIComponent(rootFile.getAttribute('full-path'));
-            const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
-            const opf = new DOMParser().parseFromString(await zip.file(opfPath).async('text'), 'application/xml');
-            const manifest = {};
-            Array.from(opf.querySelectorAll('manifest > item')).forEach(it => {
-              manifest[it.getAttribute('id')] = decodeURIComponent(it.getAttribute('href'));
-            });
-            const htmls = Array.from(opf.querySelectorAll('spine > itemref'))
-              .map(it => manifest[it.getAttribute('idref')] ? opfDir + manifest[it.getAttribute('idref')] : null)
-              .filter(Boolean);
-            const tags = State.epubTags || 'p';
-
-            for (const path of htmls) {
-              if (existing.has(path)) { skipped.push(path); continue; }
-              const entry = zip.file(path);
-              if (!entry) continue;
-              const doc = new DOMParser().parseFromString(await entry.async('text'), path.endsWith('.xhtml') ? 'application/xhtml+xml' : 'text/html');
-              let has = false;
-              Array.from(doc.querySelectorAll(tags)).forEach(el => {
-                const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
-                if (txt) {
-                  imported.push({
-                    line_num: cur++,
-                    file: path,
-                    name: null,
-                    message: txt,
-                    trans_name: null,
-                    trans_message: null,
-                    is_translated: false
-                  });
-                  has = true;
-                }
-              });
-              if (has) existing.add(path);
-            }
-          } else if (f.name.toLowerCase().endsWith('.json')) {
-            if (State.projectType !== 'uninitialized' && State.projectType !== 'json') {
-              alert('Project ini sudah memuat file EPUB. Tidak bisa mencampur file JSON.');
-              continue;
-            }
-            if (State.projectType === 'uninitialized') State.projectType = 'json';
-            const bn = baseName(f.name);
-            if (existing.has(bn)) { skipped.push(bn); continue; }
-            const parsed = Importer.parseJson(JSON.parse(decodeBuffer(await f.arrayBuffer())), bn, cur);
-            if (parsed.length) { existing.add(bn); imported.push(...parsed); cur += parsed.length; }
+        if (isZip && input instanceof File && window.JSZip) {
+          if (!Importer.assertProjectType('json')) {
+            $('copyStatus').classList.add('empty');
+            return;
+          }
+          const zip = new window.JSZip();
+          await zip.loadAsync(input);
+          const names = Object.keys(zip.files).filter(n => n.endsWith('.json'))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+          for (const name of names) {
+            const bn = baseName(name);
+            if (ctx.existing.has(bn)) { ctx.skipped.push(bn); continue; }
+            const json = JSON.parse(decodeBuffer(await zip.file(name).async('uint8array')));
+            const parsed = Importer.parseJson(json, bn, ctx.cur);
+            if (parsed.length) { ctx.existing.add(bn); ctx.imported.push(...parsed); ctx.cur += parsed.length; }
+          }
+        } else {
+          const files = Array.from(input).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+          for (const f of files) {
+            if (f.name.toLowerCase().endsWith('.epub')) await Importer.importEpub(f, ctx);
+            else if (f.name.toLowerCase().endsWith('.json')) await Importer.importJsonFile(f, ctx);
           }
         }
-      }
 
-      if (imported.length) {
-        State.lines.push(...imported);
-        State.files = Array.from(existing);
-        State.namesDirty = true;
-        App.refresh(true);
-        State.queueSave();
-        App.flash(`Berhasil impor ${imported.length} baris.${skipped.length ? ` (${skipped.length} file duplikat diabaikan)` : ''}`);
-      } else if (skipped.length) {
+        if (ctx.imported.length) {
+          State.lines.push(...ctx.imported);
+          State.files = Array.from(ctx.existing);
+          State.namesDirty = true;
+          App.refresh(true);
+          State.queueSave();
+          App.flash(`Berhasil impor ${ctx.imported.length} baris.${ctx.skipped.length ? ` (${ctx.skipped.length} file duplikat diabaikan)` : ''}`);
+        } else if (ctx.skipped.length) {
+          $('copyStatus').classList.add('empty');
+          setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${ctx.skipped.slice(0, 5).join('\n- ')}`), 10);
+        } else {
+          App.flash('Tidak ada data valid.', false);
+        }
+      } catch (e) {
         $('copyStatus').classList.add('empty');
-        setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${skipped.slice(0, 5).join('\n- ')}`), 10);
-      } else {
-        App.flash('Tidak ada data valid.', false);
+        setTimeout(() => alert(`Error:\n${e.message}`), 10);
       }
-    } catch (e) {
-      $('copyStatus').classList.add('empty');
-      setTimeout(() => alert(`Error:\n${e.message}`), 10);
-    } finally {
-      document.body.style.cursor = 'default';
-    }
+    });
   }
 };
 
 const Exporter = {
-  async run() {
-    if (!State.lines.length) return;
-    if (State.projectType === 'epub' && State.epubSourceId) {
+  async runEpub() {
+    App.flash('Membuat EPUB...', true);
+    await withBusyCursor(async () => {
       try {
-        App.flash('Membuat EPUB...', true);
-        document.body.style.cursor = 'wait';
         const root = await Storage.root();
         const h = await root.getFileHandle(State.epubSourceId);
         const f = await h.getFile();
@@ -600,50 +658,48 @@ const Exporter = {
         App.flash('Ekspor EPUB berhasil!');
       } catch (e) {
         alert('Ekspor EPUB gagal: ' + e.message);
-      } finally {
-        document.body.style.cursor = 'default';
       }
+    });
+  },
+
+  async runJson() {
+    const grouped = new Map();
+    State.lines.forEach(l => {
+      if (!grouped.has(l.file)) grouped.set(l.file, []);
+      grouped.get(l.file).push(l);
+    });
+
+    const results = Array.from(grouped.entries()).map(([file, lines]) => ({
+      name: `${file.replace(/\.(xhtml|html|json)$/g, '')}.json`,
+      content: JSON.stringify(lines.map(l => {
+        const out = {};
+        const n = isTrans(l) ? (l.trans_name || l.name) : l.name;
+        const m = isTrans(l) ? l.trans_message : l.message;
+        if (n != null) out.name = n.replace(/\\n/g, '\n');
+        out.message = m != null ? m.replace(/\\n/g, '\n') : '';
+        return out;
+      }), null, 2)
+    }));
+
+    if (window.JSZip && results.length > 1) {
+      const zip = new window.JSZip();
+      results.forEach(r => zip.file(r.name, r.content));
+      const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
+      download(url, `${sanitizeName(State.projectName)}_export.zip`);
     } else {
-      const grouped = new Map();
-      State.lines.forEach(l => {
-        if (!grouped.has(l.file)) grouped.set(l.file, []);
-        grouped.get(l.file).push(l);
+      results.forEach(r => {
+        const url = URL.createObjectURL(new Blob([r.content], { type: 'application/json' }));
+        download(url, r.name);
       });
-
-      const results = Array.from(grouped.entries()).map(([file, lines]) => ({
-        name: `${file.replace(/\.(xhtml|html|json)$/g, '')}.json`,
-        content: JSON.stringify(lines.map(l => {
-          const out = {};
-          const n = isTrans(l) ? (l.trans_name || l.name) : l.name;
-          const m = isTrans(l) ? l.trans_message : l.message;
-          if (n != null) out.name = n.replace(/\\n/g, '\n');
-          out.message = m != null ? m.replace(/\\n/g, '\n') : '';
-          return out;
-        }), null, 2)
-      }));
-
-      if (window.JSZip && results.length > 1) {
-        const zip = new window.JSZip();
-        results.forEach(r => zip.file(r.name, r.content));
-        const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-        download(url, `${sanitizeName(State.projectName)}_export.zip`);
-      } else {
-        results.forEach(r => {
-          const url = URL.createObjectURL(new Blob([r.content], { type: 'application/json' }));
-          download(url, r.name);
-        });
-      }
     }
+  },
+
+  async run() {
+    if (!State.lines.length) return;
+    if (State.projectType === 'epub' && State.epubSourceId) await Exporter.runEpub();
+    else await Exporter.runJson();
   }
 };
-
-function download(url, name) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
 
 const Vndb = {
   async fetchCharacters(id) {
@@ -692,25 +748,46 @@ const Vndb = {
   }
 };
 
+const positionDropdown = (panelId) => {
+  const triggerMap = { importDropdown: 'btnImportMain', copyNamesDropdown: 'btnCopyAllNames' };
+  const trigger = $(triggerMap[panelId]);
+  const dropdown = $(panelId);
+  if (!trigger || !dropdown) return;
+  const r = trigger.getBoundingClientRect();
+  if (dropdown.classList.contains('dropdown-right')) {
+    dropdown.style.left = '';
+    dropdown.style.right = `${Math.round(window.innerWidth - r.right)}px`;
+  } else {
+    dropdown.style.right = '';
+    dropdown.style.left = `${Math.round(r.left)}px`;
+  }
+  dropdown.style.top = `${Math.round(r.bottom + 4)}px`;
+};
+
+const closeDropdowns = () => {
+  for (const { panel } of DROPDOWNS) $(panel)?.classList.remove('show');
+};
+
 const App = {
   main: null,
   pr: null,
   activeLine: null,
   highlightRe: null,
-  tmpVndb: [],
-  tmpCustomRaw: '',
-  tmpCustom: [],
   lastQuery: '',
   lastFile: null,
   fileCache: null,
   toastToken: 0,
+  savedTimer: 0,
+  tmpVndb: [],
+  tmpCustomRaw: '',
+  tmpCustom: [],
 
   flash(msg, keep = false) {
     const el = $('copyStatus');
     el.textContent = msg;
     el.classList.remove('empty');
     const t = ++App.toastToken;
-    if (!keep) setTimeout(() => { if (App.toastToken === t) el.classList.add('empty'); }, 3000);
+    if (!keep) setTimeout(() => { if (App.toastToken === t) el.classList.add('empty'); }, TOAST_TIMEOUT_MS);
   },
 
   toggleModal(el, show) {
@@ -718,13 +795,11 @@ const App = {
     else {
       el.classList.add('closing');
       el.classList.remove('open');
-      setTimeout(() => el.classList.remove('closing'), 180);
+      setTimeout(() => el.classList.remove('closing'), MODAL_CLOSE_MS);
     }
   },
 
-  anyModalOpen() {
-    return document.querySelectorAll('.backdrop.open').length > 0;
-  },
+  anyModalOpen() { return document.querySelectorAll('.backdrop.open').length > 0; },
 
   topModal() {
     const arr = Array.from(document.querySelectorAll('.backdrop.open'));
@@ -737,33 +812,18 @@ const App = {
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
   },
 
+  flashRow(n, delay = 50) {
+    setTimeout(() => {
+      const el = $('previewContainer').querySelector(`input[data-num="${n}"]`)?.closest('.preview-row');
+      if (el) { el.classList.add('row-flash'); setTimeout(() => el.classList.remove('row-flash'), 800); }
+    }, delay);
+  },
+
   async createProject() {
-    let name = prompt('Nama project baru:');
-    if (!name?.trim()) return;
-    name = name.trim();
-    const id = 'proj_' + Date.now() + '.cstl';
-    const data = {
-      version: 14,
-      projectName: name,
-      projectType: 'uninitialized',
-      epubTags: 'p',
-      epubSourceId: null,
-      updatedAt: Date.now(),
-      imported_files: [],
-      lines: [],
-      prompt_header: State.prompt,
-      ignoreNameTranslation: false,
-      promptEnabled: true,
-      referenceEnabled: false,
-      vndbEnabled: false,
-      vndbId: '',
-      vndbGlossary: [],
-      customEnabled: false,
-      customRaw: '',
-      customGlossary: [],
-      jumpToContext: false,
-      hideTools: false
-    };
+    const name = prompt('Nama project baru:')?.trim();
+    if (!name) return;
+    const id = makeProjId();
+    const data = defaultProjectData(name);
     await Storage.save(id, data);
     App.open(id, data);
   },
@@ -779,84 +839,69 @@ const App = {
     await App.loadDashboard();
   },
 
-  adjustToolbar() {
-    const wrap = $('dynamicToolbarWrap');
-    const actions = $('actionButtons');
-    const more = $('moreGroup');
-    const moreDrop = $('moreDropdown');
-    if (!wrap || !actions || !more || !moreDrop) return;
-
-    const items = [$('importGroup'), $('btnExport'), $('btnProofread'), $('btnGlossary'), $('btnSettings')];
-    items.forEach(el => el && actions.appendChild(el));
-    more.style.display = 'none';
-
-    if (actions.scrollWidth > wrap.clientWidth) {
-      more.style.display = 'inline-block';
-      for (let i = items.length - 1; i >= 0; i--) {
-        if (actions.scrollWidth > wrap.clientWidth && actions.children.length > 0) {
-          moreDrop.insertBefore(items[i], moreDrop.firstChild);
-        } else break;
-      }
-    }
-  },
-
   bind() {
-    window.addEventListener('resize', App.debounce(() => {
-      if ($('workspaceView').style.display !== 'none') App.adjustToolbar();
-    }, 100));
-
     $('btnNewProject').addEventListener('click', App.createProject);
     $('btnBackToDashboard').addEventListener('click', App.closeProject);
     $('btnRestoreProject').addEventListener('click', () => $('restoreProjectInput').click());
     $('restoreProjectInput').addEventListener('change', App.restoreProject);
+    $('btnDashboardSettings').addEventListener('click', () => App.toggleModal($('dashboardSettingsModal'), true));
+    $('btnDashboardSettingsClose').addEventListener('click', () => App.toggleModal($('dashboardSettingsModal'), false));
+    $('btnWipeAllData').addEventListener('click', App.wipeAllData);
 
     document.addEventListener('click', e => {
-      if (e.target.closest('#btnImportMain')) {
-        e.preventDefault();
-        $('importDropdown')?.classList.toggle('show');
+      for (const { trigger, panel } of DROPDOWNS) {
+        if (e.target.closest(`#${trigger}`)) {
+          e.preventDefault();
+          const willShow = !$(panel).classList.contains('show');
+          closeDropdowns();
+          if (willShow) {
+            positionDropdown(panel);
+            $(panel).classList.add('show');
+          }
+          return;
+        }
       }
-      if (e.target.closest('#btnMore')) {
-        e.preventDefault();
-        $('moreDropdown')?.classList.toggle('show');
-      }
-      if (e.target.closest('#btnCopyAllNames')) {
-        e.preventDefault();
-        $('copyNamesDropdown')?.classList.toggle('show');
-      }
-      if (!e.target.closest('#importGroup') && $('importDropdown')) $('importDropdown').classList.remove('show');
-      if (!e.target.closest('#moreGroup') && $('moreDropdown')) $('moreDropdown').classList.remove('show');
-      if (!e.target.closest('#copyNamesGroup') && $('copyNamesDropdown')) $('copyNamesDropdown').classList.remove('show');
+      const insideAny = DROPDOWNS.some(({ group }) => e.target.closest(`#${group}`));
+      if (!insideAny) closeDropdowns();
       const bd = e.target.closest('.backdrop.open');
       if (bd && e.target === bd) App.toggleModal(bd, false);
     });
 
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && App.anyModalOpen()) {
-        const m = App.topModal();
-        if (m) App.toggleModal(m, false);
+      if (e.key === 'Escape') {
+        if (App.anyModalOpen()) {
+          const m = App.topModal();
+          if (m) App.toggleModal(m, false);
+        } else {
+          closeDropdowns();
+        }
       }
     });
 
+    $('dynamicToolbarWrap').addEventListener('scroll', closeDropdowns, { passive: true });
+    window.addEventListener('scroll', closeDropdowns, true);
+    window.addEventListener('resize', closeDropdowns);
+
+    const importInputs = [$('importFileInput'), $('importFolderInput'), $('importZipInput')];
     ['btnImportFile', 'btnImportFolder', 'btnImportZip'].forEach((id, i) => {
-      const inputs = [$('importFileInput'), $('importFolderInput'), $('importZipInput')];
+      const input = importInputs[i];
       $(id).addEventListener('click', () => {
-        $('importDropdown').classList.remove('show');
-        $('moreDropdown')?.classList.remove('show');
-        inputs[i].click();
+        closeDropdowns();
+        input.click();
       });
-      inputs[i].addEventListener('change', async e => {
+      input.addEventListener('change', async e => {
         if (!e.target.files.length) return;
         await Importer.process(id === 'btnImportZip' ? e.target.files[0] : e.target.files, id === 'btnImportZip');
         e.target.value = '';
       });
     });
 
-    $('btnExport').addEventListener('click', () => { $('moreDropdown')?.classList.remove('show'); Exporter.run(); });
+    $('btnExport').addEventListener('click', () => { Exporter.run(); });
     $('btnCopyForAi').addEventListener('click', App.copyForAi);
     $('btnApply').addEventListener('click', App.applyTranslation);
     $('btnUndo').addEventListener('click', App.undo);
     $('btnRedo').addEventListener('click', App.redo);
-    $('btnProofread').addEventListener('click', () => { $('moreDropdown')?.classList.remove('show'); App.openProofread(); });
+    $('btnProofread').addEventListener('click', () => { App.openProofread(); });
 
     $('btnSelectAll').addEventListener('click', () => {
       State.lines.forEach(l => { if (!isTrans(l)) State.selected.add(l.line_num); });
@@ -866,7 +911,6 @@ const App = {
     $('btnSelectRange').addEventListener('click', App.selectRange);
 
     $('btnGlossary').addEventListener('click', () => {
-      $('moreDropdown')?.classList.remove('show');
       $('glossaryVndbCheck').checked = State.vndbEnabled;
       $('glossaryVndbIdInput').value = State.vndbId || '';
       App.tmpVndb = [...State.vndbGlossary];
@@ -883,36 +927,19 @@ const App = {
     });
 
     $('btnSettings').addEventListener('click', () => {
-      $('moreDropdown')?.classList.remove('show');
-      $('settingsIgnoreNameCheck').checked = State.ignoreName;
-      $('settingsPromptCheck').checked = State.promptEnabled;
-      $('settingsReferenceCheck').checked = State.referenceEnabled;
-      $('settingsJumpToContextCheck').checked = State.jumpToContext;
-      $('settingsHideToolsCheck').checked = State.hideTools;
-      $('settingsPromptInput').value = State.prompt;
-      $('settingsEpubTagsInput').value = State.epubTags || 'p';
+      App.syncSettingsModal();
       App.toggleModal($('settingsModal'), true);
     });
 
-    $('btnSettingsDasarReset').addEventListener('click', () => {
-      $('settingsIgnoreNameCheck').checked = false;
-      $('settingsPromptCheck').checked = true;
-      $('settingsReferenceCheck').checked = false;
-      $('settingsJumpToContextCheck').checked = false;
-      $('settingsHideToolsCheck').checked = false;
-    });
+    $('btnSettingsDasarReset').addEventListener('click', () => App.resetSettingsModal('dasar'));
     $('btnSettingsPromptReset').addEventListener('click', () => { $('settingsPromptInput').value = DEFAULT_PROMPT; });
     $('btnSettingsEpubReset').addEventListener('click', () => { $('settingsEpubTagsInput').value = 'p'; });
-
     $('btnSettingsCancel').addEventListener('click', () => App.toggleModal($('settingsModal'), false));
     $('btnSettingsSave').addEventListener('click', () => {
-      State.ignoreName = $('settingsIgnoreNameCheck').checked;
-      State.promptEnabled = $('settingsPromptCheck').checked;
-      State.referenceEnabled = $('settingsReferenceCheck').checked;
-      State.jumpToContext = $('settingsJumpToContextCheck').checked;
-      State.hideTools = $('settingsHideToolsCheck').checked;
-      State.prompt = $('settingsPromptInput').value.trim();
-      State.epubTags = $('settingsEpubTagsInput').value.trim() || 'p';
+      SETTINGS_FIELDS.forEach(({ id, key, type }) => {
+        const v = type === 'check' ? $(id).checked : $(id).value.trim() || 'p';
+        State[key] = v;
+      });
       App.applyHideTools();
       App.toggleModal($('settingsModal'), false);
       State.queueSave();
@@ -926,9 +953,9 @@ const App = {
       let id = $('glossaryVndbIdInput').value.trim();
       if (!id) return;
       if (!id.startsWith('v')) id = 'v' + id;
+      const status = $('glossaryVndbStatus');
       try {
         $('btnGlossaryVndbFetch').disabled = $('glossaryVndbIdInput').disabled = true;
-        const status = $('glossaryVndbStatus');
         status.textContent = 'Mengambil data...';
         status.className = 'toast info';
         const chars = await Vndb.fetchCharacters(id);
@@ -938,7 +965,6 @@ const App = {
         status.textContent = `Ditemukan ${App.tmpVndb.length} entri.`;
         status.className = 'toast success';
       } catch (e) {
-        const status = $('glossaryVndbStatus');
         status.textContent = e.message;
         status.className = 'toast error';
         $('btnGlossaryVndbFetch').disabled = $('glossaryVndbIdInput').disabled = false;
@@ -1023,11 +1049,11 @@ const App = {
     $('btnProofreadReset').addEventListener('click', () => {
       $('proofreadSearchInput').value = '';
       $('proofreadReplaceInput').value = '';
-      $('proofreadScope').value = 'all';
-      $('proofreadRegexCheck').checked = false;
-      $('proofreadCaseCheck').checked = false;
-      $('proofreadExactCheck').checked = false;
-      $('proofreadTranslatedOnlyCheck').checked = true;
+      PROOFREAD_FIELDS.forEach(({ id, def, type }) => {
+        const el = $(id);
+        if (type === 'check') el.checked = def;
+        else el.value = def;
+      });
       App.syncProofread();
       App.renderProofread();
     });
@@ -1036,8 +1062,7 @@ const App = {
 
     const delayed = App.debounce(App.renderProofread, 200);
     $('proofreadSearchInput').addEventListener('input', delayed);
-
-    ['proofreadScope', 'proofreadRegexCheck', 'proofreadCaseCheck', 'proofreadExactCheck', 'proofreadTranslatedOnlyCheck'].forEach(id => {
+    PROOFREAD_FIELDS.forEach(({ id }) => {
       $(id).addEventListener('change', () => { App.syncProofread(); App.renderProofread(); });
     });
 
@@ -1088,10 +1113,7 @@ const App = {
           const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === n);
           if (idx !== -1) {
             App.main.scrollToIndex(idx);
-            setTimeout(() => {
-              const el = $('previewContainer').querySelector(`input[data-num="${n}"]`)?.closest('.preview-row');
-              if (el) { el.classList.add('row-flash'); setTimeout(() => el.classList.remove('row-flash'), 800); }
-            }, 60);
+            App.flashRow(n, 60);
           }
         } else {
           App.openLineEditor(n);
@@ -1111,48 +1133,61 @@ const App = {
     $('btnCopyNamesMissingGlossary').addEventListener('click', () => App.copyAllNames('missing'));
   },
 
+  syncSettingsModal() {
+    SETTINGS_FIELDS.forEach(({ id, key, type, def }) => {
+      const v = State[key] ?? def;
+      if (type === 'check') $(id).checked = v;
+      else $(id).value = v;
+    });
+  },
+
+  resetSettingsModal(group) {
+    const filter = group === 'dasar' ? f => f.type === 'check' : null;
+    if (!filter) return;
+    SETTINGS_FIELDS.filter(filter).forEach(({ id, def }) => { $(id).checked = def; });
+  },
+
   async backup(p) {
-    try {
-      document.body.style.cursor = 'wait';
-      const zip = new window.JSZip();
-      const meta = { ...p.data };
-      delete meta.lines;
-      delete meta.proofreadScope;
-      delete meta.proofreadRegex;
-      delete meta.proofreadCaseSensitive;
-      delete meta.proofreadExactMatch;
-      delete meta.proofreadTranslatedOnly;
-      zip.file('metadata.json', JSON.stringify(meta));
+    await withBusyCursor(async () => {
+      try {
+        const zip = new window.JSZip();
+        const meta = { ...p.data };
+        delete meta.lines;
+        delete meta.proofreadScope;
+        delete meta.proofreadRegex;
+        delete meta.proofreadCaseSensitive;
+        delete meta.proofreadExactMatch;
+        delete meta.proofreadTranslatedOnly;
+        zip.file('metadata.json', JSON.stringify(meta));
 
-      let orig = '', trans = '', names = '';
-      for (const file of (p.data.imported_files || [])) {
-        orig += `<filename>${file}</filename>\n`;
-        trans += `<filename>${file}</filename>\n`;
-        names += `<filename>${file}</filename>\n`;
-        p.data.lines.filter(l => l.file === file).forEach(l => {
-          orig += `${l.message || ''}\n`;
-          trans += `${l.trans_message || ''}\n`;
-          names += ((l.name || '') || (l.trans_name || '')) ? `<original>${l.name || ''}</original><translate>${l.trans_name || ''}</translate>\n` : '\n';
-        });
+        let orig = '', trans = '', names = '';
+        for (const file of (p.data.imported_files || [])) {
+          orig += `<filename>${file}</filename>\n`;
+          trans += `<filename>${file}</filename>\n`;
+          names += `<filename>${file}</filename>\n`;
+          p.data.lines.filter(l => l.file === file).forEach(l => {
+            orig += `${l.message || ''}\n`;
+            trans += `${l.trans_message || ''}\n`;
+            names += ((l.name || '') || (l.trans_name || '')) ? `<original>${l.name || ''}</original><translate>${l.trans_name || ''}</translate>\n` : '\n';
+          });
+        }
+        zip.file('original.txt', orig);
+        zip.file('translate.txt', trans);
+        zip.file('name.txt', names);
+
+        if (p.data.projectType === 'epub' && p.data.epubSourceId) {
+          const root = await Storage.root();
+          const h = await root.getFileHandle(p.data.epubSourceId);
+          const f = await h.getFile();
+          zip.file(p.data.epubSourceId, f);
+        }
+
+        const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
+        download(url, `${sanitizeName(p.name)}_backup.cstl`);
+      } catch (e) {
+        alert('Gagal backup: ' + e.message);
       }
-      zip.file('original.txt', orig);
-      zip.file('translate.txt', trans);
-      zip.file('name.txt', names);
-
-      if (p.data.projectType === 'epub' && p.data.epubSourceId) {
-        const root = await Storage.root();
-        const h = await root.getFileHandle(p.data.epubSourceId);
-        const f = await h.getFile();
-        zip.file(p.data.epubSourceId, f);
-      }
-
-      const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-      download(url, `${sanitizeName(p.name)}_backup.cstl`);
-    } catch (e) {
-      alert('Gagal backup: ' + e.message);
-    } finally {
-      document.body.style.cursor = 'default';
-    }
+    });
   },
 
   async loadDashboard() {
@@ -1215,97 +1250,97 @@ const App = {
   },
 
   async restoreProject(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      document.body.style.cursor = 'wait';
-      const zip = new window.JSZip();
-      await zip.loadAsync(file);
-      const metaFile = zip.file('metadata.json');
-      const origFile = zip.file('original.txt');
-      const transFile = zip.file('translate.txt');
-      const nameFile = zip.file('name.txt');
-      if (!metaFile || !origFile || !transFile || !nameFile) throw new Error('Format arsip tidak valid.');
+    const uploadedFile = e.target.files?.[0];
+    if (!uploadedFile) return;
+    await withBusyCursor(async () => {
+      try {
+        const zip = new window.JSZip();
+        await zip.loadAsync(uploadedFile);
+        const metaFile = zip.file('metadata.json');
+        const origFile = zip.file('original.txt');
+        const transFile = zip.file('translate.txt');
+        const nameFile = zip.file('name.txt');
+        if (!metaFile || !origFile || !transFile || !nameFile) throw new Error('Format arsip tidak valid.');
 
-      const meta = JSON.parse(await metaFile.async('text'));
-      const orig = (await origFile.async('text')).split(/\r?\n/);
-      const trans = (await transFile.async('text')).split(/\r?\n/);
-      const names = (await nameFile.async('text')).split(/\r?\n/);
-      [orig, trans, names].forEach(arr => { if (arr[arr.length - 1] === '') arr.pop(); });
-      if (orig.length !== trans.length || orig.length !== names.length) throw new Error('Baris tidak sinkron.');
+        const meta = JSON.parse(await metaFile.async('text'));
+        const orig = (await origFile.async('text')).split(/\r?\n/);
+        const trans = (await transFile.async('text')).split(/\r?\n/);
+        const names = (await nameFile.async('text')).split(/\r?\n/);
+        [orig, trans, names].forEach(arr => { if (arr[arr.length - 1] === '') arr.pop(); });
+        if (orig.length !== trans.length || orig.length !== names.length) throw new Error('Baris tidak sinkron.');
 
-      const lines = [];
-      let file = 'unknown', n = 1;
-      for (let i = 0; i < orig.length; i++) {
-        const o = orig[i];
-        const m = o.match(/^<filename>(.*?)<\/filename>$/);
-        if (m) {
-          if (trans[i] !== o || names[i] !== o) throw new Error('Header file tidak sinkron.');
-          file = m[1];
-        } else {
-          let on = null, tn = null;
-          const nl = names[i].trim();
-          if (nl) {
-            const om = nl.match(/<original>(.*?)<\/original>/);
-            const tm = nl.match(/<translate>(.*?)<\/translate>/);
-            on = om ? om[1] : null;
-            tn = tm ? tm[1] : null;
+        const lines = [];
+        let file = 'unknown', n = 1;
+        for (let i = 0; i < orig.length; i++) {
+          const o = orig[i];
+          const m = o.match(/^<filename>(.*?)<\/filename>$/);
+          if (m) {
+            if (trans[i] !== o || names[i] !== o) throw new Error('Header file tidak sinkron.');
+            file = m[1];
+          } else {
+            let on = null, tn = null;
+            const nl = names[i].trim();
+            if (nl) {
+              const om = nl.match(/<original>(.*?)<\/original>/);
+              const tm = nl.match(/<translate>(.*?)<\/translate>/);
+              on = om ? om[1] : null;
+              tn = tm ? tm[1] : null;
+            }
+            lines.push({
+              line_num: n++,
+              file,
+              name: on,
+              message: o,
+              trans_name: tn,
+              trans_message: trans[i] || null,
+              is_translated: !!trans[i]?.trim()
+            });
           }
-          lines.push({
-            line_num: n++,
-            file,
-            name: on,
-            message: o,
-            trans_name: tn,
-            trans_message: trans[i] || null,
-            is_translated: !!trans[i]?.trim()
-          });
         }
-      }
 
-      const name = meta.projectName || file.name.replace('.cstl', '');
-      if (meta.projectType === 'epub' && meta.epubSourceId) {
-        const entry = zip.file(meta.epubSourceId);
-        if (entry) {
-          const newId = 'epub_' + Date.now() + '.epub';
-          const root = await Storage.root();
-          const h = await root.getFileHandle(newId, { create: true });
-          const w = await h.createWritable();
-          await w.write(await entry.async('blob'));
-          await w.close();
-          meta.epubSourceId = newId;
+        const name = meta.projectName || uploadedFile.name.replace(/\.cstl$/, '');
+        if (meta.projectType === 'epub' && meta.epubSourceId) {
+          const entry = zip.file(meta.epubSourceId);
+          if (entry) {
+            const newId = makeEpubId();
+            const root = await Storage.root();
+            const h = await root.getFileHandle(newId, { create: true });
+            const w = await h.createWritable();
+            await w.write(await entry.async('blob'));
+            await w.close();
+            meta.epubSourceId = newId;
+          }
         }
-      }
 
-      await Storage.save('proj_' + Date.now() + '.cstl', {
-        version: 14,
-        projectName: name,
-        projectType: meta.projectType || 'uninitialized',
-        epubTags: meta.epubTags || 'p',
-        epubSourceId: meta.epubSourceId || null,
-        imported_files: meta.imported_files || [],
-        lines: lines.map(normalizeLine),
-        prompt_header: meta.prompt_header || State.prompt,
-        ignoreNameTranslation: meta.ignoreNameTranslation ?? false,
-        promptEnabled: meta.promptEnabled ?? true,
-        referenceEnabled: meta.referenceEnabled ?? false,
-        vndbEnabled: meta.vndbEnabled ?? false,
-        vndbId: meta.vndbId || '',
-        vndbGlossary: meta.vndbGlossary || [],
-        customEnabled: meta.customEnabled ?? false,
-        customRaw: meta.customRaw || '',
-        customGlossary: meta.customGlossary || [],
-        jumpToContext: meta.jumpToContext ?? false,
-        hideTools: meta.hideTools ?? false
-      });
-      await App.loadDashboard();
-      alert(`Project "${name}" dipulihkan!`);
-    } catch (e) {
-      alert('File korup: ' + e.message);
-    } finally {
-      document.body.style.cursor = 'default';
-      e.target.value = '';
-    }
+        await Storage.save(makeProjId(), {
+          version: VERSION,
+          projectName: name,
+          projectType: meta.projectType || 'uninitialized',
+          epubTags: meta.epubTags || 'p',
+          epubSourceId: meta.epubSourceId || null,
+          imported_files: meta.imported_files || [],
+          lines: lines.map(normalizeLine),
+          prompt_header: meta.prompt_header || State.prompt,
+          ignoreNameTranslation: meta.ignoreNameTranslation ?? false,
+          promptEnabled: meta.promptEnabled ?? true,
+          referenceEnabled: meta.referenceEnabled ?? false,
+          vndbEnabled: meta.vndbEnabled ?? false,
+          vndbId: meta.vndbId || '',
+          vndbGlossary: meta.vndbGlossary || [],
+          customEnabled: meta.customEnabled ?? false,
+          customRaw: meta.customRaw || '',
+          customGlossary: meta.customGlossary || [],
+          jumpToContext: meta.jumpToContext ?? false,
+          hideTools: meta.hideTools ?? false
+        });
+        await App.loadDashboard();
+        alert(`Project "${name}" dipulihkan!`);
+      } catch (e) {
+        alert('File korup: ' + e.message);
+      } finally {
+        e.target.value = '';
+      }
+    });
   },
 
   open(id, data) {
@@ -1332,7 +1367,7 @@ const App = {
     State.prRegex = data.proofreadRegex ?? false;
     State.prCase = data.proofreadCaseSensitive ?? false;
     State.prExact = data.proofreadExactMatch ?? false;
-    State.prTranslatedOnly = data.proofreadTranslatedOnly ?? true;
+    State.prTranslatedOnly = data.proofreadTranslatedOnly ?? false;
     State.selected.clear();
     State.undo = State.redo = null;
     State.namesDirty = true;
@@ -1341,7 +1376,6 @@ const App = {
     $('dashboardView').classList.remove('open');
     $('workspaceView').style.display = 'flex';
     App.applyHideTools();
-    requestAnimationFrame(() => App.adjustToolbar());
     App.refresh(false);
   },
 
@@ -1350,6 +1384,29 @@ const App = {
     if (!split) return;
     split.classList.toggle('hide-tools', State.hideTools);
     if (App.main) requestAnimationFrame(() => { App.main.invalidate(); App.main.render(); });
+  },
+
+  async wipeAllData() {
+    if (!confirm('Semua project dan data akan dihapus permanen. Lanjutkan?')) return;
+    try {
+      const root = await navigator.storage.getDirectory();
+      for await (const [name] of root.entries()) {
+        try { await root.removeEntry(name, { recursive: true }); } catch {}
+      }
+    } catch {}
+    try {
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+    } catch {}
+    try {
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
+    } catch {}
+    location.reload();
   },
 
   closeProject() {
@@ -1375,7 +1432,7 @@ const App = {
     State.translatedCount = 0;
     State.prScope = 'all';
     State.prRegex = State.prCase = State.prExact = false;
-    State.prTranslatedOnly = true;
+    State.prTranslatedOnly = false;
     State.hideTools = false;
     State.namesDirty = true;
 
@@ -1447,8 +1504,8 @@ const App = {
     bar.classList.remove('saved');
     void bar.offsetWidth;
     bar.classList.add('saved');
-    clearTimeout(App._savedTimer);
-    App._savedTimer = setTimeout(() => bar.classList.remove('saved'), 1800);
+    clearTimeout(App.savedTimer);
+    App.savedTimer = setTimeout(() => bar.classList.remove('saved'), SAVED_TIMEOUT_MS);
   },
 
   updateFileBadge() {
@@ -1582,7 +1639,7 @@ const App = {
   },
 
   async copyAllNames(mode) {
-    $('copyNamesDropdown').classList.remove('show');
+    closeDropdowns();
     const names = new Set();
     State.lines.forEach(l => { if (l.name) names.add(l.name); });
     const arr = Array.from(names).sort();
@@ -1621,10 +1678,7 @@ const App = {
     const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === from);
     if (idx !== -1) {
       App.main.scrollToIndex(idx);
-      setTimeout(() => {
-        const el = $('previewContainer').querySelector(`input[data-num="${from}"]`)?.closest('.preview-row');
-        if (el) { el.classList.add('row-flash'); setTimeout(() => el.classList.remove('row-flash'), 800); }
-      }, 50);
+      App.flashRow(from, 50);
     }
   },
 
@@ -1869,20 +1923,18 @@ const App = {
   },
 
   syncProofread() {
-    State.prScope = $('proofreadScope').value;
-    State.prRegex = $('proofreadRegexCheck').checked;
-    State.prCase = $('proofreadCaseCheck').checked;
-    State.prExact = $('proofreadExactCheck').checked;
-    State.prTranslatedOnly = $('proofreadTranslatedOnlyCheck').checked;
+    PROOFREAD_FIELDS.forEach(({ id, key, type }) => {
+      State[key] = type === 'check' ? $(id).checked : $(id).value;
+    });
     if (State.projectId) State.queueSave();
   },
 
   openProofread() {
-    $('proofreadScope').value = State.prScope;
-    $('proofreadRegexCheck').checked = State.prRegex;
-    $('proofreadCaseCheck').checked = State.prCase;
-    $('proofreadExactCheck').checked = State.prExact;
-    $('proofreadTranslatedOnlyCheck').checked = State.prTranslatedOnly;
+    PROOFREAD_FIELDS.forEach(({ id, key, type }) => {
+      const el = $(id);
+      if (type === 'check') el.checked = State[key];
+      else el.value = State[key];
+    });
     App.toggleModal($('proofreadModal'), true);
     setTimeout(() => App.renderProofread(), 340);
   },
@@ -1899,14 +1951,10 @@ const App = {
   renderProofread() {
     if (!$('proofreadModal').classList.contains('open')) return;
     const q = $('proofreadSearchInput').value;
-    const regex = $('proofreadRegexCheck').checked;
-    const cs = $('proofreadCaseCheck').checked;
-    const exact = $('proofreadExactCheck').checked;
+    const re = App.buildRe(q, $('proofreadRegexCheck').checked, $('proofreadExactCheck').checked, $('proofreadCaseCheck').checked);
+    App.highlightRe = re ? new RegExp(re.source, re.flags) : null;
     const onlyTrans = $('proofreadTranslatedOnlyCheck').checked;
     const scope = $('proofreadScope').value;
-
-    const re = App.buildRe(q, regex, exact, cs);
-    App.highlightRe = re ? new RegExp(re.source, re.flags) : null;
 
     State.matches = State.lines.filter(l => {
       if (onlyTrans && !isTrans(l)) return false;
