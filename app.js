@@ -196,7 +196,7 @@ State.rebuild = () => {
   for (const [file, lines] of grouped.entries()) {
     State.fileLines.set(file, lines);
     if (lines.length) {
-      State.rows.push({ type: 'separator', file });
+      State.rows.push({ type: 'header', file });
       lines.forEach(l => State.rows.push({ type: 'line', line: l }));
     }
   }
@@ -309,7 +309,7 @@ class Scroller {
     this.heights = keepH ? this.heights : new Float32Array(items.length);
     if (!keepH) {
       for (let i = 0; i < items.length; i++) {
-        this.heights[i] = items[i]?.type === 'separator' ? 24 : this.defaultH;
+        this.heights[i] = items[i]?.type === 'header' ? 32 : this.defaultH;
       }
     }
     this.pos = new Float32Array(items.length);
@@ -427,8 +427,8 @@ class Scroller {
         const di = rStart + i;
         const h = el.offsetHeight;
         if (h === 0) continue;
-        const sep = this.items[di]?.type === 'separator';
-        const total = sep ? h : h + this.gap;
+        const hdr = this.items[di]?.type === 'header';
+        const total = hdr ? h : h + this.gap;
         if (Math.abs(total - this.heights[di]) > 1) {
           const diff = total - this.heights[di];
           if (this.pos[di] < scrollTop) adjust += diff;
@@ -1071,27 +1071,21 @@ const App = {
         const n = Number(e.target.dataset.num);
         if (e.target.checked) State.selected.add(n); else State.selected.delete(n);
         App.syncCheckboxes();
+      } else if (e.target.matches('.file-header-inner input[type="checkbox"][data-file]')) {
+        App.toggleFileSelection(e.target);
       }
     });
 
     $('stickyFileCheckbox').addEventListener('change', e => {
-      const file = e.target.dataset.file;
-      if (!file) return;
-      const lines = State.fileLines.get(file) || [];
-      lines.forEach(l => {
-        if (!isTrans(l)) {
-          if (e.target.checked) State.selected.add(l.line_num);
-          else State.selected.delete(l.line_num);
-        }
-      });
-      App.syncCheckboxes();
+      if (e.target.dataset.file) App.toggleFileSelection(e.target);
     });
 
     $('previewContainer').addEventListener('click', e => {
+      if (e.target.matches('input[type="checkbox"]')) return;
       const wrap = e.target.closest('.text-content');
       if (wrap) {
         const row = wrap.closest('.preview-row');
-        if (row && !row.classList.contains('separator')) {
+        if (row && !row.classList.contains('file-header')) {
           const cb = row.querySelector('input[type="checkbox"]');
           if (cb?.dataset.num) App.openLineEditor(Number(cb.dataset.num));
         }
@@ -1444,7 +1438,7 @@ const App = {
     $('stickyFileName').textContent = '';
     $('stickyFileName').title = '';
     $('stickyFileRange').textContent = '';
-    $('stickyFileHeader').classList.add('empty');
+    $('stickyFileBar').classList.remove('show', 'swap');
     $('stickyFileCheckbox').checked = false;
     $('stickyFileCheckbox').disabled = true;
     delete $('stickyFileCheckbox').dataset.file;
@@ -1509,50 +1503,98 @@ const App = {
   },
 
   updateFileBadge() {
-    const header = $('stickyFileHeader');
+    const bar = $('stickyFileBar');
     const nameEl = $('stickyFileName');
     const rangeEl = $('stickyFileRange');
     const cb = $('stickyFileCheckbox');
-    if (!header || !nameEl || !App.main) return;
-    const top = App.main.findStart($('previewViewport').scrollTop);
-    let file = null;
-    if (State.rows.length && top < State.rows.length) {
-      const row = State.rows[top];
-      if (row.type === 'separator') file = row.file;
-      else if (row.type === 'line') file = row.line.file;
+    if (!bar || !nameEl || !App.main) return;
+    const scrollTop = $('previewViewport').scrollTop;
+    const rows = State.rows;
+    if (!rows.length) {
+      bar.classList.remove('show');
+      nameEl.textContent = '';
+      rangeEl.textContent = '';
+      cb.disabled = true;
+      cb.checked = false;
+      cb.indeterminate = false;
+      delete cb.dataset.file;
+      App.lastFile = null;
+      App.fileCache = null;
+      return;
     }
-    if (file !== App.lastFile) {
-      if (file) {
-        const bn = baseName(file);
-        nameEl.textContent = bn;
-        nameEl.title = file;
-        const lines = State.fileLines.get(file) || [];
-        rangeEl.textContent = lines.length ? `${lines[0].line_num}-${lines[lines.length - 1].line_num}` : '';
-        header.classList.remove('empty');
-        cb.dataset.file = file;
+    let activeFile = null;
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].type !== 'header') continue;
+      const p = App.main.pos[i];
+      const h = App.main.heights[i];
+      if (p + h <= scrollTop) activeFile = rows[i].file;
+      else break;
+    }
+    if (activeFile !== App.lastFile) {
+      if (activeFile) {
+        if (App.lastFile !== null) {
+          bar.classList.add('swap');
+          setTimeout(() => {
+            App._applyFileBadgeContent(activeFile, nameEl, rangeEl, cb);
+            bar.classList.remove('swap');
+          }, 100);
+        } else {
+          App._applyFileBadgeContent(activeFile, nameEl, rangeEl, cb);
+          bar.classList.add('show');
+        }
       } else {
         nameEl.textContent = '';
-        nameEl.title = '';
         rangeEl.textContent = '';
-        header.classList.add('empty');
+        cb.disabled = true;
+        cb.checked = false;
+        cb.indeterminate = false;
         delete cb.dataset.file;
+        bar.classList.remove('show');
       }
-      App.lastFile = file;
+      App.lastFile = activeFile;
       App.fileCache = null;
     }
-    if (file && cb) {
-      const key = `${file}:${State.selected.size}:${State.translatedCount}`;
+    if (activeFile) {
+      const key = `${activeFile}:${State.selected.size}:${State.translatedCount}`;
       if (!App.fileCache || App.fileCache.key !== key) {
-        const lines = State.fileLines.get(file) || [];
-        let sel = 0, un = 0;
-        lines.forEach(l => { if (!isTrans(l)) { un++; if (State.selected.has(l.line_num)) sel++; } });
-        App.fileCache = { key, sel, un };
+        App.fileCache = { key, ...App.computeFileCbState(activeFile) };
       }
-      const { sel, un } = App.fileCache;
-      cb.disabled = un === 0;
-      cb.checked = un > 0 && sel === un;
-      cb.indeterminate = sel > 0 && sel < un;
+      cb.disabled = App.fileCache.disabled;
+      cb.checked = App.fileCache.checked;
+      cb.indeterminate = App.fileCache.indeterminate;
     }
+  },
+
+  _applyFileBadgeContent(file, nameEl, rangeEl, cb) {
+    nameEl.textContent = baseName(file);
+    nameEl.title = file;
+    const lines = State.fileLines.get(file) || [];
+    rangeEl.textContent = lines.length ? `${lines[0].line_num}-${lines[lines.length - 1].line_num}` : '';
+    cb.dataset.file = file;
+  },
+
+  toggleFileSelection(cb) {
+    const file = cb.dataset.file;
+    if (!file) return;
+    const lines = State.fileLines.get(file) || [];
+    lines.forEach(l => {
+      if (!isTrans(l)) {
+        if (cb.checked) State.selected.add(l.line_num);
+        else State.selected.delete(l.line_num);
+      }
+    });
+    App.syncCheckboxes();
+  },
+
+  computeFileCbState(file) {
+    const lines = State.fileLines.get(file) || [];
+    let sel = 0, un = 0;
+    lines.forEach(l => { if (!isTrans(l)) { un++; if (State.selected.has(l.line_num)) sel++; } });
+    return {
+      disabled: un === 0,
+      checked: un > 0 && sel === un,
+      indeterminate: sel > 0 && sel < un
+    };
   },
 
   createMainRow() {
@@ -1570,18 +1612,41 @@ const App = {
     trans.className = 'translated';
     content.append(orig, trans);
     cell.append(cb, content);
-    row.append(cell);
+    const hdr = document.createElement('div');
+    hdr.className = 'file-header-inner';
+    const hCb = document.createElement('input');
+    hCb.type = 'checkbox';
+    const hName = document.createElement('span');
+    hName.className = 'file-name';
+    const hRange = document.createElement('span');
+    hRange.className = 'file-range';
+    hdr.append(hCb, hName, hRange);
+    row.append(cell, hdr);
     row._cell = cell;
     row._cb = cb;
     row._orig = orig;
     row._trans = trans;
+    row._hdr = hdr;
+    row._hCb = hCb;
+    row._hName = hName;
+    row._hRange = hRange;
     return row;
   },
 
   updateMainRow(row, data) {
-    if (data.type === 'separator') {
-      row.className = 'preview-row separator';
+    if (data.type === 'header') {
+      row.className = 'preview-row file-header';
       row._cell.style.display = 'none';
+      row._hdr.style.display = 'flex';
+      row._hName.textContent = baseName(data.file);
+      row._hName.title = data.file;
+      const lines = State.fileLines.get(data.file) || [];
+      row._hRange.textContent = lines.length ? `${lines[0].line_num}-${lines[lines.length - 1].line_num}` : '';
+      row._hCb.dataset.file = data.file;
+      const st = App.computeFileCbState(data.file);
+      row._hCb.disabled = st.disabled;
+      row._hCb.checked = st.checked;
+      row._hCb.indeterminate = st.indeterminate;
     } else {
       const l = data.line;
       let cls = 'preview-row';
@@ -1589,6 +1654,7 @@ const App = {
       if (State.selected.has(l.line_num)) cls += ' row-selected';
       row.className = cls;
       row._cell.style.display = 'flex';
+      row._hdr.style.display = 'none';
       row._cb.dataset.num = l.line_num;
       row._cb.checked = State.selected.has(l.line_num);
       row._cb.disabled = isTrans(l);
@@ -1872,6 +1938,8 @@ const App = {
   openLineEditor(num) {
     const l = State.byNum.get(num);
     if (!l) return;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) sel.removeAllRanges();
     App.activeLine = num;
     $('lineEditorTitle').textContent = `Edit Baris ${num}`;
     $('lineOriginalView').value = l.name ? `${l.name}: ${l.message}` : l.message;
