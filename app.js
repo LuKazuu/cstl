@@ -508,7 +508,7 @@ const Importer = {
       alert('Project ini sudah memuat EPUB.');
       return;
     }
-    if (State.projectType === 'uninitialized') {
+    if (!State.epubSourceId) {
       State.projectType = 'epub';
       State.epubSourceId = makeEpubId();
     }
