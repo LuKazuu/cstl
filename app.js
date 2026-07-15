@@ -1,6 +1,6 @@
 const VERSION = 16;
 const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Result must be inside codeblock. Keep line numbering and format (like code in the middle of the text) intact.`;
-const DEFAULT_REFERENCE_PROMPT = `After translating, add a final section titled exactly "Reference:" summarizing terminology, phrasing choices, and character voice/tone notes established in this batch, so they can be reused for consistency later. Keep it concise, bullet-point style, and make it a self-contained summary (not just what changed).`;
+const DEFAULT_RINGKASAN_PROMPT = `Inside the same codeblock as the translation, also include a summary of the characters (whether they appears next or not) and overall story so far. Mark it with a line that says exactly "Ringkasan:" (placed above or below the translated lines), followed by the summary. Always restate the full up-to-date summary, not just what changed.`;
 
 const $ = id => document.getElementById(id);
 const escapeHtml = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -83,9 +83,9 @@ function defaultProjectData(name) {
     prompt_header: State.prompt,
     ignoreNameTranslation: false,
     promptEnabled: true,
-    referenceEnabled: false,
-    referencePrompt: DEFAULT_REFERENCE_PROMPT,
-    reference: '',
+    ringkasanEnabled: false,
+    ringkasanPrompt: DEFAULT_RINGKASAN_PROMPT,
+    ringkasan: '',
     vndbEnabled: false,
     vndbId: '',
     vndbGlossary: [],
@@ -120,9 +120,9 @@ const State = {
   prompt: DEFAULT_PROMPT,
   ignoreName: false,
   promptEnabled: true,
-  referenceEnabled: false,
-  referencePrompt: DEFAULT_REFERENCE_PROMPT,
-  reference: '',
+  ringkasanEnabled: false,
+  ringkasanPrompt: DEFAULT_RINGKASAN_PROMPT,
+  ringkasan: '',
   vndbEnabled: false,
   vndbId: '',
   vndbGlossary: [],
@@ -158,9 +158,9 @@ State.toData = () => ({
   prompt_header: State.prompt,
   ignoreNameTranslation: State.ignoreName,
   promptEnabled: State.promptEnabled,
-  referenceEnabled: State.referenceEnabled,
-  referencePrompt: State.referencePrompt,
-  reference: State.reference,
+  ringkasanEnabled: State.ringkasanEnabled,
+  ringkasanPrompt: State.ringkasanPrompt,
+  ringkasan: State.ringkasan,
   vndbEnabled: State.vndbEnabled,
   vndbId: State.vndbId,
   vndbGlossary: State.vndbGlossary,
@@ -923,29 +923,29 @@ const App = {
     });
 
     $('btnContext').addEventListener('click', () => {
-      $('referenceEnabledCheck').checked = State.referenceEnabled;
-      $('referencePromptInput').value = State.referencePrompt || DEFAULT_REFERENCE_PROMPT;
-      $('referenceStoredInput').value = State.reference || '';
-      $('referenceWrap').classList.toggle('section-disabled', !State.referenceEnabled);
+      $('ringkasanEnabledCheck').checked = State.ringkasanEnabled;
+      $('ringkasanPromptInput').value = State.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT;
+      $('ringkasanStoredInput').value = State.ringkasan || '';
+      $('ringkasanWrap').classList.toggle('section-disabled', !State.ringkasanEnabled);
       App.toggleModal($('contextModal'), true);
     });
 
-    $('referenceEnabledCheck').addEventListener('change', e => {
-      $('referenceWrap').classList.toggle('section-disabled', !e.target.checked);
+    $('ringkasanEnabledCheck').addEventListener('change', e => {
+      $('ringkasanWrap').classList.toggle('section-disabled', !e.target.checked);
     });
 
-    $('btnReferenceReset').addEventListener('click', () => {
-      $('referenceEnabledCheck').checked = false;
-      $('referencePromptInput').value = DEFAULT_REFERENCE_PROMPT;
-      $('referenceStoredInput').value = '';
-      $('referenceWrap').classList.add('section-disabled');
+    $('btnRingkasanReset').addEventListener('click', () => {
+      $('ringkasanEnabledCheck').checked = false;
+      $('ringkasanPromptInput').value = DEFAULT_RINGKASAN_PROMPT;
+      $('ringkasanStoredInput').value = '';
+      $('ringkasanWrap').classList.add('section-disabled');
     });
 
     $('btnContextCancel').addEventListener('click', () => App.toggleModal($('contextModal'), false));
     $('btnContextSave').addEventListener('click', () => {
-      State.referenceEnabled = $('referenceEnabledCheck').checked;
-      State.referencePrompt = $('referencePromptInput').value.trim() || DEFAULT_REFERENCE_PROMPT;
-      State.reference = $('referenceStoredInput').value.trim();
+      State.ringkasanEnabled = $('ringkasanEnabledCheck').checked;
+      State.ringkasanPrompt = $('ringkasanPromptInput').value.trim() || DEFAULT_RINGKASAN_PROMPT;
+      State.ringkasan = $('ringkasanStoredInput').value.trim();
       App.toggleModal($('contextModal'), false);
       State.queueSave();
     });
@@ -1184,7 +1184,7 @@ const App = {
           outer.file(`${name}_backup.cstl`, blob);
         }
         const url = URL.createObjectURL(await outer.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-        download(url, `Semua_Project_Backup_${new Date().toISOString().slice(0, 10)}.zip`);
+        download(url, `Semua_Project_Backup_${new Date().toISOString().slice(0, 10)}.cstl`);
       } catch (e) {
         alert('Gagal backup semua project: ' + e.message);
       }
@@ -1250,6 +1250,88 @@ const App = {
     }
   },
 
+  async restoreOne(zip, fallbackName) {
+    const metaFile = zip.file('metadata.json');
+    const origFile = zip.file('original.txt');
+    const transFile = zip.file('translate.txt');
+    const nameFile = zip.file('name.txt');
+    if (!metaFile || !origFile || !transFile || !nameFile) throw new Error('Format arsip tidak valid.');
+
+    const meta = JSON.parse(await metaFile.async('text'));
+    const orig = (await origFile.async('text')).split(/\r?\n/);
+    const trans = (await transFile.async('text')).split(/\r?\n/);
+    const names = (await nameFile.async('text')).split(/\r?\n/);
+    [orig, trans, names].forEach(arr => { if (arr[arr.length - 1] === '') arr.pop(); });
+    if (orig.length !== trans.length || orig.length !== names.length) throw new Error('Baris tidak sinkron.');
+
+    const lines = [];
+    let file = 'unknown', n = 1;
+    for (let i = 0; i < orig.length; i++) {
+      const o = orig[i];
+      const m = o.match(/^<filename>(.*?)<\/filename>$/);
+      if (m) {
+        if (trans[i] !== o || names[i] !== o) throw new Error('Header file tidak sinkron.');
+        file = m[1];
+      } else {
+        let on = null, tn = null;
+        const nl = names[i].trim();
+        if (nl) {
+          const om = nl.match(/<original>(.*?)<\/original>/);
+          const tm = nl.match(/<translate>(.*?)<\/translate>/);
+          on = om ? om[1] : null;
+          tn = tm ? tm[1] : null;
+        }
+        lines.push({
+          line_num: n++,
+          file,
+          name: on,
+          message: o,
+          trans_name: tn,
+          trans_message: trans[i] || null,
+          is_translated: !!trans[i]?.trim()
+        });
+      }
+    }
+
+    const name = meta.projectName || fallbackName;
+    if (meta.projectType === 'epub' && meta.epubSourceId) {
+      const entry = zip.file(meta.epubSourceId);
+      if (entry) {
+        const newId = makeEpubId();
+        const root = await Storage.root();
+        const h = await root.getFileHandle(newId, { create: true });
+        const w = await h.createWritable();
+        await w.write(await entry.async('blob'));
+        await w.close();
+        meta.epubSourceId = newId;
+      }
+    }
+
+    await Storage.save(makeProjId(), {
+      version: VERSION,
+      projectName: name,
+      projectType: meta.projectType || 'uninitialized',
+      epubTags: meta.epubTags || 'p',
+      epubSourceId: meta.epubSourceId || null,
+      imported_files: meta.imported_files || [],
+      lines: lines.map(normalizeLine),
+      prompt_header: meta.prompt_header || State.prompt,
+      ignoreNameTranslation: meta.ignoreNameTranslation ?? false,
+      promptEnabled: meta.promptEnabled ?? true,
+      ringkasanEnabled: meta.ringkasanEnabled ?? false,
+      ringkasanPrompt: meta.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT,
+      ringkasan: meta.ringkasan || '',
+      vndbEnabled: meta.vndbEnabled ?? false,
+      vndbId: meta.vndbId || '',
+      vndbGlossary: meta.vndbGlossary || [],
+      customEnabled: meta.customEnabled ?? false,
+      customRaw: meta.customRaw || '',
+      jumpToContext: meta.jumpToContext ?? false,
+      hideTools: meta.hideTools ?? false
+    });
+    return name;
+  },
+
   async restoreProject(e) {
     const uploadedFile = e.target.files?.[0];
     if (!uploadedFile) return;
@@ -1257,86 +1339,30 @@ const App = {
       try {
         const zip = new window.JSZip();
         await zip.loadAsync(uploadedFile);
-        const metaFile = zip.file('metadata.json');
-        const origFile = zip.file('original.txt');
-        const transFile = zip.file('translate.txt');
-        const nameFile = zip.file('name.txt');
-        if (!metaFile || !origFile || !transFile || !nameFile) throw new Error('Format arsip tidak valid.');
 
-        const meta = JSON.parse(await metaFile.async('text'));
-        const orig = (await origFile.async('text')).split(/\r?\n/);
-        const trans = (await transFile.async('text')).split(/\r?\n/);
-        const names = (await nameFile.async('text')).split(/\r?\n/);
-        [orig, trans, names].forEach(arr => { if (arr[arr.length - 1] === '') arr.pop(); });
-        if (orig.length !== trans.length || orig.length !== names.length) throw new Error('Baris tidak sinkron.');
-
-        const lines = [];
-        let file = 'unknown', n = 1;
-        for (let i = 0; i < orig.length; i++) {
-          const o = orig[i];
-          const m = o.match(/^<filename>(.*?)<\/filename>$/);
-          if (m) {
-            if (trans[i] !== o || names[i] !== o) throw new Error('Header file tidak sinkron.');
-            file = m[1];
-          } else {
-            let on = null, tn = null;
-            const nl = names[i].trim();
-            if (nl) {
-              const om = nl.match(/<original>(.*?)<\/original>/);
-              const tm = nl.match(/<translate>(.*?)<\/translate>/);
-              on = om ? om[1] : null;
-              tn = tm ? tm[1] : null;
-            }
-            lines.push({
-              line_num: n++,
-              file,
-              name: on,
-              message: o,
-              trans_name: tn,
-              trans_message: trans[i] || null,
-              is_translated: !!trans[i]?.trim()
-            });
-          }
+        if (zip.file('metadata.json')) {
+          const name = await App.restoreOne(zip, uploadedFile.name.replace(/\.cstl$/i, ''));
+          await App.loadDashboard();
+          alert(`Project "${name}" dipulihkan!`);
+          return;
         }
 
-        const name = meta.projectName || uploadedFile.name.replace(/\.cstl$/, '');
-        if (meta.projectType === 'epub' && meta.epubSourceId) {
-          const entry = zip.file(meta.epubSourceId);
-          if (entry) {
-            const newId = makeEpubId();
-            const root = await Storage.root();
-            const h = await root.getFileHandle(newId, { create: true });
-            const w = await h.createWritable();
-            await w.write(await entry.async('blob'));
-            await w.close();
-            meta.epubSourceId = newId;
+        const entries = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.cstl'));
+        if (!entries.length) throw new Error('Format arsip tidak valid.');
+
+        let ok = 0, fail = 0;
+        for (const entry of entries) {
+          try {
+            const inner = new window.JSZip();
+            await inner.loadAsync(await entry.async('blob'));
+            await App.restoreOne(inner, entry.name.replace(/\.cstl$/i, ''));
+            ok++;
+          } catch {
+            fail++;
           }
         }
-
-        await Storage.save(makeProjId(), {
-          version: VERSION,
-          projectName: name,
-          projectType: meta.projectType || 'uninitialized',
-          epubTags: meta.epubTags || 'p',
-          epubSourceId: meta.epubSourceId || null,
-          imported_files: meta.imported_files || [],
-          lines: lines.map(normalizeLine),
-          prompt_header: meta.prompt_header || State.prompt,
-          ignoreNameTranslation: meta.ignoreNameTranslation ?? false,
-          promptEnabled: meta.promptEnabled ?? true,
-          referenceEnabled: meta.referenceEnabled ?? false,
-          referencePrompt: meta.referencePrompt || DEFAULT_REFERENCE_PROMPT,
-          reference: meta.reference || '',
-          vndbEnabled: meta.vndbEnabled ?? false,
-          vndbId: meta.vndbId || '',
-          vndbGlossary: meta.vndbGlossary || [],
-          customEnabled: meta.customEnabled ?? false,
-          customRaw: meta.customRaw || '',
-          jumpToContext: meta.jumpToContext ?? false,
-          hideTools: meta.hideTools ?? false
-        });
         await App.loadDashboard();
-        alert(`Project "${name}" dipulihkan!`);
+        alert(`${ok} project berhasil dipulihkan${fail ? `, ${fail} gagal` : ''}.`);
       } catch (e) {
         alert('File korup: ' + e.message);
       } finally {
@@ -1356,9 +1382,9 @@ const App = {
     State.prompt = data.prompt_header || State.prompt;
     State.ignoreName = data.ignoreNameTranslation ?? false;
     State.promptEnabled = data.promptEnabled ?? true;
-    State.referenceEnabled = data.referenceEnabled ?? false;
-    State.referencePrompt = data.referencePrompt || DEFAULT_REFERENCE_PROMPT;
-    State.reference = data.reference || '';
+    State.ringkasanEnabled = data.ringkasanEnabled ?? false;
+    State.ringkasanPrompt = data.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT;
+    State.ringkasan = data.ringkasan || '';
     State.vndbEnabled = data.vndbEnabled ?? false;
     State.vndbId = data.vndbId || '';
     State.vndbGlossary = data.vndbGlossary || [];
@@ -1781,9 +1807,9 @@ const App = {
 
     if (State.customEnabled && State.customRaw.trim()) parts.push(`Custom Glossary:\n${State.customRaw.trim()}`);
 
-    if (State.referenceEnabled) {
-      if (State.reference && State.reference.trim()) parts.push(`Reference:\n${State.reference.trim()}`);
-      if (State.referencePrompt && State.referencePrompt.trim()) parts.push(State.referencePrompt.trim());
+    if (State.ringkasanEnabled) {
+      if (State.ringkasan && State.ringkasan.trim()) parts.push(`Ringkasan Sebelumnya:\n${State.ringkasan.trim()}`);
+      if (State.ringkasanPrompt && State.ringkasanPrompt.trim()) parts.push(State.ringkasanPrompt.trim());
     }
 
     parts.push(sel.map(App.formatLine).join('\n'));
@@ -1799,18 +1825,24 @@ const App = {
   },
 
   parseAi(raw, byNum) {
-    let cleaned = raw.replace(/```(?:json|text)?\s*([\s\S]*?)```/g, '$1').trim();
-    let reference = null;
-    const refMatch = cleaned.match(/\n\s*Reference:\s*\n([\s\S]*)$/i);
-    if (refMatch) {
-      reference = refMatch[1].trim();
-      cleaned = cleaned.slice(0, refMatch.index).trim();
+    const fenceLines = raw.split(/\r?\n/).filter(l => /^\s*```\w*\s*$/.test(l));
+    if (fenceLines.length !== 0 && fenceLines.length !== 2) {
+      return { results: [], errors: ['Harus ada pembuka dan penutup ``` bersamaan, atau tidak ada sama sekali.'], seen: new Set(), ringkasan: null };
+    }
+    let lines = raw.split(/\r?\n/).filter(l => !/^\s*```\w*\s*$/.test(l));
+    let ringkasan = null;
+    const markerIdx = lines.findIndex(l => /^\s*ringkasan\s*:\s*$/i.test(l));
+    if (markerIdx !== -1) {
+      const numRe = /^\s*\d+\.\s+/;
+      let end = markerIdx + 1;
+      while (end < lines.length && !numRe.test(lines[end])) end++;
+      ringkasan = lines.slice(markerIdx + 1, end).join('\n').trim();
+      lines = lines.slice(0, markerIdx).concat(lines.slice(end));
     }
     const results = [];
     const errors = [];
     const seen = new Set();
     const re = /^(\d+)\.\s+(.*)$/;
-    const lines = cleaned.split(/\r?\n/);
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -1832,7 +1864,7 @@ const App = {
       }
       results.push({ num, name, msg });
     }
-    return { results, errors, seen, reference };
+    return { results, errors, seen, ringkasan };
   },
 
   applyTranslation() {
@@ -1840,7 +1872,7 @@ const App = {
     const raw = $('pasteArea').value.trim();
     if (!raw) return alert('Teks kosong.');
 
-    const { results, errors, seen, reference } = App.parseAi(raw, State.byNum);
+    const { results, errors, seen, ringkasan } = App.parseAi(raw, State.byNum);
     if (!results.length) {
       if (errors.length) return alert('DITOLAK:\n' + errors.slice(0, 10).join('\n') + (errors.length > 10 ? `\n+${errors.length - 10} error lainnya` : ''));
       return alert('Tidak ada data valid.');
@@ -1875,7 +1907,7 @@ const App = {
       State.selected.delete(line.line_num);
     });
 
-    if (State.referenceEnabled && reference) State.reference = reference;
+    if (State.ringkasanEnabled && ringkasan) State.ringkasan = ringkasan;
 
     $('pasteArea').value = '';
     State.namesDirty = true;

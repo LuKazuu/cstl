@@ -215,7 +215,7 @@
           <p class="hint m-0 mt-1 mb-2">Catatan glossary bebas, format apa pun. Disalin apa adanya saat menyalin teks.</p>
           <label class="check-line mb-2"><input id="glossaryCustomCheck" type="checkbox" />Sertakan Custom Glossary</label>
           <div id="glossaryCustomWrap" class="nested-box">
-            <textarea id="glossaryCustomInput" class="mono textarea small" placeholder="Contoh:&#10;Konnichiwa: Halo&#10;Arigatou: Terima kasih"></textarea>
+            <textarea id="glossaryCustomInput" class="mono textarea small" placeholder="Tulis Custom Glossary disini..."></textarea>
           </div>
         </div>
       </div>
@@ -233,16 +233,16 @@
       <div class="modal-body">
         <div class="card mb-2 mt-2">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">Referensi</div>
-            <button id="btnReferenceReset" class="btn btn-ghost btn-xs">Reset Default</button>
+            <div class="section-label-lg" style="margin:0;">Ringkasan</div>
+            <button id="btnRingkasanReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Saat aktif, AI diminta menyertakan referensi di akhir jawabannya. Referensi itu disimpan di sini dan otomatis menggantikan versi lama setiap sesi copy berikutnya.</p>
-          <label class="check-line mb-2"><input id="referenceEnabledCheck" type="checkbox" />Sertakan Referensi</label>
-          <div id="referenceWrap" class="nested-box">
-            <label class="section-label">Prompt Referensi</label>
-            <textarea id="referencePromptInput" class="mono textarea small"></textarea>
-            <label class="section-label mt-2">Referensi Tersimpan</label>
-            <textarea id="referenceStoredInput" class="mono textarea small" placeholder="Belum ada referensi tersimpan..."></textarea>
+          <p class="hint m-0 mt-1 mb-2">Saat aktif, AI diminta menyertakan ringkasan karakter dan cerita. Ringkasan itu disimpan di sini dan otomatis menggantikan versi lama setiap sesi copy berikutnya.</p>
+          <label class="check-line mb-2"><input id="ringkasanEnabledCheck" type="checkbox" />Sertakan Ringkasan</label>
+          <div id="ringkasanWrap" class="nested-box">
+            <label class="section-label">Prompt Ringkasan</label>
+            <textarea id="ringkasanPromptInput" class="mono textarea small"></textarea>
+            <label class="section-label mt-2">Ringkasan Tersimpan</label>
+            <textarea id="ringkasanStoredInput" class="mono textarea small" placeholder="Belum ada ringkasan tersimpan..."></textarea>
           </div>
         </div>
       </div>
