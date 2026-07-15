@@ -1184,7 +1184,7 @@ const App = {
           outer.file(`${name}_backup.cstl`, blob);
         }
         const url = URL.createObjectURL(await outer.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-        download(url, `Semua_Project_Backup_${new Date().toISOString().slice(0, 10)}.cstl`);
+        download(url, `ProjectBackupAll_${new Date().toISOString().slice(0, 10)}.cstl`);
       } catch (e) {
         alert('Gagal backup semua project: ' + e.message);
       }
