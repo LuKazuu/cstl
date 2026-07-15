@@ -55,7 +55,7 @@
       </button>
       <span class="toolbar-sep desktop-only"></span>
       <div id="dynamicToolbarWrap" class="toolbar-dynamic">
-        <div id="actionButtons" class="toolbar-actions">
+        <div class="toolbar-actions">
           <div class="dropdown" id="importGroup">
             <button id="btnImportMain" class="btn">Import</button>
             <div id="importDropdown" class="dropdown-content">
@@ -67,6 +67,7 @@
           <button id="btnExport" class="btn" disabled>Export</button>
           <button id="btnProofread" class="btn" disabled>Cari</button>
           <button id="btnGlossary" class="btn">Glossary</button>
+          <button id="btnContext" class="btn">Context</button>
           <button id="btnSettings" class="btn">Pengaturan</button>
         </div>
       </div>
@@ -83,7 +84,7 @@
           </div>
         </div>
         <div id="previewViewport" class="viewport">
-          <div id="stickyFileHeader" class="sticky-file-header">
+          <div class="sticky-file-header">
             <div id="stickyFileBar" class="sticky-file-bar">
               <input id="stickyFileCheckbox" type="checkbox" title="Pilih semua baris di file ini" />
               <span id="stickyFileName" class="sticky-file-name"></span>
@@ -158,7 +159,6 @@
             <label class="check-line"><input id="settingsIgnoreNameCheck" type="checkbox" />Abaikan Terjemahan Nama</label>
             <label class="check-line"><input id="settingsPromptCheck" type="checkbox" />Sertakan Prompt AI</label>
             <label class="check-line"><input id="settingsJumpToContextCheck" type="checkbox" />Lompat ke Konteks Pencarian</label>
-            <label class="check-line"><input id="settingsReferenceCheck" type="checkbox" />Sertakan Referensi</label>
             <label class="check-line"><input id="settingsHideToolsCheck" type="checkbox" />Sembunyikan Alat</label>
           </div>
         </div>
@@ -197,7 +197,7 @@
             <button id="btnGlossaryVndbReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
           <p class="hint m-0 mt-1 mb-2">Menambahkan glossary nama dari VNDB pada saat menyalin teks.</p>
-          <label class="check-line mb-2"><input id="glossaryVndbCheck" type="checkbox" />Sertakan Glossary</label>
+          <label class="check-line mb-2"><input id="glossaryVndbCheck" type="checkbox" />Sertakan VNDB Glossary</label>
           <div id="glossaryVndbWrap" class="nested-box">
             <div class="row gap-2 mb-2">
               <input id="glossaryVndbIdInput" type="text" class="input grow" placeholder="ID VN (Contoh: v1234)" />
@@ -212,13 +212,10 @@
             <div class="section-label-lg" style="margin:0;">Custom Glossary</div>
             <button id="btnGlossaryCustomReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Tambahkan custom glossary dengan format "Teks: Teks" per baris.</p>
+          <p class="hint m-0 mt-1 mb-2">Catatan glossary bebas, format apa pun. Disalin apa adanya saat menyalin teks.</p>
           <label class="check-line mb-2"><input id="glossaryCustomCheck" type="checkbox" />Sertakan Custom Glossary</label>
           <div id="glossaryCustomWrap" class="nested-box">
-            <textarea id="glossaryCustomInput" class="mono textarea small mb-2" placeholder="Contoh:&#10;Konnichiwa: Halo&#10;Arigatou: Terima kasih"></textarea>
-            <div class="row center">
-              <button id="btnGlossaryCustomApply" class="btn btn-ghost w-full" disabled>Terapkan</button>
-            </div>
+            <textarea id="glossaryCustomInput" class="mono textarea small" placeholder="Contoh:&#10;Konnichiwa: Halo&#10;Arigatou: Terima kasih"></textarea>
           </div>
         </div>
       </div>
@@ -226,6 +223,33 @@
         <span class="grow"></span>
         <button id="btnGlossaryCancel" class="btn btn-ghost">Batal</button>
         <button id="btnGlossarySave" class="btn btn-primary">Simpan Glossary</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="contextModal" class="backdrop">
+    <div class="modal modal-wide" role="dialog" aria-modal="true">
+      <div class="modal-head"><h3>Context</h3></div>
+      <div class="modal-body">
+        <div class="card mb-2 mt-2">
+          <div class="row between mb-1">
+            <div class="section-label-lg" style="margin:0;">Referensi</div>
+            <button id="btnReferenceReset" class="btn btn-ghost btn-xs">Reset Default</button>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">Saat aktif, AI diminta menyertakan referensi di akhir jawabannya. Referensi itu disimpan di sini dan otomatis menggantikan versi lama setiap sesi copy berikutnya.</p>
+          <label class="check-line mb-2"><input id="referenceEnabledCheck" type="checkbox" />Sertakan Referensi</label>
+          <div id="referenceWrap" class="nested-box">
+            <label class="section-label">Prompt Referensi</label>
+            <textarea id="referencePromptInput" class="mono textarea small"></textarea>
+            <label class="section-label mt-2">Referensi Tersimpan</label>
+            <textarea id="referenceStoredInput" class="mono textarea small" placeholder="Belum ada referensi tersimpan..."></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions mt-3">
+        <span class="grow"></span>
+        <button id="btnContextCancel" class="btn btn-ghost">Batal</button>
+        <button id="btnContextSave" class="btn btn-primary">Simpan Context</button>
       </div>
     </div>
   </div>
@@ -303,7 +327,14 @@
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head"><h3>Pengaturan</h3></div>
       <div class="modal-body">
-        <div class="card">
+        <div class="card mb-2 mt-2">
+          <div class="row between mb-1">
+            <div class="section-label-lg" style="margin:0;">Backup</div>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">Backup seluruh project sekaligus dalam satu file ZIP.</p>
+          <button id="btnBackupAll" class="btn btn-primary w-full">Backup Semua Project</button>
+        </div>
+        <div class="card mb-2 mt-3">
           <div class="row between mb-1">
             <div class="section-label-lg" style="margin:0;">Manajemen Data</div>
           </div>

@@ -1,5 +1,6 @@
-const VERSION = 15;
-const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Keep the line numbering and format intact.`;
+const VERSION = 16;
+const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Result must be inside codeblock. Keep line numbering and format (like code in the middle of the text) intact.`;
+const DEFAULT_REFERENCE_PROMPT = `After translating, add a final section titled exactly "Reference:" summarizing terminology, phrasing choices, and character voice/tone notes established in this batch, so they can be reused for consistency later. Keep it concise, bullet-point style, and make it a self-contained summary (not just what changed).`;
 
 const $ = id => document.getElementById(id);
 const escapeHtml = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -14,7 +15,6 @@ const makeEpubId = () => 'epub_' + Date.now() + '.epub';
 const SETTINGS_FIELDS = [
   { id: 'settingsIgnoreNameCheck', key: 'ignoreName', type: 'check', def: false },
   { id: 'settingsPromptCheck', key: 'promptEnabled', type: 'check', def: true },
-  { id: 'settingsReferenceCheck', key: 'referenceEnabled', type: 'check', def: false },
   { id: 'settingsJumpToContextCheck', key: 'jumpToContext', type: 'check', def: false },
   { id: 'settingsHideToolsCheck', key: 'hideTools', type: 'check', def: false },
   { id: 'settingsPromptInput', key: 'prompt', type: 'value', def: DEFAULT_PROMPT },
@@ -48,14 +48,6 @@ function clipboard(text) {
   try { document.execCommand('copy'); return Promise.resolve(); }
   catch (e) { return Promise.reject(e); }
   finally { document.body.removeChild(ta); }
-}
-
-function getTrigrams(text) {
-  const set = new Set();
-  if (!text) return set;
-  if (text.length < 3) { set.add(text); return set; }
-  for (let i = 0; i <= text.length - 3; i++) set.add(text.substring(i, i + 3));
-  return set;
 }
 
 function decodeBuffer(buf) {
@@ -92,12 +84,13 @@ function defaultProjectData(name) {
     ignoreNameTranslation: false,
     promptEnabled: true,
     referenceEnabled: false,
+    referencePrompt: DEFAULT_REFERENCE_PROMPT,
+    reference: '',
     vndbEnabled: false,
     vndbId: '',
     vndbGlossary: [],
     customEnabled: false,
     customRaw: '',
-    customGlossary: [],
     jumpToContext: false,
     hideTools: false
   };
@@ -128,12 +121,13 @@ const State = {
   ignoreName: false,
   promptEnabled: true,
   referenceEnabled: false,
+  referencePrompt: DEFAULT_REFERENCE_PROMPT,
+  reference: '',
   vndbEnabled: false,
   vndbId: '',
   vndbGlossary: [],
   customEnabled: false,
   customRaw: '',
-  customGlossary: [],
   jumpToContext: false,
   hideTools: false,
   prScope: 'all',
@@ -165,12 +159,13 @@ State.toData = () => ({
   ignoreNameTranslation: State.ignoreName,
   promptEnabled: State.promptEnabled,
   referenceEnabled: State.referenceEnabled,
+  referencePrompt: State.referencePrompt,
+  reference: State.reference,
   vndbEnabled: State.vndbEnabled,
   vndbId: State.vndbId,
   vndbGlossary: State.vndbGlossary,
   customEnabled: State.customEnabled,
   customRaw: State.customRaw,
-  customGlossary: State.customGlossary,
   jumpToContext: State.jumpToContext,
   hideTools: State.hideTools,
   proofreadScope: State.prScope,
@@ -779,8 +774,6 @@ const App = {
   toastToken: 0,
   savedTimer: 0,
   tmpVndb: [],
-  tmpCustomRaw: '',
-  tmpCustom: [],
 
   flash(msg, keep = false) {
     const el = $('copyStatus');
@@ -846,6 +839,7 @@ const App = {
     $('restoreProjectInput').addEventListener('change', App.restoreProject);
     $('btnDashboardSettings').addEventListener('click', () => App.toggleModal($('dashboardSettingsModal'), true));
     $('btnDashboardSettingsClose').addEventListener('click', () => App.toggleModal($('dashboardSettingsModal'), false));
+    $('btnBackupAll').addEventListener('click', App.backupAll);
     $('btnWipeAllData').addEventListener('click', App.wipeAllData);
 
     document.addEventListener('click', e => {
@@ -918,17 +912,42 @@ const App = {
       $('glossaryVndbWrap').classList.toggle('section-disabled', !State.vndbEnabled);
       $('glossaryVndbIdInput').disabled = $('btnGlossaryVndbFetch').disabled = App.tmpVndb.length > 0;
       $('glossaryCustomCheck').checked = State.customEnabled;
-      App.tmpCustomRaw = State.customRaw || '';
-      App.tmpCustom = [...State.customGlossary];
-      $('glossaryCustomInput').value = App.tmpCustomRaw;
+      $('glossaryCustomInput').value = State.customRaw || '';
       $('glossaryCustomWrap').classList.toggle('section-disabled', !State.customEnabled);
-      $('btnGlossaryCustomApply').disabled = true;
       App.toggleModal($('glossaryModal'), true);
     });
 
     $('btnSettings').addEventListener('click', () => {
       App.syncSettingsModal();
       App.toggleModal($('settingsModal'), true);
+    });
+
+    $('btnContext').addEventListener('click', () => {
+      $('referenceEnabledCheck').checked = State.referenceEnabled;
+      $('referencePromptInput').value = State.referencePrompt || DEFAULT_REFERENCE_PROMPT;
+      $('referenceStoredInput').value = State.reference || '';
+      $('referenceWrap').classList.toggle('section-disabled', !State.referenceEnabled);
+      App.toggleModal($('contextModal'), true);
+    });
+
+    $('referenceEnabledCheck').addEventListener('change', e => {
+      $('referenceWrap').classList.toggle('section-disabled', !e.target.checked);
+    });
+
+    $('btnReferenceReset').addEventListener('click', () => {
+      $('referenceEnabledCheck').checked = false;
+      $('referencePromptInput').value = DEFAULT_REFERENCE_PROMPT;
+      $('referenceStoredInput').value = '';
+      $('referenceWrap').classList.add('section-disabled');
+    });
+
+    $('btnContextCancel').addEventListener('click', () => App.toggleModal($('contextModal'), false));
+    $('btnContextSave').addEventListener('click', () => {
+      State.referenceEnabled = $('referenceEnabledCheck').checked;
+      State.referencePrompt = $('referencePromptInput').value.trim() || DEFAULT_REFERENCE_PROMPT;
+      State.reference = $('referenceStoredInput').value.trim();
+      App.toggleModal($('contextModal'), false);
+      State.queueSave();
     });
 
     $('btnSettingsDasarReset').addEventListener('click', () => App.resetSettingsModal('dasar'));
@@ -982,52 +1001,13 @@ const App = {
     });
 
     $('glossaryCustomCheck').addEventListener('change', e => {
-      const on = e.target.checked;
-      $('glossaryCustomWrap').classList.toggle('section-disabled', !on);
-      if (!on) $('btnGlossaryCustomApply').disabled = true;
-      else $('glossaryCustomInput').dispatchEvent(new Event('input'));
+      $('glossaryCustomWrap').classList.toggle('section-disabled', !e.target.checked);
     });
 
     $('btnGlossaryCustomReset').addEventListener('click', () => {
       $('glossaryCustomCheck').checked = false;
       $('glossaryCustomInput').value = '';
       $('glossaryCustomWrap').classList.add('section-disabled');
-      $('btnGlossaryCustomApply').disabled = true;
-      App.tmpCustomRaw = '';
-      App.tmpCustom = [];
-    });
-
-    $('glossaryCustomInput').addEventListener('input', () => {
-      const raw = $('glossaryCustomInput').value;
-      const on = $('glossaryCustomCheck').checked;
-      let valid = true, has = false;
-      for (let line of raw.split(/\r?\n/)) {
-        line = line.trim();
-        if (!line) continue;
-        has = true;
-        const i = line.indexOf(':');
-        if (i <= 0 || i === line.length - 1 || !line.substring(0, i).trim() || !line.substring(i + 1).trim()) {
-          valid = false;
-          break;
-        }
-      }
-      $('btnGlossaryCustomApply').disabled = (!on || raw === App.tmpCustomRaw || (!valid && has));
-    });
-
-    $('btnGlossaryCustomApply').addEventListener('click', () => {
-      const raw = $('glossaryCustomInput').value;
-      const out = [];
-      raw.split(/\r?\n/).forEach(line => {
-        line = line.trim();
-        const i = line.indexOf(':');
-        if (i > 0) {
-          const a = line.substring(0, i).trim(), b = line.substring(i + 1).trim();
-          if (a && b) out.push([a, b]);
-        }
-      });
-      App.tmpCustomRaw = raw;
-      App.tmpCustom = out;
-      $('btnGlossaryCustomApply').disabled = true;
     });
 
     $('btnGlossaryCancel').addEventListener('click', () => App.toggleModal($('glossaryModal'), false));
@@ -1036,8 +1016,7 @@ const App = {
       State.vndbId = $('glossaryVndbIdInput').value.trim();
       State.vndbGlossary = App.tmpVndb;
       State.customEnabled = $('glossaryCustomCheck').checked;
-      State.customRaw = App.tmpCustomRaw;
-      State.customGlossary = App.tmpCustom;
+      State.customRaw = $('glossaryCustomInput').value.trim();
       App.toggleModal($('glossaryModal'), false);
       State.queueSave();
     });
@@ -1141,45 +1120,73 @@ const App = {
     SETTINGS_FIELDS.filter(filter).forEach(({ id, def }) => { $(id).checked = def; });
   },
 
+  async buildProjectZip(p) {
+    const zip = new window.JSZip();
+    const meta = { ...p.data };
+    delete meta.lines;
+    delete meta.proofreadScope;
+    delete meta.proofreadRegex;
+    delete meta.proofreadCaseSensitive;
+    delete meta.proofreadExactMatch;
+    delete meta.proofreadTranslatedOnly;
+    zip.file('metadata.json', JSON.stringify(meta));
+
+    let orig = '', trans = '', names = '';
+    for (const file of (p.data.imported_files || [])) {
+      orig += `<filename>${file}</filename>\n`;
+      trans += `<filename>${file}</filename>\n`;
+      names += `<filename>${file}</filename>\n`;
+      p.data.lines.filter(l => l.file === file).forEach(l => {
+        orig += `${l.message || ''}\n`;
+        trans += `${l.trans_message || ''}\n`;
+        names += ((l.name || '') || (l.trans_name || '')) ? `<original>${l.name || ''}</original><translate>${l.trans_name || ''}</translate>\n` : '\n';
+      });
+    }
+    zip.file('original.txt', orig);
+    zip.file('translate.txt', trans);
+    zip.file('name.txt', names);
+
+    if (p.data.projectType === 'epub' && p.data.epubSourceId) {
+      const root = await Storage.root();
+      const h = await root.getFileHandle(p.data.epubSourceId);
+      const f = await h.getFile();
+      zip.file(p.data.epubSourceId, f);
+    }
+    return zip;
+  },
+
   async backup(p) {
     await withBusyCursor(async () => {
       try {
-        const zip = new window.JSZip();
-        const meta = { ...p.data };
-        delete meta.lines;
-        delete meta.proofreadScope;
-        delete meta.proofreadRegex;
-        delete meta.proofreadCaseSensitive;
-        delete meta.proofreadExactMatch;
-        delete meta.proofreadTranslatedOnly;
-        zip.file('metadata.json', JSON.stringify(meta));
-
-        let orig = '', trans = '', names = '';
-        for (const file of (p.data.imported_files || [])) {
-          orig += `<filename>${file}</filename>\n`;
-          trans += `<filename>${file}</filename>\n`;
-          names += `<filename>${file}</filename>\n`;
-          p.data.lines.filter(l => l.file === file).forEach(l => {
-            orig += `${l.message || ''}\n`;
-            trans += `${l.trans_message || ''}\n`;
-            names += ((l.name || '') || (l.trans_name || '')) ? `<original>${l.name || ''}</original><translate>${l.trans_name || ''}</translate>\n` : '\n';
-          });
-        }
-        zip.file('original.txt', orig);
-        zip.file('translate.txt', trans);
-        zip.file('name.txt', names);
-
-        if (p.data.projectType === 'epub' && p.data.epubSourceId) {
-          const root = await Storage.root();
-          const h = await root.getFileHandle(p.data.epubSourceId);
-          const f = await h.getFile();
-          zip.file(p.data.epubSourceId, f);
-        }
-
+        const zip = await App.buildProjectZip(p);
         const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
         download(url, `${sanitizeName(p.name)}_backup.cstl`);
       } catch (e) {
         alert('Gagal backup: ' + e.message);
+      }
+    });
+  },
+
+  async backupAll() {
+    await withBusyCursor(async () => {
+      try {
+        const items = await Storage.list();
+        if (!items.length) return alert('Belum ada Project untuk di-backup.');
+        const outer = new window.JSZip();
+        const used = new Set();
+        for (const p of items) {
+          const zip = await App.buildProjectZip(p);
+          const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 } });
+          const base = sanitizeName(p.name);
+          let name = base, i = 2;
+          while (used.has(name)) name = `${base}_${i++}`;
+          used.add(name);
+          outer.file(`${name}_backup.cstl`, blob);
+        }
+        const url = URL.createObjectURL(await outer.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
+        download(url, `Semua_Project_Backup_${new Date().toISOString().slice(0, 10)}.zip`);
+      } catch (e) {
+        alert('Gagal backup semua project: ' + e.message);
       }
     });
   },
@@ -1318,12 +1325,13 @@ const App = {
           ignoreNameTranslation: meta.ignoreNameTranslation ?? false,
           promptEnabled: meta.promptEnabled ?? true,
           referenceEnabled: meta.referenceEnabled ?? false,
+          referencePrompt: meta.referencePrompt || DEFAULT_REFERENCE_PROMPT,
+          reference: meta.reference || '',
           vndbEnabled: meta.vndbEnabled ?? false,
           vndbId: meta.vndbId || '',
           vndbGlossary: meta.vndbGlossary || [],
           customEnabled: meta.customEnabled ?? false,
           customRaw: meta.customRaw || '',
-          customGlossary: meta.customGlossary || [],
           jumpToContext: meta.jumpToContext ?? false,
           hideTools: meta.hideTools ?? false
         });
@@ -1349,12 +1357,13 @@ const App = {
     State.ignoreName = data.ignoreNameTranslation ?? false;
     State.promptEnabled = data.promptEnabled ?? true;
     State.referenceEnabled = data.referenceEnabled ?? false;
+    State.referencePrompt = data.referencePrompt || DEFAULT_REFERENCE_PROMPT;
+    State.reference = data.reference || '';
     State.vndbEnabled = data.vndbEnabled ?? false;
     State.vndbId = data.vndbId || '';
     State.vndbGlossary = data.vndbGlossary || [];
     State.customEnabled = data.customEnabled ?? false;
     State.customRaw = data.customRaw || '';
-    State.customGlossary = data.customGlossary || [];
     State.jumpToContext = data.jumpToContext ?? false;
     State.hideTools = data.hideTools ?? false;
     State.prScope = data.proofreadScope || 'all';
@@ -1751,51 +1760,7 @@ const App = {
   buildGlossaryMap() {
     const map = new Map();
     if (State.vndbEnabled && State.vndbGlossary?.length) State.vndbGlossary.forEach(e => map.set(e[0], e[1]));
-    if (State.customEnabled && State.customGlossary?.length) State.customGlossary.forEach(e => map.set(e[0], e[1]));
     return map;
-  },
-
-  buildReferenceMap(sel, gloss) {
-    const ref = new Map();
-    const names = new Set();
-    const trigrams = new Set();
-    sel.forEach(l => {
-      if (l.name) names.add(l.name);
-      getTrigrams(l.message).forEach(t => trigrams.add(t));
-    });
-
-    if (names.size > 0) {
-      const translated = [...State.lines].filter(isTrans).reverse();
-      names.forEach(name => {
-        if (!gloss.has(name)) {
-          const m = translated.find(l => l.name === name && l.trans_name);
-          if (m && m.trans_name) ref.set(name, m.trans_name);
-        }
-      });
-    }
-
-    const scored = [];
-    State.lines.filter(isTrans).forEach(l => {
-      if (l.message && !gloss.has(l.message)) {
-        const tri = getTrigrams(l.message);
-        let score = 0;
-        for (const t of tri) if (trigrams.has(t)) score++;
-        if (score > 0) scored.push({ orig: l.message, trans: l.trans_message, score });
-      }
-    });
-    scored.sort((a, b) => b.score - a.score);
-
-    let added = 0;
-    const seen = new Set();
-    for (const m of scored) {
-      if (added >= 5) break;
-      if (!seen.has(m.orig)) {
-        seen.add(m.orig);
-        ref.set(m.orig, m.trans);
-        added++;
-      }
-    }
-    return ref;
   },
 
   formatLine(l) {
@@ -1811,16 +1776,14 @@ const App = {
     if (gloss.size > 0) {
       const lines = [];
       gloss.forEach((v, k) => lines.push(`${k}: ${v}`));
-      parts.push(`Glossary:\n${lines.join('\n')}`);
+      parts.push(`VNDB Glossary:\n${lines.join('\n')}`);
     }
 
+    if (State.customEnabled && State.customRaw.trim()) parts.push(`Custom Glossary:\n${State.customRaw.trim()}`);
+
     if (State.referenceEnabled) {
-      const ref = App.buildReferenceMap(sel, gloss);
-      if (ref.size > 0) {
-        const lines = [];
-        ref.forEach((v, k) => lines.push(`${k}: ${v}`));
-        parts.push(`Reference:\n${lines.join('\n')}`);
-      }
+      if (State.reference && State.reference.trim()) parts.push(`Reference:\n${State.reference.trim()}`);
+      if (State.referencePrompt && State.referencePrompt.trim()) parts.push(State.referencePrompt.trim());
     }
 
     parts.push(sel.map(App.formatLine).join('\n'));
@@ -1836,7 +1799,13 @@ const App = {
   },
 
   parseAi(raw, byNum) {
-    const cleaned = raw.replace(/```(?:json|text)?\s*([\s\S]*?)```/g, '$1').trim();
+    let cleaned = raw.replace(/```(?:json|text)?\s*([\s\S]*?)```/g, '$1').trim();
+    let reference = null;
+    const refMatch = cleaned.match(/\n\s*Reference:\s*\n([\s\S]*)$/i);
+    if (refMatch) {
+      reference = refMatch[1].trim();
+      cleaned = cleaned.slice(0, refMatch.index).trim();
+    }
     const results = [];
     const errors = [];
     const seen = new Set();
@@ -1863,7 +1832,7 @@ const App = {
       }
       results.push({ num, name, msg });
     }
-    return { results, errors, seen };
+    return { results, errors, seen, reference };
   },
 
   applyTranslation() {
@@ -1871,7 +1840,7 @@ const App = {
     const raw = $('pasteArea').value.trim();
     if (!raw) return alert('Teks kosong.');
 
-    const { results, errors, seen } = App.parseAi(raw, State.byNum);
+    const { results, errors, seen, reference } = App.parseAi(raw, State.byNum);
     if (!results.length) {
       if (errors.length) return alert('DITOLAK:\n' + errors.slice(0, 10).join('\n') + (errors.length > 10 ? `\n+${errors.length - 10} error lainnya` : ''));
       return alert('Tidak ada data valid.');
@@ -1905,6 +1874,8 @@ const App = {
       if (item.name) line.trans_name = State.ignoreName ? null : item.name;
       State.selected.delete(line.line_num);
     });
+
+    if (State.referenceEnabled && reference) State.reference = reference;
 
     $('pasteArea').value = '';
     State.namesDirty = true;
