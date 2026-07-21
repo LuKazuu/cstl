@@ -1,9 +1,10 @@
-const CACHE = 'cstl-v16.4';
+const CACHE = 'cstl-v1';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './worker.js',
   './manifest.json',
   './icon.svg',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
@@ -30,7 +31,7 @@ self.addEventListener('fetch', e => {
         const clone = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, clone));
         return res;
-      }).catch(() => cached);
+      }).catch(() => cached || Response.error());
     })
   );
 });

@@ -1,42 +1,197 @@
-const VERSION = 16;
+(() => {
+'use strict';
+
+const VERSION = 1;
 const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohibited. Onomatopoeia must be English-based. Result must be inside codeblock. Keep line numbering and format (like code in the middle of the text) intact.`;
-const DEFAULT_RINGKASAN_PROMPT = `Inside the same codeblock as the translation, also include a summary of the characters (whether they appears next or not) and overall story so far. Mark it with a line that says exactly "Ringkasan:" (placed above or below the translated lines), followed by the summary. Always restate the full up-to-date summary, not just what changed.`;
-
-const $ = id => document.getElementById(id);
-const escapeHtml = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-const sanitizeName = s => String(s || '').replace(/[^\p{L}\p{N}_\-\.]/gu, '_');
-const isJapanese = s => /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(s);
-const baseName = p => String(p || '').replace(/\\/g, '/').split('/').pop();
-const isTrans = l => !!l.is_translated;
-const snapshot = () => ({ lines: JSON.parse(JSON.stringify(State.lines)), selected: new Set(State.selected) });
-const makeProjId = () => 'proj_' + Date.now() + '.cstl';
-const makeEpubId = () => 'epub_' + Date.now() + '.epub';
-
-const SETTINGS_FIELDS = [
-  { id: 'settingsIgnoreNameCheck', key: 'ignoreName', type: 'check', def: false },
-  { id: 'settingsPromptCheck', key: 'promptEnabled', type: 'check', def: true },
-  { id: 'settingsJumpToContextCheck', key: 'jumpToContext', type: 'check', def: false },
-  { id: 'settingsHideToolsCheck', key: 'hideTools', type: 'check', def: false },
-  { id: 'settingsPromptInput', key: 'prompt', type: 'value', def: DEFAULT_PROMPT },
-  { id: 'settingsEpubTagsInput', key: 'epubTags', type: 'value', def: 'p' }
-];
-
-const PROOFREAD_FIELDS = [
-  { id: 'proofreadScope', key: 'prScope', type: 'value', def: 'all' },
-  { id: 'proofreadRegexCheck', key: 'prRegex', type: 'check', def: false },
-  { id: 'proofreadCaseCheck', key: 'prCase', type: 'check', def: false },
-  { id: 'proofreadExactCheck', key: 'prExact', type: 'check', def: false },
-  { id: 'proofreadTranslatedOnlyCheck', key: 'prTranslatedOnly', type: 'check', def: false }
-];
-
-const DROPDOWNS = [
-  { trigger: 'btnImportMain', panel: 'importDropdown', group: 'importGroup' },
-  { trigger: 'btnCopyAllNames', panel: 'copyNamesDropdown', group: 'copyNamesGroup' }
-];
+const DEFAULT_RINGKASAN_PROMPT = `Outside the <translate> and </translate> tags (placed above or below the translated lines), include updated summary of the characters and overall story so far. Any characters and story need to be preserved even though they don't appear again for context.`;
+const FIXED_FORMAT_PROMPT = `Format:\n<translate>\ntext\n</translate>`;
 
 const MODAL_CLOSE_MS = 180;
 const TOAST_TIMEOUT_MS = 3000;
 const SAVED_TIMEOUT_MS = 1800;
+const DASHBOARD_PAGE_SIZE = 30;
+const SCROLLER_OVERSCAN = 6;
+
+const SETTINGS_FIELDS = [
+  { id: 'settingsIgnoreNameCheck',    key: 'ignoreName',    type: 'check', def: false },
+  { id: 'settingsPromptCheck',        key: 'promptEnabled', type: 'check', def: true  },
+  { id: 'settingsJumpToContextCheck', key: 'jumpToContext', type: 'check', def: false },
+  { id: 'settingsHideToolsCheck',     key: 'hideTools',     type: 'check', def: false },
+  { id: 'settingsPromptInput',        key: 'prompt',        type: 'value', def: DEFAULT_PROMPT },
+  { id: 'settingsEpubTagsInput',      key: 'epubTags',      type: 'value', def: 'p' }
+];
+
+const PROOFREAD_FIELDS = [
+  { id: 'proofreadScope',              key: 'prScope',          type: 'value', def: 'all'   },
+  { id: 'proofreadRegexCheck',         key: 'prRegex',          type: 'check', def: false   },
+  { id: 'proofreadCaseCheck',          key: 'prCase',           type: 'check', def: false   },
+  { id: 'proofreadExactCheck',         key: 'prExact',          type: 'check', def: false   },
+  { id: 'proofreadTranslatedOnlyCheck',key: 'prTranslatedOnly', type: 'check', def: false   }
+];
+
+const DROPDOWNS = [
+  { trigger: 'btnImportMain',   panel: 'importDropdown',    group: 'importGroup'    },
+  { trigger: 'btnCopyAllNames', panel: 'copyNamesDropdown', group: 'copyNamesGroup' }
+];
+
+const $ = id => document.getElementById(id);
+const escapeHtml = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+const baseName = p => String(p || '').replace(/\\/g, '/').split('/').pop();
+const isTrans = l => !!l.is_translated;
+const makeProjId = () => 'proj_' + Date.now() + '.cstl';
+const makeEpubId = () => 'epub_' + Date.now() + '.epub';
+const clone = obj => (typeof structuredClone === 'function') ? structuredClone(obj) : JSON.parse(JSON.stringify(obj));
+const snapshot = () => ({ lines: clone(State.lines), selected: new Set(State.selected) });
+
+function normalizeLine(l) {
+  if (l._n) return l;
+  return {
+    line_num: Number(l.line_num),
+    file: String(l.file),
+    name: l.name == null ? null : String(l.name),
+    message: String(l.message || ''),
+    trans_name: l.trans_name == null ? null : String(l.trans_name),
+    trans_message: l.trans_message == null ? null : String(l.trans_message),
+    is_translated: Boolean(l.is_translated),
+    _n: 1
+  };
+}
+
+function download(url, name) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function withBusyCursor(fn) {
+  document.body.style.cursor = 'wait';
+  return Promise.resolve(fn()).finally(() => { document.body.style.cursor = 'default'; });
+}
+
+const DomBridge = {
+  containerRoot(xml) {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const rootFile = doc.querySelector('rootfile');
+    if (!rootFile) throw new Error('EPUB tidak valid.');
+    return decodeURIComponent(rootFile.getAttribute('full-path'));
+  },
+  opfManifest(xml) {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const manifest = {};
+    doc.querySelectorAll('manifest > item').forEach(it => {
+      manifest[it.getAttribute('id')] = decodeURIComponent(it.getAttribute('href'));
+    });
+    const spine = Array.from(doc.querySelectorAll('spine > itemref')).map(it => it.getAttribute('idref'));
+    return { manifest, spine };
+  },
+  extractTags(html, isXhtml, tags) {
+    const doc = new DOMParser().parseFromString(html, isXhtml ? 'application/xhtml+xml' : 'text/html');
+    const out = [];
+    doc.querySelectorAll(tags).forEach(el => {
+      const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
+      if (txt) out.push(txt);
+    });
+    return out;
+  },
+  rewriteTags(html, isXhtml, tags, replacements) {
+    const doc = new DOMParser().parseFromString(html, isXhtml ? 'application/xhtml+xml' : 'text/html');
+    let idx = 0;
+    doc.querySelectorAll(tags).forEach(el => {
+      if (el.textContent.replace(/\r?\n/g, ' ').trim() === '') return;
+      const r = replacements[idx++];
+      if (r != null) el.textContent = r;
+    });
+    return new XMLSerializer().serializeToString(doc);
+  }
+};
+
+const WorkerCli = {
+  _worker: null,
+  _workerFailed: false,
+  _nextId: 1,
+  _pending: new Map(),
+  _progress: new Map(),
+
+  init() {
+    try {
+      this._worker = new Worker('./worker.js');
+      this._worker.onmessage = (e) => {
+        const { id, ok, result, error, progress, domRequest } = e.data;
+        if (domRequest) {
+          const { reqId, method, args } = domRequest;
+          try {
+            this._worker.postMessage({ domResponse: { reqId, ok: true, result: DomBridge[method](...args) } });
+          } catch (err) {
+            this._worker.postMessage({ domResponse: { reqId, ok: false, error: err.message || String(err) } });
+          }
+          return;
+        }
+        if (progress !== undefined) {
+          const h = this._progress.get(id);
+          if (h) h(progress);
+          return;
+        }
+        const handler = this._pending.get(id);
+        if (!handler) return;
+        this._pending.delete(id);
+        this._progress.delete(id);
+        if (ok) handler.resolve(result);
+        else handler.reject(new Error(error || 'Worker error'));
+      };
+      this._worker.onerror = (e) => {
+        this._workerFailed = true;
+        for (const [id, handler] of this._pending) {
+          this._pending.delete(id);
+          this._progress.delete(id);
+          handler.reject(new Error(e.message || 'Worker fatal error'));
+        }
+      };
+    } catch {
+      this._worker = null;
+      this._workerFailed = true;
+    }
+  },
+
+  ready() { return !!this._worker && !this._workerFailed; },
+
+  call(task, payload, onProgress, transfer) {
+    if (!this._worker || this._workerFailed) return Promise.reject(new Error('Worker tidak tersedia.'));
+    return new Promise((resolve, reject) => {
+      const id = this._nextId++;
+      this._pending.set(id, { resolve, reject });
+      if (onProgress) this._progress.set(id, onProgress);
+      const msg = { id, task, payload };
+      if (transfer && transfer.length) this._worker.postMessage(msg, transfer);
+      else this._worker.postMessage(msg);
+    });
+  }
+};
+
+const Progress = {
+  show(title, msg = '') {
+    els.busyTitle.textContent = title;
+    els.busyMsg.textContent = msg;
+    els.busyBarFill.classList.remove('determinate');
+    els.busyBarFill.style.width = '';
+    els.busyOverlay.classList.add('open');
+  },
+  determinate(title, msg = '') {
+    els.busyTitle.textContent = title;
+    els.busyMsg.textContent = msg;
+    els.busyBarFill.classList.add('determinate');
+    els.busyBarFill.style.width = '0%';
+    els.busyOverlay.classList.add('open');
+  },
+  update(msg, pct) {
+    if (msg !== undefined && typeof msg === 'string') els.busyMsg.textContent = msg;
+    if (pct !== undefined && els.busyBarFill.classList.contains('determinate')) {
+      els.busyBarFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+    }
+  },
+  hide() { els.busyOverlay.classList.remove('open'); }
+};
 
 function clipboard(text) {
   if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
@@ -50,63 +205,46 @@ function clipboard(text) {
   finally { document.body.removeChild(ta); }
 }
 
-function decodeBuffer(buf) {
-  for (const enc of ['utf-8', 'shift_jis', 'windows-31j', 'cp932']) {
-    try { return new TextDecoder(enc, { fatal: true }).decode(buf); } catch {}
-  }
-  return new TextDecoder('utf-8').decode(buf);
-}
+const els = {};
 
-function normalizeLine(l) {
-  const clean = v => v == null ? null : String(v).replace(/\r?\n/g, '\\n').trim();
-  return {
-    line_num: Number(l.line_num),
-    file: String(l.file),
-    name: clean(l.name),
-    message: String(l.message || '').replace(/\r?\n/g, '\\n').trim(),
-    trans_name: clean(l.trans_name),
-    trans_message: clean(l.trans_message),
-    is_translated: Boolean(l.is_translated)
-  };
-}
-
-function defaultProjectData(name) {
-  return {
-    version: VERSION,
-    projectName: name,
-    projectType: 'uninitialized',
-    epubTags: 'p',
-    epubSourceId: null,
-    updatedAt: Date.now(),
-    imported_files: [],
-    lines: [],
-    prompt_header: State.prompt,
-    ignoreNameTranslation: false,
-    promptEnabled: true,
-    ringkasanEnabled: false,
-    ringkasanPrompt: DEFAULT_RINGKASAN_PROMPT,
-    ringkasan: '',
-    vndbEnabled: false,
-    vndbId: '',
-    vndbGlossary: [],
-    customEnabled: false,
-    customRaw: '',
-    jumpToContext: false,
-    hideTools: false
-  };
-}
-
-function download(url, name) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
-
-function withBusyCursor(asyncFn) {
-  document.body.style.cursor = 'wait';
-  return Promise.resolve(asyncFn()).finally(() => { document.body.style.cursor = 'default'; });
+function cacheEls() {
+  const ids = [
+    'dashboardView', 'workspaceView', 'projectList',
+    'btnNewProject', 'btnRestoreProject', 'btnDashboardSettings', 'btnDashboardSettingsClose',
+    'btnBackupAll', 'btnWipeAllData',
+    'btnBackToDashboard', 'projectNameDisplay', 'dynamicToolbarWrap',
+    'workspaceToolbar', 'btnToggleHeader', 'btnShowHeader',
+    'btnImportMain', 'importDropdown', 'importGroup',
+    'btnImportFile', 'btnImportFolder', 'btnImportZip',
+    'importFileInput', 'importFolderInput', 'importZipInput', 'restoreProjectInput',
+    'btnExport', 'btnProofread', 'btnGlossary', 'btnContext', 'btnSettings',
+    'previewViewport', 'previewContainer', 'stickyFileBar', 'stickyFileName', 'stickyFileRange', 'stickyFileCheckbox',
+    'progressText',
+    'rangeFromInput', 'rangeToInput', 'btnSelectRange', 'btnClearSelection', 'btnSelectAll', 'btnCopyForAi',
+    'copyStatus', 'pasteArea', 'btnUndo', 'btnApply', 'btnRedo',
+    'nameTotalCount', 'nameTableBody',
+    'btnCopyAllNames', 'copyNamesDropdown', 'copyNamesGroup',
+    'btnCopyNamesPlain', 'btnCopyNamesWithGlossary', 'btnCopyNamesMissingGlossary',
+    'settingsModal', 'btnSettingsDasarReset', 'settingsIgnoreNameCheck', 'settingsPromptCheck',
+    'settingsJumpToContextCheck', 'settingsHideToolsCheck',
+    'btnSettingsPromptReset', 'settingsPromptInput', 'btnSettingsEpubReset', 'settingsEpubTagsInput',
+    'btnSettingsCancel', 'btnSettingsSave',
+    'glossaryModal', 'btnGlossaryVndbReset', 'glossaryVndbCheck', 'glossaryVndbWrap',
+    'glossaryVndbIdInput', 'btnGlossaryVndbFetch', 'glossaryVndbStatus', 'glossaryVndbPreviewArea',
+    'btnGlossaryCustomReset', 'glossaryCustomCheck', 'glossaryCustomWrap', 'glossaryCustomInput',
+    'btnGlossaryCancel', 'btnGlossarySave',
+    'contextModal', 'btnRingkasanReset', 'ringkasanEnabledCheck', 'ringkasanWrap',
+    'ringkasanPromptInput', 'ringkasanStoredInput', 'btnRingkasanPromptReset', 'btnRingkasanStoredReset', 'btnContextCancel', 'btnContextSave',
+    'lineEditorModal', 'lineEditorTitle', 'lineOriginalView', 'lineNameWrap',
+    'lineNameInput', 'lineMessageInput', 'lineTranslatedCheck', 'btnLineCancel', 'btnLineSave',
+    'proofreadModal', 'proofreadSearchInput', 'proofreadScope', 'proofreadRegexCheck',
+    'proofreadCaseCheck', 'proofreadExactCheck', 'proofreadTranslatedOnlyCheck',
+    'btnProofreadReset', 'proofreadReplaceInput', 'btnProofreadReplaceAll',
+    'proofreadStatus', 'proofreadContainer', 'btnProofreadClose',
+    'dashboardSettingsModal',
+    'busyOverlay', 'busyTitle', 'busyMsg', 'busyBarFill'
+  ];
+  for (const id of ids) els[id] = $(id);
 }
 
 const State = {
@@ -117,6 +255,13 @@ const State = {
   epubSourceId: null,
   lines: [],
   files: [],
+  rows: [],
+  byNum: new Map(),
+  fileLines: new Map(),
+  headerIdx: [],
+  selected: new Set(),
+  undo: null,
+  redo: null,
   prompt: DEFAULT_PROMPT,
   ignoreName: false,
   promptEnabled: true,
@@ -135,14 +280,10 @@ const State = {
   prCase: false,
   prExact: false,
   prTranslatedOnly: false,
-  undo: null,
-  redo: null,
-  selected: new Set(),
-  rows: [],
-  byNum: new Map(),
-  fileLines: new Map(),
   matches: [],
   saveTimer: null,
+  syncTimer: null,
+  syncDirty: false,
   translatedCount: 0,
   namesDirty: true
 };
@@ -176,23 +317,41 @@ State.toData = () => ({
 });
 
 State.updateCount = () => {
-  State.translatedCount = State.lines.filter(isTrans).length;
+  State.translatedCount = 0;
+  const lines = State.lines;
+  for (let i = 0, n = lines.length; i < n; i++) if (lines[i].is_translated) State.translatedCount++;
 };
 
 State.rebuild = () => {
   State.byNum.clear();
   State.fileLines.clear();
   State.rows = [];
-  const grouped = new Map(State.files.map(f => [f, []]));
-  State.lines.forEach(l => {
+  State.headerIdx = [];
+  const files = State.files;
+  const fileCount = files.length;
+  const grouped = new Array(fileCount);
+  const fileIdx = new Map();
+  for (let i = 0; i < fileCount; i++) {
+    fileIdx.set(files[i], i);
+    grouped[i] = [];
+  }
+  const lines = State.lines;
+  for (let i = 0, n = lines.length; i < n; i++) {
+    const l = lines[i];
     State.byNum.set(l.line_num, l);
-    if (grouped.has(l.file)) grouped.get(l.file).push(l);
-  });
-  for (const [file, lines] of grouped.entries()) {
-    State.fileLines.set(file, lines);
-    if (lines.length) {
-      State.rows.push({ type: 'header', file });
-      lines.forEach(l => State.rows.push({ type: 'line', line: l }));
+    const gi = fileIdx.get(l.file);
+    if (gi !== undefined) grouped[gi].push(l);
+  }
+  const rows = State.rows;
+  for (let i = 0; i < fileCount; i++) {
+    const fileLines = grouped[i];
+    if (!fileLines.length) continue;
+    const file = files[i];
+    State.fileLines.set(file, fileLines);
+    State.headerIdx.push(rows.length);
+    rows.push({ type: 'header', file });
+    for (let j = 0, m = fileLines.length; j < m; j++) {
+      rows.push({ type: 'line', line: fileLines[j] });
     }
   }
 };
@@ -202,51 +361,38 @@ State.queueSave = () => {
   clearTimeout(State.saveTimer);
   State.saveTimer = setTimeout(() => {
     const idle = window.requestIdleCallback || (fn => setTimeout(fn, 0));
-    idle(() => { Storage.save(State.projectId, State.toData()).then(() => App.flashSaved()); });
+    idle(async () => {
+      try {
+        await WorkerCli.call('storage-save', { id: State.projectId, data: State.toData() });
+        App.flashSaved();
+      } catch {}
+    });
   }, 500);
 };
 
-const Storage = {
-  root: () => navigator.storage.getDirectory(),
+State.syncNow = async () => {
+  clearTimeout(State.syncTimer);
+  if (!WorkerCli.ready()) return;
+  if (!State.syncDirty) return;
+  const light = State.lines.map(l => ({
+    line_num: l.line_num,
+    file: l.file,
+    name: l.name,
+    message: l.message,
+    trans_name: l.trans_name,
+    trans_message: l.trans_message,
+    is_translated: !!l.is_translated
+  }));
+  try {
+    await WorkerCli.call('set-state', { lines: light });
+    State.syncDirty = false;
+  } catch {}
+};
 
-  async save(id, data) {
-    try {
-      data.updatedAt = Date.now();
-      const root = await Storage.root();
-      const h = await root.getFileHandle(id, { create: true });
-      const w = await h.createWritable();
-      await w.write(JSON.stringify(data));
-      await w.close();
-    } catch { App.flash('Gagal menyimpan ke storage!'); }
-  },
-
-  async list() {
-    const root = await Storage.root();
-    const items = [];
-    for await (const [name, h] of root.entries()) {
-      if (!name.endsWith('.cstl') || h.kind !== 'file') continue;
-      try {
-        const f = await h.getFile();
-        const data = JSON.parse(await f.text());
-        items.push({
-          id: name,
-          name: data.projectName || name.replace('.cstl', ''),
-          updatedAt: data.updatedAt || f.lastModified,
-          fileCount: data.imported_files?.length || 0,
-          lineCount: data.lines?.length || 0,
-          translatedCount: data.lines?.filter(l => l.is_translated).length || 0,
-          data
-        });
-      } catch {}
-    }
-    return items.sort((a, b) => b.updatedAt - a.updatedAt);
-  },
-
-  async remove(id, epubId) {
-    const root = await Storage.root();
-    if (epubId) { try { await root.removeEntry(epubId); } catch {} }
-    await root.removeEntry(id);
-  }
+State.queueSync = () => {
+  State.syncDirty = true;
+  clearTimeout(State.syncTimer);
+  State.syncTimer = setTimeout(() => { State.syncNow(); }, 200);
 };
 
 class Scroller {
@@ -264,13 +410,12 @@ class Scroller {
     this.gap = 8;
     this.topPad = 8;
     this.botPad = 12;
-    this.overscan = 12;
+    this.overscan = SCROLLER_OVERSCAN;
     this.scrollTop = 0;
     this.totalH = 0;
     this.scheduled = false;
     this.lastW = 0;
     this.lastH = 0;
-    this.raf = 0;
 
     viewport.addEventListener('scroll', () => {
       this.scrollTop = viewport.scrollTop;
@@ -459,9 +604,7 @@ class Scroller {
     this.vp.scrollTop = Math.max(0, target - (vh / 2) + (this.heights[idx] / 2));
     this.scrollTop = this.vp.scrollTop;
     this.render();
-    if (this.raf) cancelAnimationFrame(this.raf);
-    this.raf = requestAnimationFrame(() => {
-      this.raf = 0;
+    requestAnimationFrame(() => {
       const t = this.pos[idx] || 0;
       this.vp.scrollTop = Math.max(0, t - (vh / 2) + (this.heights[idx] / 2));
       this.scrollTop = this.vp.scrollTop;
@@ -473,139 +616,92 @@ class Scroller {
 }
 
 const Importer = {
-  parseJson(arr, file, start) {
-    if (!Array.isArray(arr)) throw new Error(`File ${file} bukan array JSON.`);
-    return arr.filter(e => e && typeof e === 'object' && Object.hasOwn(e, 'message')).map(e => ({
-      line_num: start++,
-      file,
-      name: e.name == null ? null : String(e.name).replace(/\r?\n/g, '\\n').trim(),
-      message: String(e.message || '').replace(/\r?\n/g, '\\n').trim(),
-      trans_name: null,
-      trans_message: null,
-      is_translated: false
-    }));
-  },
-
   assertProjectType(expected) {
     if (State.projectType !== 'uninitialized' && State.projectType !== expected) {
-      const cur = State.projectType.toUpperCase();
-      const want = expected.toUpperCase();
-      alert(`Project ini sudah diatur sebagai project ${cur}. Tidak bisa mencampur file ${want}.`);
+      alert(`Project ini sudah diatur sebagai project ${State.projectType.toUpperCase()}. Tidak bisa mencampur file ${expected.toUpperCase()}.`);
       return false;
     }
     if (State.projectType === 'uninitialized') State.projectType = expected;
     return true;
   },
 
-  async importEpub(f, ctx) {
-    if (!Importer.assertProjectType('epub')) return;
-    if (State.projectType === 'epub' && State.epubSourceId) {
-      alert('Project ini sudah memuat EPUB.');
-      return;
-    }
-    if (!State.epubSourceId) {
-      State.projectType = 'epub';
-      State.epubSourceId = makeEpubId();
-    }
-    const root = await Storage.root();
-    const h = await root.getFileHandle(State.epubSourceId, { create: true });
-    const w = await h.createWritable();
-    await w.write(f);
-    await w.close();
-
-    const zip = new window.JSZip();
-    await zip.loadAsync(f);
-    const container = await zip.file('META-INF/container.xml').async('text');
-    const rootFile = new DOMParser().parseFromString(container, 'application/xml').querySelector('rootfile');
-    if (!rootFile) throw new Error('EPUB tidak valid.');
-
-    const opfPath = decodeURIComponent(rootFile.getAttribute('full-path'));
-    const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
-    const opf = new DOMParser().parseFromString(await zip.file(opfPath).async('text'), 'application/xml');
-    const manifest = {};
-    Array.from(opf.querySelectorAll('manifest > item')).forEach(it => {
-      manifest[it.getAttribute('id')] = decodeURIComponent(it.getAttribute('href'));
-    });
-    const htmls = Array.from(opf.querySelectorAll('spine > itemref'))
-      .map(it => manifest[it.getAttribute('idref')] ? opfDir + manifest[it.getAttribute('idref')] : null)
-      .filter(Boolean);
-    const tags = State.epubTags || 'p';
-
-    for (const path of htmls) {
-      if (ctx.existing.has(path)) { ctx.skipped.push(path); continue; }
-      const entry = zip.file(path);
-      if (!entry) continue;
-      const doc = new DOMParser().parseFromString(await entry.async('text'), path.endsWith('.xhtml') ? 'application/xhtml+xml' : 'text/html');
-      let has = false;
-      Array.from(doc.querySelectorAll(tags)).forEach(el => {
-        const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
-        if (txt) {
-          ctx.imported.push({ line_num: ctx.cur++, file: path, name: null, message: txt, trans_name: null, trans_message: null, is_translated: false });
-          has = true;
-        }
-      });
-      if (has) ctx.existing.add(path);
-    }
-  },
-
-  async importJsonFile(f, ctx) {
-    if (!Importer.assertProjectType('json')) return;
-    const bn = baseName(f.name);
-    if (ctx.existing.has(bn)) { ctx.skipped.push(bn); return; }
-    const parsed = Importer.parseJson(JSON.parse(decodeBuffer(await f.arrayBuffer())), bn, ctx.cur);
-    if (parsed.length) { ctx.existing.add(bn); ctx.imported.push(...parsed); ctx.cur += parsed.length; }
-  },
-
   async process(input, isZip = false) {
-    App.flash('Memproses file...', true);
+    if (!WorkerCli.ready()) { alert('Worker belum siap.'); return; }
+    Progress.show('Memproses file...', 'Mempersiapkan...');
     await withBusyCursor(async () => {
       try {
-        const ctx = {
-          cur: State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) + 1 : 1,
-          imported: [],
-          existing: new Set(State.files),
-          skipped: []
-        };
+        const startNum = State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) + 1 : 1;
+        const existing = new Set(State.files);
+        let result;
 
-        if (isZip && input instanceof File && window.JSZip) {
-          if (!Importer.assertProjectType('json')) {
-            $('copyStatus').classList.add('empty');
-            return;
-          }
-          const zip = new window.JSZip();
-          await zip.loadAsync(input);
-          const names = Object.keys(zip.files).filter(n => n.endsWith('.json'))
-            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-          for (const name of names) {
-            const bn = baseName(name);
-            if (ctx.existing.has(bn)) { ctx.skipped.push(bn); continue; }
-            const json = JSON.parse(decodeBuffer(await zip.file(name).async('uint8array')));
-            const parsed = Importer.parseJson(json, bn, ctx.cur);
-            if (parsed.length) { ctx.existing.add(bn); ctx.imported.push(...parsed); ctx.cur += parsed.length; }
-          }
+        if (isZip && input instanceof File) {
+          if (!Importer.assertProjectType('json')) { els.copyStatus.classList.add('empty'); Progress.hide(); return; }
+          const buffer = await input.arrayBuffer();
+          Progress.determinate('Mengimpor ZIP', `0 file`);
+          result = await WorkerCli.call('parse-zip-json', {
+            buffer, existing: Array.from(existing), start: startNum
+          }, (p) => Progress.update(p.msg, p.pct), [buffer]);
         } else {
           const files = Array.from(input).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-          for (const f of files) {
-            if (f.name.toLowerCase().endsWith('.epub')) await Importer.importEpub(f, ctx);
-            else if (f.name.toLowerCase().endsWith('.json')) await Importer.importJsonFile(f, ctx);
+          const hasEpub = files.some(f => f.name.toLowerCase().endsWith('.epub'));
+          const hasJson = files.some(f => f.name.toLowerCase().endsWith('.json'));
+
+          if (hasEpub && hasJson) {
+            Progress.hide();
+            alert('Tidak bisa mencampur EPUB dan JSON dalam satu import.');
+            return;
+          }
+
+          if (hasEpub) {
+            if (!Importer.assertProjectType('epub')) { Progress.hide(); return; }
+            if (State.projectType === 'epub' && State.epubSourceId) {
+              Progress.hide();
+              alert('Project ini sudah memuat EPUB.');
+              return;
+            }
+            if (!State.epubSourceId) {
+              State.projectType = 'epub';
+              State.epubSourceId = makeEpubId();
+            }
+            const f = files[0];
+            const buffer = await f.arrayBuffer();
+            Progress.determinate('Mengimpor EPUB', `0 file`);
+            result = await WorkerCli.call('parse-epub', {
+              buffer, tags: State.epubTags || 'p',
+              existing: Array.from(existing), start: startNum,
+              epubId: State.epubSourceId
+            }, (p) => Progress.update(p.msg, p.pct), [buffer]);
+          } else {
+            if (!Importer.assertProjectType('json')) { Progress.hide(); return; }
+            const fileInputs = [];
+            for (const f of files) fileInputs.push({ name: f.name, buffer: await f.arrayBuffer() });
+            Progress.determinate('Mengimpor file', `0 / ${fileInputs.length} file`);
+            const transfers = fileInputs.flatMap(f => [f.buffer]);
+            result = await WorkerCli.call('parse-json-files', {
+              files: fileInputs, existing: Array.from(existing), start: startNum
+            }, (p) => Progress.update(p.msg, p.pct), transfers);
           }
         }
 
-        if (ctx.imported.length) {
-          State.lines.push(...ctx.imported);
-          State.files = Array.from(ctx.existing);
+        Progress.hide();
+
+        if (result.imported.length) {
+          State.lines.push(...result.imported);
+          State.files = Array.from(result.existing || existing);
           State.namesDirty = true;
           App.refresh(true);
           State.queueSave();
-          App.flash(`Berhasil impor ${ctx.imported.length} baris.${ctx.skipped.length ? ` (${ctx.skipped.length} file duplikat diabaikan)` : ''}`);
-        } else if (ctx.skipped.length) {
-          $('copyStatus').classList.add('empty');
-          setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${ctx.skipped.slice(0, 5).join('\n- ')}`), 10);
+          State.queueSync();
+          App.flash(`Berhasil impor ${result.imported.length} baris.${result.skipped.length ? ` (${result.skipped.length} file duplikat diabaikan)` : ''}`);
+        } else if (result.skipped.length) {
+          els.copyStatus.classList.add('empty');
+          setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${result.skipped.slice(0, 5).join('\n- ')}`), 10);
         } else {
           App.flash('Tidak ada data valid.', false);
         }
       } catch (e) {
-        $('copyStatus').classList.add('empty');
+        Progress.hide();
+        els.copyStatus.classList.add('empty');
         setTimeout(() => alert(`Error:\n${e.message}`), 10);
       }
     });
@@ -614,79 +710,43 @@ const Importer = {
 
 const Exporter = {
   async runEpub() {
-    App.flash('Membuat EPUB...', true);
+    if (!WorkerCli.ready()) return;
+    Progress.show('Membuat EPUB...', 'Memuat arsip...');
     await withBusyCursor(async () => {
       try {
-        const root = await Storage.root();
-        const h = await root.getFileHandle(State.epubSourceId);
-        const f = await h.getFile();
-        const zip = new window.JSZip();
-        await zip.loadAsync(f);
-
-        const byFile = {};
-        State.lines.forEach(l => { (byFile[l.file] ||= []).push(l); });
-        const tags = State.epubTags || 'p';
-
-        for (const [path, lines] of Object.entries(byFile)) {
-          const entry = zip.file(path);
-          if (!entry) continue;
-          const html = await entry.async('text');
-          const xmlMatch = html.match(/^<\?xml.*?\?>/i);
-          const doc = new DOMParser().parseFromString(html, path.endsWith('.xhtml') ? 'application/xhtml+xml' : 'text/html');
-          let idx = 0;
-          Array.from(doc.querySelectorAll(tags)).forEach(el => {
-            if (el.textContent.replace(/\r?\n/g, ' ').trim() === '') return;
-            const l = lines[idx++];
-            if (l && isTrans(l) && l.trans_message) el.textContent = l.trans_message;
-          });
-          let out = new XMLSerializer().serializeToString(doc);
-          if (xmlMatch && !out.startsWith('<?xml')) out = xmlMatch[0] + '\n' + out;
-          zip.file(path, out);
-        }
-
-        if (zip.file('mimetype')) {
-          zip.file('mimetype', await zip.file('mimetype').async('text'), { compression: 'STORE' });
-        }
-
-        const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-        download(url, `${sanitizeName(State.projectName)}_tl.epub`);
+        Progress.determinate('Membuat EPUB', `0 file`);
+        const result = await WorkerCli.call('build-export-epub', {
+          epubId: State.epubSourceId, lines: State.lines, tags: State.epubTags || 'p', projectName: State.projectName
+        }, (p) => Progress.update(p.msg, p.pct));
+        const url = URL.createObjectURL(result.blob);
+        download(url, result.name);
+        Progress.hide();
         App.flash('Ekspor EPUB berhasil!');
       } catch (e) {
+        Progress.hide();
         alert('Ekspor EPUB gagal: ' + e.message);
       }
     });
   },
 
   async runJson() {
-    const grouped = new Map();
-    State.lines.forEach(l => {
-      if (!grouped.has(l.file)) grouped.set(l.file, []);
-      grouped.get(l.file).push(l);
+    if (!WorkerCli.ready()) return;
+    Progress.show('Membuat JSON...', 'Mengelompokkan baris...');
+    await withBusyCursor(async () => {
+      try {
+        Progress.determinate('Membuat JSON', `0 file`);
+        const result = await WorkerCli.call('build-export-json', {
+          lines: State.lines, projectName: State.projectName
+        }, (p) => Progress.update(p.msg, p.pct));
+        const url = URL.createObjectURL(result.blob);
+        download(url, result.name);
+        Progress.hide();
+        App.flash('Ekspor JSON berhasil!');
+      } catch (e) {
+        Progress.hide();
+        alert('Ekspor JSON gagal: ' + e.message);
+      }
     });
-
-    const results = Array.from(grouped.entries()).map(([file, lines]) => ({
-      name: `${file.replace(/\.(xhtml|html|json)$/g, '')}.json`,
-      content: JSON.stringify(lines.map(l => {
-        const out = {};
-        const n = isTrans(l) ? (l.trans_name || l.name) : l.name;
-        const m = isTrans(l) ? l.trans_message : l.message;
-        if (n != null) out.name = n.replace(/\\n/g, '\n');
-        out.message = m != null ? m.replace(/\\n/g, '\n') : '';
-        return out;
-      }), null, 2)
-    }));
-
-    if (window.JSZip && results.length > 1) {
-      const zip = new window.JSZip();
-      results.forEach(r => zip.file(r.name, r.content));
-      const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-      download(url, `${sanitizeName(State.projectName)}_export.zip`);
-    } else {
-      results.forEach(r => {
-        const url = URL.createObjectURL(new Blob([r.content], { type: 'application/json' }));
-        download(url, r.name);
-      });
-    }
   },
 
   async run() {
@@ -720,33 +780,17 @@ const Vndb = {
     return all;
   },
 
-  buildGlossary(chars) {
-    const map = new Map();
-    const add = (jp, en) => {
-      jp = (jp || '').trim();
-      en = (en || '').trim();
-      if (jp && en && isJapanese(jp) && !map.has(jp)) map.set(jp, en);
-    };
-    for (const c of chars) {
-      if (!c.name || !c.original) continue;
-      add(c.original, c.name);
-      if (c.original.includes(' ') && c.name.includes(' ')) {
-        const kana = c.original.split(' '), en = c.name.split(' ');
-        if (kana.length === en.length) kana.forEach((k, i) => add(k, en[i]));
-      }
-      const ja = (c.aliases || []).filter(isJapanese);
-      const en = (c.aliases || []).filter(a => !isJapanese(a));
-      const fallback = c.name.split(' ').pop() || c.name;
-      ja.forEach((j, i) => add(j, en[i] || fallback));
-    }
-    return Array.from(map.entries()).sort((a, b) => b[0].length - a[0].length);
+  async buildGlossary(chars) {
+    if (!WorkerCli.ready()) return [];
+    const r = await WorkerCli.call('vndb-build-glossary', { chars });
+    return r.glossary;
   }
 };
 
-const positionDropdown = (panelId) => {
+function positionDropdown(panelId) {
   const triggerMap = { importDropdown: 'btnImportMain', copyNamesDropdown: 'btnCopyAllNames' };
-  const trigger = $(triggerMap[panelId]);
-  const dropdown = $(panelId);
+  const trigger = els[triggerMap[panelId]];
+  const dropdown = els[panelId];
   if (!trigger || !dropdown) return;
   const r = trigger.getBoundingClientRect();
   if (dropdown.classList.contains('dropdown-right')) {
@@ -757,11 +801,37 @@ const positionDropdown = (panelId) => {
     dropdown.style.left = `${Math.round(r.left)}px`;
   }
   dropdown.style.top = `${Math.round(r.bottom + 4)}px`;
-};
+}
 
-const closeDropdowns = () => {
-  for (const { panel } of DROPDOWNS) $(panel)?.classList.remove('show');
-};
+function closeDropdowns() {
+  for (const { panel } of DROPDOWNS) els[panel]?.classList.remove('show');
+}
+
+function toggleModal(el, show) {
+  if (show) { el.classList.remove('closing'); el.classList.add('open'); }
+  else {
+    el.classList.add('closing');
+    el.classList.remove('open');
+    setTimeout(() => el.classList.remove('closing'), MODAL_CLOSE_MS);
+  }
+}
+
+function anyModalOpen() {
+  return document.querySelectorAll('.backdrop.open').length > 0;
+}
+
+function topModal() {
+  const arr = Array.from(document.querySelectorAll('.backdrop.open'));
+  if (!arr.length) return null;
+  return arr.sort((a, b) =>
+    (parseInt(getComputedStyle(b).zIndex) || 0) - (parseInt(getComputedStyle(a).zIndex) || 0)
+  )[0];
+}
+
+function debounce(fn, ms = 200) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
 
 const App = {
   main: null,
@@ -774,115 +844,109 @@ const App = {
   toastToken: 0,
   savedTimer: 0,
   tmpVndb: [],
+  dashboardItems: [],
+  dashboardRendered: 0,
+  dashboardObserver: null,
+  dashboardSentinel: null,
 
   flash(msg, keep = false) {
-    const el = $('copyStatus');
+    const el = els.copyStatus;
     el.textContent = msg;
     el.classList.remove('empty');
     const t = ++App.toastToken;
     if (!keep) setTimeout(() => { if (App.toastToken === t) el.classList.add('empty'); }, TOAST_TIMEOUT_MS);
   },
 
-  toggleModal(el, show) {
-    if (show) { el.classList.remove('closing'); el.classList.add('open'); }
-    else {
-      el.classList.add('closing');
-      el.classList.remove('open');
-      setTimeout(() => el.classList.remove('closing'), MODAL_CLOSE_MS);
-    }
-  },
-
-  anyModalOpen() { return document.querySelectorAll('.backdrop.open').length > 0; },
-
-  topModal() {
-    const arr = Array.from(document.querySelectorAll('.backdrop.open'));
-    if (!arr.length) return null;
-    return arr.sort((a, b) => (parseInt(getComputedStyle(b).zIndex) || 0) - (parseInt(getComputedStyle(a).zIndex) || 0))[0];
-  },
-
-  debounce(fn, ms = 200) {
-    let t;
-    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-  },
-
   flashRow(n, delay = 50) {
     setTimeout(() => {
-      const el = $('previewContainer').querySelector(`input[data-num="${n}"]`)?.closest('.preview-row');
-      if (el) { el.classList.add('row-flash'); setTimeout(() => el.classList.remove('row-flash'), 800); }
+      const cb = els.previewContainer.querySelector(`input[data-num="${n}"]`);
+      const row = cb?.closest('.preview-row');
+      if (row) { row.classList.add('row-flash'); setTimeout(() => row.classList.remove('row-flash'), 800); }
     }, delay);
   },
 
-  async createProject() {
-    const name = prompt('Nama project baru:')?.trim();
-    if (!name) return;
-    const id = makeProjId();
-    const data = defaultProjectData(name);
-    await Storage.save(id, data);
-    App.open(id, data);
+  flashSaved() {
+    const bar = els.progressText;
+    if (!bar || !State.projectId) return;
+    bar.classList.remove('saved');
+    void bar.offsetWidth;
+    bar.classList.add('saved');
+    clearTimeout(App.savedTimer);
+    App.savedTimer = setTimeout(() => bar.classList.remove('saved'), SAVED_TIMEOUT_MS);
   },
 
   async init() {
+    cacheEls();
+    WorkerCli.init();
+
     if (!navigator.storage?.getDirectory) {
-      $('projectList').innerHTML = `<p class="hint" style="grid-column:1/-1;color:var(--danger);">Browser tidak mendukung OPFS.</p>`;
+      els.projectList.innerHTML = `<p class="hint" style="grid-column:1/-1;color:var(--danger);">Browser tidak mendukung OPFS.</p>`;
       return;
     }
-    App.main = new Scroller($('previewViewport'), $('previewContainer'), App.createMainRow, App.updateMainRow);
-    App.pr = new Scroller($('proofreadContainer').closest('.proofread-results-wrap'), $('proofreadContainer'), App.createPrRow, App.updatePrRow);
+
+    App.main = new Scroller(els.previewViewport, els.previewContainer, App.createMainRow, App.updateMainRow);
+    App.pr = new Scroller(
+      els.proofreadContainer.closest('.proofread-results-wrap'),
+      els.proofreadContainer,
+      App.createPrRow,
+      App.updatePrRow
+    );
+
     App.bind();
     await App.loadDashboard();
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
   },
 
   bind() {
-    $('btnNewProject').addEventListener('click', App.createProject);
-    $('btnBackToDashboard').addEventListener('click', App.closeProject);
-    $('btnRestoreProject').addEventListener('click', () => $('restoreProjectInput').click());
-    $('restoreProjectInput').addEventListener('change', App.restoreProject);
-    $('btnDashboardSettings').addEventListener('click', () => App.toggleModal($('dashboardSettingsModal'), true));
-    $('btnDashboardSettingsClose').addEventListener('click', () => App.toggleModal($('dashboardSettingsModal'), false));
-    $('btnBackupAll').addEventListener('click', App.backupAll);
-    $('btnWipeAllData').addEventListener('click', App.wipeAllData);
+    els.btnNewProject.addEventListener('click', App.createProject);
+    els.btnBackToDashboard.addEventListener('click', App.closeProject);
+    els.btnToggleHeader.addEventListener('click', () => {
+      els.workspaceToolbar.classList.add('hidden');
+      els.btnShowHeader.classList.add('visible');
+    });
+    els.btnShowHeader.addEventListener('click', () => {
+      els.workspaceToolbar.classList.remove('hidden');
+      els.btnShowHeader.classList.remove('visible');
+    });
+    els.btnRestoreProject.addEventListener('click', () => els.restoreProjectInput.click());
+    els.restoreProjectInput.addEventListener('change', App.restoreProject);
+    els.btnDashboardSettings.addEventListener('click', () => toggleModal(els.dashboardSettingsModal, true));
+    els.btnDashboardSettingsClose.addEventListener('click', () => toggleModal(els.dashboardSettingsModal, false));
+    els.btnBackupAll.addEventListener('click', App.backupAll);
+    els.btnWipeAllData.addEventListener('click', App.wipeAllData);
 
     document.addEventListener('click', e => {
       for (const { trigger, panel } of DROPDOWNS) {
         if (e.target.closest(`#${trigger}`)) {
           e.preventDefault();
-          const willShow = !$(panel).classList.contains('show');
+          const willShow = !els[panel].classList.contains('show');
           closeDropdowns();
-          if (willShow) {
-            positionDropdown(panel);
-            $(panel).classList.add('show');
-          }
+          if (willShow) { positionDropdown(panel); els[panel].classList.add('show'); }
           return;
         }
       }
-      const insideAny = DROPDOWNS.some(({ group }) => e.target.closest(`#${group}`));
-      if (!insideAny) closeDropdowns();
+      if (!DROPDOWNS.some(({ group }) => e.target.closest(`#${group}`))) closeDropdowns();
       const bd = e.target.closest('.backdrop.open');
-      if (bd && e.target === bd) App.toggleModal(bd, false);
+      if (bd && e.target === bd) toggleModal(bd, false);
     });
 
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') {
-        if (App.anyModalOpen()) {
-          const m = App.topModal();
-          if (m) App.toggleModal(m, false);
-        } else {
-          closeDropdowns();
-        }
-      }
+      if (e.key !== 'Escape') return;
+      if (anyModalOpen()) { const m = topModal(); if (m) toggleModal(m, false); }
+      else closeDropdowns();
     });
 
-    $('dynamicToolbarWrap').addEventListener('scroll', closeDropdowns, { passive: true });
+    els.dynamicToolbarWrap.addEventListener('scroll', closeDropdowns, { passive: true });
     window.addEventListener('scroll', closeDropdowns, true);
     window.addEventListener('resize', closeDropdowns);
 
-    const importInputs = [$('importFileInput'), $('importFolderInput'), $('importZipInput')];
+    const importInputs = [els.importFileInput, els.importFolderInput, els.importZipInput];
     ['btnImportFile', 'btnImportFolder', 'btnImportZip'].forEach((id, i) => {
       const input = importInputs[i];
-      $(id).addEventListener('click', () => {
-        closeDropdowns();
-        input.click();
-      });
+      els[id].addEventListener('click', () => { closeDropdowns(); input.click(); });
       input.addEventListener('change', async e => {
         if (!e.target.files.length) return;
         await Importer.process(id === 'btnImportZip' ? e.target.files[0] : e.target.files, id === 'btnImportZip');
@@ -890,162 +954,156 @@ const App = {
       });
     });
 
-    $('btnExport').addEventListener('click', () => { Exporter.run(); });
-    $('btnCopyForAi').addEventListener('click', App.copyForAi);
-    $('btnApply').addEventListener('click', App.applyTranslation);
-    $('btnUndo').addEventListener('click', App.undo);
-    $('btnRedo').addEventListener('click', App.redo);
-    $('btnProofread').addEventListener('click', () => { App.openProofread(); });
+    els.btnExport.addEventListener('click', () => Exporter.run());
+    els.btnCopyForAi.addEventListener('click', App.copyForAi);
+    els.btnApply.addEventListener('click', App.applyTranslation);
+    els.btnUndo.addEventListener('click', App.undo);
+    els.btnRedo.addEventListener('click', App.redo);
+    els.btnProofread.addEventListener('click', App.openProofread);
 
-    $('btnSelectAll').addEventListener('click', () => {
+    els.btnSelectAll.addEventListener('click', () => {
       State.lines.forEach(l => { if (!isTrans(l)) State.selected.add(l.line_num); });
       App.syncCheckboxes();
     });
-    $('btnClearSelection').addEventListener('click', () => { State.selected.clear(); App.syncCheckboxes(); });
-    $('btnSelectRange').addEventListener('click', App.selectRange);
+    els.btnClearSelection.addEventListener('click', () => { State.selected.clear(); App.syncCheckboxes(); });
+    els.btnSelectRange.addEventListener('click', App.selectRange);
 
-    $('btnGlossary').addEventListener('click', () => {
-      $('glossaryVndbCheck').checked = State.vndbEnabled;
-      $('glossaryVndbIdInput').value = State.vndbId || '';
+    els.btnGlossary.addEventListener('click', () => {
+      els.glossaryVndbCheck.checked = State.vndbEnabled;
+      els.glossaryVndbIdInput.value = State.vndbId || '';
       App.tmpVndb = [...State.vndbGlossary];
-      $('glossaryVndbPreviewArea').value = App.tmpVndb.map(g => `${g[0]}: ${g[1]}`).join('\n');
-      $('glossaryVndbWrap').classList.toggle('section-disabled', !State.vndbEnabled);
-      $('glossaryVndbIdInput').disabled = $('btnGlossaryVndbFetch').disabled = App.tmpVndb.length > 0;
-      $('glossaryCustomCheck').checked = State.customEnabled;
-      $('glossaryCustomInput').value = State.customRaw || '';
-      $('glossaryCustomWrap').classList.toggle('section-disabled', !State.customEnabled);
-      App.toggleModal($('glossaryModal'), true);
+      els.glossaryVndbPreviewArea.value = App.tmpVndb.map(g => `${g[0]}: ${g[1]}`).join('\n');
+      els.glossaryVndbWrap.classList.toggle('section-disabled', !State.vndbEnabled);
+      els.glossaryVndbIdInput.disabled = els.btnGlossaryVndbFetch.disabled = App.tmpVndb.length > 0;
+      els.glossaryCustomCheck.checked = State.customEnabled;
+      els.glossaryCustomInput.value = State.customRaw || '';
+      els.glossaryCustomWrap.classList.toggle('section-disabled', !State.customEnabled);
+      toggleModal(els.glossaryModal, true);
     });
-
-    $('btnSettings').addEventListener('click', () => {
-      App.syncSettingsModal();
-      App.toggleModal($('settingsModal'), true);
+    els.glossaryVndbCheck.addEventListener('change', e => {
+      els.glossaryVndbWrap.classList.toggle('section-disabled', !e.target.checked);
     });
-
-    $('btnContext').addEventListener('click', () => {
-      $('ringkasanEnabledCheck').checked = State.ringkasanEnabled;
-      $('ringkasanPromptInput').value = State.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT;
-      $('ringkasanStoredInput').value = State.ringkasan || '';
-      $('ringkasanWrap').classList.toggle('section-disabled', !State.ringkasanEnabled);
-      App.toggleModal($('contextModal'), true);
-    });
-
-    $('ringkasanEnabledCheck').addEventListener('change', e => {
-      $('ringkasanWrap').classList.toggle('section-disabled', !e.target.checked);
-    });
-
-    $('btnRingkasanReset').addEventListener('click', () => {
-      $('ringkasanEnabledCheck').checked = false;
-      $('ringkasanPromptInput').value = DEFAULT_RINGKASAN_PROMPT;
-      $('ringkasanStoredInput').value = '';
-      $('ringkasanWrap').classList.add('section-disabled');
-    });
-
-    $('btnContextCancel').addEventListener('click', () => App.toggleModal($('contextModal'), false));
-    $('btnContextSave').addEventListener('click', () => {
-      State.ringkasanEnabled = $('ringkasanEnabledCheck').checked;
-      State.ringkasanPrompt = $('ringkasanPromptInput').value.trim() || DEFAULT_RINGKASAN_PROMPT;
-      State.ringkasan = $('ringkasanStoredInput').value.trim();
-      App.toggleModal($('contextModal'), false);
-      State.queueSave();
-    });
-
-    $('btnSettingsDasarReset').addEventListener('click', () => App.resetSettingsModal('dasar'));
-    $('btnSettingsPromptReset').addEventListener('click', () => { $('settingsPromptInput').value = DEFAULT_PROMPT; });
-    $('btnSettingsEpubReset').addEventListener('click', () => { $('settingsEpubTagsInput').value = 'p'; });
-    $('btnSettingsCancel').addEventListener('click', () => App.toggleModal($('settingsModal'), false));
-    $('btnSettingsSave').addEventListener('click', () => {
-      SETTINGS_FIELDS.forEach(({ id, key, type }) => {
-        const v = type === 'check' ? $(id).checked : $(id).value.trim() || 'p';
-        State[key] = v;
-      });
-      App.applyHideTools();
-      App.toggleModal($('settingsModal'), false);
-      State.queueSave();
-    });
-
-    $('glossaryVndbCheck').addEventListener('change', e => {
-      $('glossaryVndbWrap').classList.toggle('section-disabled', !e.target.checked);
-    });
-
-    $('btnGlossaryVndbFetch').addEventListener('click', async () => {
-      let id = $('glossaryVndbIdInput').value.trim();
+    els.btnGlossaryVndbFetch.addEventListener('click', async () => {
+      let id = els.glossaryVndbIdInput.value.trim();
       if (!id) return;
       if (!id.startsWith('v')) id = 'v' + id;
-      const status = $('glossaryVndbStatus');
+      const status = els.glossaryVndbStatus;
       try {
-        $('btnGlossaryVndbFetch').disabled = $('glossaryVndbIdInput').disabled = true;
+        els.btnGlossaryVndbFetch.disabled = els.glossaryVndbIdInput.disabled = true;
         status.textContent = 'Mengambil data...';
         status.className = 'toast info';
         const chars = await Vndb.fetchCharacters(id);
         if (!chars.length) throw new Error('Karakter tidak ditemukan.');
-        App.tmpVndb = Vndb.buildGlossary(chars);
-        $('glossaryVndbPreviewArea').value = App.tmpVndb.map(g => `${g[0]}: ${g[1]}`).join('\n');
+        App.tmpVndb = await Vndb.buildGlossary(chars);
+        els.glossaryVndbPreviewArea.value = App.tmpVndb.map(g => `${g[0]}: ${g[1]}`).join('\n');
         status.textContent = `Ditemukan ${App.tmpVndb.length} entri.`;
         status.className = 'toast success';
       } catch (e) {
         status.textContent = e.message;
         status.className = 'toast error';
-        $('btnGlossaryVndbFetch').disabled = $('glossaryVndbIdInput').disabled = false;
+        els.btnGlossaryVndbFetch.disabled = els.glossaryVndbIdInput.disabled = false;
       }
     });
-
-    $('btnGlossaryVndbReset').addEventListener('click', () => {
-      $('glossaryVndbCheck').checked = false;
-      $('glossaryVndbIdInput').value = '';
-      $('glossaryVndbPreviewArea').value = '';
+    els.btnGlossaryVndbReset.addEventListener('click', () => {
+      els.glossaryVndbCheck.checked = false;
+      els.glossaryVndbIdInput.value = '';
+      els.glossaryVndbPreviewArea.value = '';
       App.tmpVndb = [];
-      $('glossaryVndbStatus').className = 'toast empty mb-2';
-      $('glossaryVndbIdInput').disabled = $('btnGlossaryVndbFetch').disabled = false;
-      $('glossaryVndbWrap').classList.add('section-disabled');
+      els.glossaryVndbStatus.className = 'toast empty mb-2';
+      els.glossaryVndbIdInput.disabled = els.btnGlossaryVndbFetch.disabled = false;
+      els.glossaryVndbWrap.classList.add('section-disabled');
     });
-
-    $('glossaryCustomCheck').addEventListener('change', e => {
-      $('glossaryCustomWrap').classList.toggle('section-disabled', !e.target.checked);
+    els.glossaryCustomCheck.addEventListener('change', e => {
+      els.glossaryCustomWrap.classList.toggle('section-disabled', !e.target.checked);
     });
-
-    $('btnGlossaryCustomReset').addEventListener('click', () => {
-      $('glossaryCustomCheck').checked = false;
-      $('glossaryCustomInput').value = '';
-      $('glossaryCustomWrap').classList.add('section-disabled');
+    els.btnGlossaryCustomReset.addEventListener('click', () => {
+      els.glossaryCustomCheck.checked = false;
+      els.glossaryCustomInput.value = '';
+      els.glossaryCustomWrap.classList.add('section-disabled');
     });
-
-    $('btnGlossaryCancel').addEventListener('click', () => App.toggleModal($('glossaryModal'), false));
-    $('btnGlossarySave').addEventListener('click', () => {
-      State.vndbEnabled = $('glossaryVndbCheck').checked;
-      State.vndbId = $('glossaryVndbIdInput').value.trim();
+    els.btnGlossaryCancel.addEventListener('click', () => toggleModal(els.glossaryModal, false));
+    els.btnGlossarySave.addEventListener('click', () => {
+      State.vndbEnabled = els.glossaryVndbCheck.checked;
+      State.vndbId = els.glossaryVndbIdInput.value.trim();
       State.vndbGlossary = App.tmpVndb;
-      State.customEnabled = $('glossaryCustomCheck').checked;
-      State.customRaw = $('glossaryCustomInput').value.trim();
-      App.toggleModal($('glossaryModal'), false);
+      State.customEnabled = els.glossaryCustomCheck.checked;
+      State.customRaw = els.glossaryCustomInput.value.trim();
+      toggleModal(els.glossaryModal, false);
       State.queueSave();
     });
 
-    $('btnLineCancel').addEventListener('click', () => App.toggleModal($('lineEditorModal'), false));
-    $('btnLineSave').addEventListener('click', App.saveLineEditor);
-    $('btnProofreadClose').addEventListener('click', () => App.toggleModal($('proofreadModal'), false));
+    els.btnSettings.addEventListener('click', () => {
+      App.syncSettingsModal();
+      toggleModal(els.settingsModal, true);
+    });
+    els.btnSettingsDasarReset.addEventListener('click', () => App.resetSettingsModal('dasar'));
+    els.btnSettingsPromptReset.addEventListener('click', () => { els.settingsPromptInput.value = DEFAULT_PROMPT; });
+    els.btnSettingsEpubReset.addEventListener('click', () => { els.settingsEpubTagsInput.value = 'p'; });
+    els.btnSettingsCancel.addEventListener('click', () => toggleModal(els.settingsModal, false));
+    els.btnSettingsSave.addEventListener('click', () => {
+      SETTINGS_FIELDS.forEach(({ id, key, type, def }) => {
+        if (type === 'check') State[key] = els[id].checked;
+        else State[key] = els[id].value.trim() || def;
+      });
+      App.applyHideTools();
+      toggleModal(els.settingsModal, false);
+      State.queueSave();
+    });
 
-    $('btnProofreadReset').addEventListener('click', () => {
-      $('proofreadSearchInput').value = '';
-      $('proofreadReplaceInput').value = '';
+    els.btnContext.addEventListener('click', () => {
+      els.ringkasanEnabledCheck.checked = State.ringkasanEnabled;
+      els.ringkasanPromptInput.value = State.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT;
+      els.ringkasanStoredInput.value = State.ringkasan || '';
+      els.ringkasanWrap.classList.toggle('section-disabled', !State.ringkasanEnabled);
+      toggleModal(els.contextModal, true);
+    });
+    els.ringkasanEnabledCheck.addEventListener('change', e => {
+      els.ringkasanWrap.classList.toggle('section-disabled', !e.target.checked);
+    });
+    els.btnRingkasanReset.addEventListener('click', () => {
+      els.ringkasanEnabledCheck.checked = false;
+      els.ringkasanPromptInput.value = DEFAULT_RINGKASAN_PROMPT;
+      els.ringkasanStoredInput.value = '';
+      els.ringkasanWrap.classList.add('section-disabled');
+    });
+    els.btnRingkasanPromptReset.addEventListener('click', () => {
+      els.ringkasanPromptInput.value = DEFAULT_RINGKASAN_PROMPT;
+    });
+    els.btnRingkasanStoredReset.addEventListener('click', () => {
+      els.ringkasanStoredInput.value = '';
+    });
+    els.btnContextCancel.addEventListener('click', () => toggleModal(els.contextModal, false));
+    els.btnContextSave.addEventListener('click', () => {
+      State.ringkasanEnabled = els.ringkasanEnabledCheck.checked;
+      State.ringkasanPrompt = els.ringkasanPromptInput.value.trim() || DEFAULT_RINGKASAN_PROMPT;
+      State.ringkasan = els.ringkasanStoredInput.value.trim();
+      toggleModal(els.contextModal, false);
+      State.queueSave();
+    });
+
+    els.btnLineCancel.addEventListener('click', () => toggleModal(els.lineEditorModal, false));
+    els.btnLineSave.addEventListener('click', App.saveLineEditor);
+
+    els.btnProofreadClose.addEventListener('click', () => toggleModal(els.proofreadModal, false));
+    els.btnProofreadReset.addEventListener('click', () => {
+      els.proofreadSearchInput.value = '';
+      els.proofreadReplaceInput.value = '';
       PROOFREAD_FIELDS.forEach(({ id, def, type }) => {
-        const el = $(id);
-        if (type === 'check') el.checked = def;
-        else el.value = def;
+        const el = els[id];
+        if (type === 'check') el.checked = def; else el.value = def;
       });
       App.syncProofread();
       App.renderProofread();
     });
+    els.btnProofreadReplaceAll.addEventListener('click', App.replaceAll);
 
-    $('btnProofreadReplaceAll').addEventListener('click', App.replaceAll);
-
-    const delayed = App.debounce(App.renderProofread, 200);
-    $('proofreadSearchInput').addEventListener('input', delayed);
+    const delayedRender = debounce(App.renderProofread, 200);
+    els.proofreadSearchInput.addEventListener('input', delayedRender);
     PROOFREAD_FIELDS.forEach(({ id }) => {
-      $(id).addEventListener('change', () => { App.syncProofread(); App.renderProofread(); });
+      els[id].addEventListener('change', () => { App.syncProofread(); App.renderProofread(); });
     });
 
-    $('previewContainer').addEventListener('change', e => {
+    els.previewContainer.addEventListener('change', e => {
       if (e.target.closest('.checkbox-cell') && e.target.type === 'checkbox') {
         const n = Number(e.target.dataset.num);
         if (e.target.checked) State.selected.add(n); else State.selected.delete(n);
@@ -1054,324 +1112,99 @@ const App = {
         App.toggleFileSelection(e.target);
       }
     });
-
-    $('stickyFileCheckbox').addEventListener('change', e => {
+    els.stickyFileCheckbox.addEventListener('change', e => {
       if (e.target.dataset.file) App.toggleFileSelection(e.target);
     });
-
-    $('previewContainer').addEventListener('click', e => {
+    els.previewContainer.addEventListener('click', e => {
       if (e.target.matches('input[type="checkbox"]')) return;
       const wrap = e.target.closest('.text-content');
-      if (wrap) {
-        const row = wrap.closest('.preview-row');
-        if (row && !row.classList.contains('file-header')) {
-          const cb = row.querySelector('input[type="checkbox"]');
-          if (cb?.dataset.num) App.openLineEditor(Number(cb.dataset.num));
-        }
-      }
+      if (!wrap) return;
+      const row = wrap.closest('.preview-row');
+      if (!row || row.classList.contains('file-header')) return;
+      const cb = row.querySelector('input[type="checkbox"]');
+      if (cb?.dataset.num) App.openLineEditor(Number(cb.dataset.num));
     });
 
     let raf = 0;
-    $('previewViewport').addEventListener('scroll', () => {
+    els.previewViewport.addEventListener('scroll', () => {
       if (raf) return;
       raf = requestAnimationFrame(() => { raf = 0; App.updateFileBadge(); });
     }, { passive: true });
 
-    $('proofreadContainer').addEventListener('click', e => {
+    els.proofreadContainer.addEventListener('click', e => {
       const wrap = e.target.closest('.text-content');
-      if (wrap?.dataset.num) {
-        const n = Number(wrap.dataset.num);
-        if (State.jumpToContext) {
-          App.toggleModal($('proofreadModal'), false);
-          const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === n);
-          if (idx !== -1) {
-            App.main.scrollToIndex(idx);
-            App.flashRow(n, 60);
-          }
-        } else {
-          App.openLineEditor(n);
-        }
+      if (!wrap?.dataset.num) return;
+      const n = Number(wrap.dataset.num);
+      if (State.jumpToContext) {
+        toggleModal(els.proofreadModal, false);
+        const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === n);
+        if (idx !== -1) { App.main.scrollToIndex(idx); App.flashRow(n, 60); }
+      } else {
+        App.openLineEditor(n);
       }
     });
 
-    $('nameTableBody').addEventListener('click', async e => {
-      if (e.target.tagName === 'TD') {
-        try { await clipboard(e.target.textContent); App.flash('Nama disalin!'); }
-        catch { alert('Gagal disalin.'); }
-      }
+    els.nameTableBody.addEventListener('click', async e => {
+      if (e.target.tagName !== 'TD') return;
+      try { await clipboard(e.target.textContent); App.flash('Nama disalin!'); }
+      catch { alert('Gagal disalin.'); }
     });
-
-    $('btnCopyNamesPlain').addEventListener('click', () => App.copyAllNames('plain'));
-    $('btnCopyNamesWithGlossary').addEventListener('click', () => App.copyAllNames('glossary'));
-    $('btnCopyNamesMissingGlossary').addEventListener('click', () => App.copyAllNames('missing'));
+    els.btnCopyNamesPlain.addEventListener('click', () => App.copyAllNames('plain'));
+    els.btnCopyNamesWithGlossary.addEventListener('click', () => App.copyAllNames('glossary'));
+    els.btnCopyNamesMissingGlossary.addEventListener('click', () => App.copyAllNames('missing'));
   },
 
   syncSettingsModal() {
     SETTINGS_FIELDS.forEach(({ id, key, type, def }) => {
       const v = State[key] ?? def;
-      if (type === 'check') $(id).checked = v;
-      else $(id).value = v;
+      if (type === 'check') els[id].checked = v; else els[id].value = v;
     });
   },
 
   resetSettingsModal(group) {
     const filter = group === 'dasar' ? f => f.type === 'check' : null;
     if (!filter) return;
-    SETTINGS_FIELDS.filter(filter).forEach(({ id, def }) => { $(id).checked = def; });
+    SETTINGS_FIELDS.filter(filter).forEach(({ id, def }) => { els[id].checked = def; });
   },
 
-  async buildProjectZip(p) {
-    const zip = new window.JSZip();
-    const meta = { ...p.data };
-    delete meta.lines;
-    delete meta.proofreadScope;
-    delete meta.proofreadRegex;
-    delete meta.proofreadCaseSensitive;
-    delete meta.proofreadExactMatch;
-    delete meta.proofreadTranslatedOnly;
-    zip.file('metadata.json', JSON.stringify(meta));
+  async createProject() {
+    const name = prompt('Nama project baru:')?.trim();
+    if (!name) return;
+    const id = makeProjId();
+    State.projectId = id;
+    State.projectName = name;
+    State.projectType = 'uninitialized';
+    State.epubTags = 'p';
+    State.epubSourceId = null;
+    State.lines = [];
+    State.files = [];
+    State.prompt = State.prompt || DEFAULT_PROMPT;
+    State.ignoreName = false;
+    State.promptEnabled = true;
+    State.ringkasanEnabled = false;
+    State.ringkasanPrompt = DEFAULT_RINGKASAN_PROMPT;
+    State.ringkasan = '';
+    State.vndbEnabled = false;
+    State.vndbId = '';
+    State.vndbGlossary = [];
+    State.customEnabled = false;
+    State.customRaw = '';
+    State.jumpToContext = false;
+    State.hideTools = false;
+    State.selected.clear();
+    State.undo = State.redo = null;
+    State.namesDirty = true;
+    State.translatedCount = 0;
 
-    let orig = '', trans = '', names = '';
-    for (const file of (p.data.imported_files || [])) {
-      orig += `<filename>${file}</filename>\n`;
-      trans += `<filename>${file}</filename>\n`;
-      names += `<filename>${file}</filename>\n`;
-      p.data.lines.filter(l => l.file === file).forEach(l => {
-        orig += `${l.message || ''}\n`;
-        trans += `${l.trans_message || ''}\n`;
-        names += ((l.name || '') || (l.trans_name || '')) ? `<original>${l.name || ''}</original><translate>${l.trans_name || ''}</translate>\n` : '\n';
-      });
-    }
-    zip.file('original.txt', orig);
-    zip.file('translate.txt', trans);
-    zip.file('name.txt', names);
-
-    if (p.data.projectType === 'epub' && p.data.epubSourceId) {
-      const root = await Storage.root();
-      const h = await root.getFileHandle(p.data.epubSourceId);
-      const f = await h.getFile();
-      zip.file(p.data.epubSourceId, f);
-    }
-    return zip;
-  },
-
-  async backup(p) {
-    await withBusyCursor(async () => {
-      try {
-        const zip = await App.buildProjectZip(p);
-        const url = URL.createObjectURL(await zip.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-        download(url, `${sanitizeName(p.name)}_backup.cstl`);
-      } catch (e) {
-        alert('Gagal backup: ' + e.message);
-      }
-    });
-  },
-
-  async backupAll() {
-    await withBusyCursor(async () => {
-      try {
-        const items = await Storage.list();
-        if (!items.length) return alert('Belum ada Project untuk di-backup.');
-        const outer = new window.JSZip();
-        const used = new Set();
-        for (const p of items) {
-          const zip = await App.buildProjectZip(p);
-          const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 } });
-          const base = sanitizeName(p.name);
-          let name = base, i = 2;
-          while (used.has(name)) name = `${base}_${i++}`;
-          used.add(name);
-          outer.file(`${name}_backup.cstl`, blob);
-        }
-        const url = URL.createObjectURL(await outer.generateAsync({ type: 'blob', mimeType: 'application/octet-stream', compression: 'DEFLATE', compressionOptions: { level: 9 } }));
-        download(url, `ProjectBackupAll_${new Date().toISOString().slice(0, 10)}.cstl`);
-      } catch (e) {
-        alert('Gagal backup semua project: ' + e.message);
-      }
-    });
-  },
-
-  async loadDashboard() {
-    const list = $('projectList');
-    list.innerHTML = '';
-    const content = list.parentElement;
     try {
-      const items = await Storage.list();
-      if (!items.length) {
-        content.classList.add('is-empty');
-        list.innerHTML = `<p class="hint" style="grid-column:1/-1;">Belum ada Project. Buat atau Pulihkan!</p>`;
-        return;
-      }
-      content.classList.remove('is-empty');
-      items.forEach(p => {
-        const card = document.createElement('div');
-        card.className = 'project-card';
-        const badge = p.fileCount || p.lineCount
-          ? (p.data.projectType === 'epub' ? '<span class="badge badge-epub">EPUB</span>'
-            : p.data.projectType === 'json' ? '<span class="badge badge-json">JSON-VNTP</span>' : '')
-          : '';
-        card.innerHTML = `
-          <div class="project-card-main">
-            <h3>${escapeHtml(p.name)}</h3>
-            <div class="project-meta mt-2">
-              ${badge ? `<div style="margin-bottom:8px;">${badge}</div>` : ''}
-              Diubah: ${new Date(p.updatedAt).toLocaleString('id-ID')}<br>
-              File: ${p.fileCount}<br>
-              Baris: ${p.translatedCount}/${p.lineCount} (${p.lineCount ? Math.floor(p.translatedCount / p.lineCount * 100) : 0}%)
-            </div>
-          </div>
-          <div class="project-actions">
-            <button class="btn btn-primary btn-sm btn-open">Buka</button>
-            <button class="btn btn-ghost btn-sm btn-rename">Ubah</button>
-            <button class="btn btn-ghost btn-sm btn-backup">Backup</button>
-            <button class="btn btn-danger btn-sm btn-delete">Hapus</button>
-          </div>
-        `;
-        card.querySelector('.btn-open').addEventListener('click', () => App.open(p.id, p.data));
-        card.querySelector('.btn-rename').addEventListener('click', async () => {
-          const name = prompt('Nama baru:', p.name);
-          if (name?.trim() && name !== p.name) {
-            p.data.projectName = name.trim();
-            await Storage.save(p.id, p.data);
-            App.loadDashboard();
-          }
-        });
-        card.querySelector('.btn-backup').addEventListener('click', () => App.backup(p));
-        card.querySelector('.btn-delete').addEventListener('click', async () => {
-          if (confirm('Hapus permanen?')) {
-            await Storage.remove(p.id, p.data.epubSourceId);
-            App.loadDashboard();
-          }
-        });
-        list.appendChild(card);
-      });
-    } catch {
-      list.innerHTML = `<p class="hint" style="color:var(--danger);">Gagal akses storage.</p>`;
+      await WorkerCli.call('storage-save', { id, data: State.toData() });
+      App.open(id, State.toData());
+    } catch (e) {
+      alert('Gagal membuat project: ' + e.message);
     }
   },
 
-  async restoreOne(zip, fallbackName) {
-    const metaFile = zip.file('metadata.json');
-    const origFile = zip.file('original.txt');
-    const transFile = zip.file('translate.txt');
-    const nameFile = zip.file('name.txt');
-    if (!metaFile || !origFile || !transFile || !nameFile) throw new Error('Format arsip tidak valid.');
-
-    const meta = JSON.parse(await metaFile.async('text'));
-    const orig = (await origFile.async('text')).split(/\r?\n/);
-    const trans = (await transFile.async('text')).split(/\r?\n/);
-    const names = (await nameFile.async('text')).split(/\r?\n/);
-    [orig, trans, names].forEach(arr => { if (arr[arr.length - 1] === '') arr.pop(); });
-    if (orig.length !== trans.length || orig.length !== names.length) throw new Error('Baris tidak sinkron.');
-
-    const lines = [];
-    let file = 'unknown', n = 1;
-    for (let i = 0; i < orig.length; i++) {
-      const o = orig[i];
-      const m = o.match(/^<filename>(.*?)<\/filename>$/);
-      if (m) {
-        if (trans[i] !== o || names[i] !== o) throw new Error('Header file tidak sinkron.');
-        file = m[1];
-      } else {
-        let on = null, tn = null;
-        const nl = names[i].trim();
-        if (nl) {
-          const om = nl.match(/<original>(.*?)<\/original>/);
-          const tm = nl.match(/<translate>(.*?)<\/translate>/);
-          on = om ? om[1] : null;
-          tn = tm ? tm[1] : null;
-        }
-        lines.push({
-          line_num: n++,
-          file,
-          name: on,
-          message: o,
-          trans_name: tn,
-          trans_message: trans[i] || null,
-          is_translated: !!trans[i]?.trim()
-        });
-      }
-    }
-
-    const name = meta.projectName || fallbackName;
-    if (meta.projectType === 'epub' && meta.epubSourceId) {
-      const entry = zip.file(meta.epubSourceId);
-      if (entry) {
-        const newId = makeEpubId();
-        const root = await Storage.root();
-        const h = await root.getFileHandle(newId, { create: true });
-        const w = await h.createWritable();
-        await w.write(await entry.async('blob'));
-        await w.close();
-        meta.epubSourceId = newId;
-      }
-    }
-
-    await Storage.save(makeProjId(), {
-      version: VERSION,
-      projectName: name,
-      projectType: meta.projectType || 'uninitialized',
-      epubTags: meta.epubTags || 'p',
-      epubSourceId: meta.epubSourceId || null,
-      imported_files: meta.imported_files || [],
-      lines: lines.map(normalizeLine),
-      prompt_header: meta.prompt_header || State.prompt,
-      ignoreNameTranslation: meta.ignoreNameTranslation ?? false,
-      promptEnabled: meta.promptEnabled ?? true,
-      ringkasanEnabled: meta.ringkasanEnabled ?? false,
-      ringkasanPrompt: meta.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT,
-      ringkasan: meta.ringkasan || '',
-      vndbEnabled: meta.vndbEnabled ?? false,
-      vndbId: meta.vndbId || '',
-      vndbGlossary: meta.vndbGlossary || [],
-      customEnabled: meta.customEnabled ?? false,
-      customRaw: meta.customRaw || '',
-      jumpToContext: meta.jumpToContext ?? false,
-      hideTools: meta.hideTools ?? false
-    });
-    return name;
-  },
-
-  async restoreProject(e) {
-    const uploadedFile = e.target.files?.[0];
-    if (!uploadedFile) return;
-    await withBusyCursor(async () => {
-      try {
-        const zip = new window.JSZip();
-        await zip.loadAsync(uploadedFile);
-
-        if (zip.file('metadata.json')) {
-          const name = await App.restoreOne(zip, uploadedFile.name.replace(/\.cstl$/i, ''));
-          await App.loadDashboard();
-          alert(`Project "${name}" dipulihkan!`);
-          return;
-        }
-
-        const entries = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.cstl'));
-        if (!entries.length) throw new Error('Format arsip tidak valid.');
-
-        let ok = 0, fail = 0;
-        for (const entry of entries) {
-          try {
-            const inner = new window.JSZip();
-            await inner.loadAsync(await entry.async('blob'));
-            await App.restoreOne(inner, entry.name.replace(/\.cstl$/i, ''));
-            ok++;
-          } catch {
-            fail++;
-          }
-        }
-        await App.loadDashboard();
-        alert(`${ok} project berhasil dipulihkan${fail ? `, ${fail} gagal` : ''}.`);
-      } catch (e) {
-        alert('File korup: ' + e.message);
-      } finally {
-        e.target.value = '';
-      }
-    });
-  },
-
-  open(id, data) {
+  async open(id, data) {
     State.projectId = id;
     State.projectName = data.projectName || 'Unknown';
     State.projectType = data.projectType || 'uninitialized';
@@ -1379,7 +1212,7 @@ const App = {
     State.epubSourceId = data.epubSourceId || null;
     State.lines = (data.lines || []).map(normalizeLine);
     State.files = data.imported_files || [];
-    State.prompt = data.prompt_header || State.prompt;
+    State.prompt = data.prompt_header || DEFAULT_PROMPT;
     State.ignoreName = data.ignoreNameTranslation ?? false;
     State.promptEnabled = data.promptEnabled ?? true;
     State.ringkasanEnabled = data.ringkasanEnabled ?? false;
@@ -1401,11 +1234,76 @@ const App = {
     State.undo = State.redo = null;
     State.namesDirty = true;
 
-    $('projectNameDisplay').textContent = State.projectName;
-    $('dashboardView').classList.remove('open');
-    $('workspaceView').style.display = 'flex';
+    if (App.dashboardObserver) { App.dashboardObserver.disconnect(); App.dashboardObserver = null; }
+
+    els.projectNameDisplay.textContent = State.projectName;
+    els.dashboardView.classList.remove('open');
+    els.workspaceView.style.display = 'flex';
     App.applyHideTools();
     App.refresh(false);
+    await State.syncNow();
+  },
+
+  closeProject() {
+    if (State.saveTimer) {
+      clearTimeout(State.saveTimer);
+      State.saveTimer = null;
+      const id = State.projectId;
+      const data = State.toData();
+      WorkerCli.call('storage-save', { id, data })
+        .then(App.finishClose)
+        .catch(e => {
+          alert('Gagal menyimpan perubahan terakhir: ' + e.message);
+          App.finishClose();
+        });
+    } else App.finishClose();
+  },
+
+  finishClose() {
+    State.projectId = null;
+    State.epubSourceId = null;
+    State.undo = State.redo = null;
+    State.projectName = '';
+    State.lines = [];
+    State.files = [];
+    State.rows = [];
+    State.headerIdx = [];
+    State.matches = [];
+    State.selected.clear();
+    State.byNum.clear();
+    State.fileLines.clear();
+    State.translatedCount = 0;
+    State.prScope = 'all';
+    State.prRegex = State.prCase = State.prExact = false;
+    State.prTranslatedOnly = false;
+    State.hideTools = false;
+    State.namesDirty = true;
+    State.syncDirty = false;
+
+    App.main?.setItems([], false);
+    App.pr?.setItems([], false);
+    els.nameTableBody.replaceChildren();
+    els.pasteArea.value = '';
+    els.copyStatus.classList.add('empty');
+    els.progressText.textContent = '0/0 (0%)';
+    els.progressText.classList.remove('saved');
+    els.stickyFileName.textContent = '';
+    els.stickyFileName.title = '';
+    els.stickyFileRange.textContent = '';
+    els.stickyFileBar.classList.remove('show', 'swap');
+    els.stickyFileCheckbox.checked = false;
+    els.stickyFileCheckbox.disabled = true;
+    delete els.stickyFileCheckbox.dataset.file;
+    App.lastFile = null;
+    App.fileCache = null;
+    els.workspaceView.style.display = 'none';
+    const split = document.querySelector('.split');
+    if (split) split.classList.remove('hide-tools');
+    els.workspaceToolbar.classList.remove('hidden');
+    els.btnShowHeader.classList.remove('visible');
+    els.dashboardView.classList.add('open');
+    WorkerCli.call('set-state', { lines: [] }).catch(() => {});
+    App.loadDashboard();
   },
 
   applyHideTools() {
@@ -1418,10 +1316,7 @@ const App = {
   async wipeAllData() {
     if (!confirm('Semua project dan data akan dihapus permanen. Lanjutkan?')) return;
     try {
-      const root = await navigator.storage.getDirectory();
-      for await (const [name] of root.entries()) {
-        try { await root.removeEntry(name, { recursive: true }); } catch {}
-      }
+      await WorkerCli.call('storage-wipe', {});
     } catch {}
     try {
       if (window.caches) {
@@ -1438,52 +1333,185 @@ const App = {
     location.reload();
   },
 
-  closeProject() {
-    if (State.saveTimer) {
-      clearTimeout(State.saveTimer);
-      Storage.save(State.projectId, State.toData()).then(App.finishClose).catch(App.finishClose);
-    } else App.finishClose();
+  async loadDashboard() {
+    const list = els.projectList;
+    const content = list.parentElement;
+
+    if (App.dashboardObserver) { App.dashboardObserver.disconnect(); App.dashboardObserver = null; }
+    App.dashboardSentinel = null;
+    App.dashboardItems = [];
+    App.dashboardRendered = 0;
+    list.innerHTML = '';
+
+    try {
+      const items = await WorkerCli.call('storage-list', {});
+      if (!items.length) {
+        content.classList.add('is-empty');
+        list.innerHTML = `<p class="hint" style="grid-column:1/-1;">Belum ada Project. Buat atau Pulihkan!</p>`;
+        return;
+      }
+      content.classList.remove('is-empty');
+      App.dashboardItems = items;
+
+      const sentinel = document.createElement('div');
+      sentinel.className = 'dashboard-sentinel';
+      list.appendChild(sentinel);
+      App.dashboardSentinel = sentinel;
+
+      App.dashboardObserver = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting && App.dashboardRendered < App.dashboardItems.length) {
+          App.renderDashboardPage();
+        }
+      }, { rootMargin: '300px' });
+      App.dashboardObserver.observe(sentinel);
+
+      App.renderDashboardPage();
+    } catch {
+      list.innerHTML = `<p class="hint" style="color:var(--danger);">Gagal akses storage.</p>`;
+    }
   },
 
-  finishClose() {
-    State.saveTimer = null;
-    State.projectId = null;
-    State.epubSourceId = null;
-    State.undo = State.redo = null;
-    State.projectName = '';
-    State.lines = [];
-    State.files = [];
-    State.rows = [];
-    State.matches = [];
-    State.selected.clear();
-    State.byNum.clear();
-    State.fileLines.clear();
-    State.translatedCount = 0;
-    State.prScope = 'all';
-    State.prRegex = State.prCase = State.prExact = false;
-    State.prTranslatedOnly = false;
-    State.hideTools = false;
-    State.namesDirty = true;
+  renderDashboardPage() {
+    const list = els.projectList;
+    const sentinel = App.dashboardSentinel;
+    if (!list || !sentinel) return;
 
-    App.main?.setItems([], false);
-    App.pr?.setItems([], false);
-    $('nameTableBody').replaceChildren();
-    $('pasteArea').value = '';
-    $('copyStatus').classList.add('empty');
-    $('stickyFileName').textContent = '';
-    $('stickyFileName').title = '';
-    $('stickyFileRange').textContent = '';
-    $('stickyFileBar').classList.remove('show', 'swap');
-    $('stickyFileCheckbox').checked = false;
-    $('stickyFileCheckbox').disabled = true;
-    delete $('stickyFileCheckbox').dataset.file;
-    App.lastFile = null;
-    App.fileCache = null;
-    $('workspaceView').style.display = 'none';
-    const split = document.querySelector('.split');
-    if (split) split.classList.remove('hide-tools');
-    $('dashboardView').classList.add('open');
-    App.loadDashboard();
+    const start = App.dashboardRendered;
+    const end = Math.min(start + DASHBOARD_PAGE_SIZE, App.dashboardItems.length);
+    const frag = document.createDocumentFragment();
+    for (let i = start; i < end; i++) {
+      frag.appendChild(App.buildProjectCard(App.dashboardItems[i]));
+    }
+    App.dashboardRendered = end;
+    list.insertBefore(frag, sentinel);
+
+    if (App.dashboardRendered >= App.dashboardItems.length) {
+      App.dashboardObserver?.disconnect();
+      App.dashboardObserver = null;
+      sentinel.remove();
+      App.dashboardSentinel = null;
+    }
+  },
+
+  buildProjectCard(p) {
+    const card = document.createElement('div');
+    card.className = 'project-card';
+    const hasData = p.fileCount || p.lineCount;
+    let badge = '';
+    if (hasData) {
+      if (p.projectType === 'epub') badge = '<span class="badge badge-epub">EPUB</span>';
+      else if (p.projectType === 'json') badge = '<span class="badge badge-json">JSON-VNTP</span>';
+    }
+    const pct = p.lineCount ? Math.floor(p.translatedCount / p.lineCount * 100) : 0;
+    card.innerHTML = `
+      <div class="project-card-main">
+        <h3>${escapeHtml(p.name)}</h3>
+        <div class="project-meta mt-2">
+          ${badge ? `<div style="margin-bottom:8px;">${badge}</div>` : ''}
+          Diubah: ${new Date(p.updatedAt).toLocaleString('id-ID')}<br>
+          File: ${p.fileCount}<br>
+          Baris: ${p.translatedCount}/${p.lineCount} (${pct}%)
+        </div>
+      </div>
+      <div class="project-actions">
+        <button class="btn btn-primary btn-sm btn-open">Buka</button>
+        <button class="btn btn-ghost btn-sm btn-rename">Ubah</button>
+        <button class="btn btn-ghost btn-sm btn-backup">Backup</button>
+        <button class="btn btn-danger btn-sm btn-delete">Hapus</button>
+      </div>
+    `;
+    card.querySelector('.btn-open').addEventListener('click', async () => {
+      try {
+        const data = await WorkerCli.call('storage-load', { id: p.id });
+        App.open(p.id, data);
+      } catch (e) { alert('Gagal membuka project: ' + e.message); }
+    });
+    card.querySelector('.btn-rename').addEventListener('click', async () => {
+      const name = prompt('Nama baru:', p.name);
+      if (!name?.trim() || name === p.name) return;
+      try {
+        const data = await WorkerCli.call('storage-load', { id: p.id });
+        data.projectName = name.trim();
+        await WorkerCli.call('storage-save', { id: p.id, data });
+        App.loadDashboard();
+      } catch (e) { alert('Gagal mengubah nama: ' + e.message); }
+    });
+    card.querySelector('.btn-backup').addEventListener('click', async () => {
+      App.backup({ id: p.id, name: p.name });
+    });
+    card.querySelector('.btn-delete').addEventListener('click', async () => {
+      if (!confirm('Hapus permanen?')) return;
+      try {
+        const data = await WorkerCli.call('storage-load', { id: p.id });
+        await WorkerCli.call('storage-remove', { id: p.id, epubId: data.epubSourceId });
+        App.loadDashboard();
+      } catch (e) { alert('Gagal menghapus: ' + e.message); }
+    });
+    return card;
+  },
+
+  async backup(p) {
+    if (!WorkerCli.ready()) return;
+    Progress.show('Mem-backup project...', 'Membaca data...');
+    await withBusyCursor(async () => {
+      try {
+        Progress.determinate('Mem-backup project', 'Memproses...');
+        const result = await WorkerCli.call('build-backup-from-storage', {
+          id: p.id, name: p.name
+        }, (prog) => Progress.update(prog.msg, prog.pct));
+        const url = URL.createObjectURL(result.blob);
+        download(url, result.name);
+        Progress.hide();
+      } catch (e) {
+        Progress.hide();
+        alert('Gagal backup: ' + e.message);
+      }
+    });
+  },
+
+  async backupAll() {
+    if (!WorkerCli.ready()) return;
+    Progress.show('Mem-backup semua project...', 'Menghitung project...');
+    await withBusyCursor(async () => {
+      try {
+        Progress.determinate('Mem-backup semua project', 'Memulai...');
+        const result = await WorkerCli.call('backup-all', {}, (p) => Progress.update(p.msg, p.pct));
+        const url = URL.createObjectURL(result.blob);
+        download(url, result.name);
+        Progress.hide();
+      } catch (e) {
+        Progress.hide();
+        if (e.message === 'Belum ada Project untuk di-backup.') alert(e.message);
+        else alert('Gagal backup semua project: ' + e.message);
+      }
+    });
+  },
+
+  async restoreProject(e) {
+    if (!WorkerCli.ready()) return;
+    const uploadedFile = e.target.files?.[0];
+    if (!uploadedFile) return;
+    Progress.show('Memulihkan project...', 'Memuat arsip...');
+    await withBusyCursor(async () => {
+      try {
+        const buffer = await uploadedFile.arrayBuffer();
+        const fallbackName = uploadedFile.name.replace(/\.cstl$/i, '');
+        Progress.determinate('Memulihkan project', 'Membaca arsip...');
+        const result = await WorkerCli.call('parse-restore', { buffer, fallbackName }, (p) => {
+          Progress.update(p.msg, p.pct);
+        }, [buffer]);
+
+        await App.loadDashboard();
+        Progress.hide();
+        if (result.single) alert(`Project "${result.name}" dipulihkan!`);
+        else alert(`${result.ok} project berhasil dipulihkan${result.fail ? `, ${result.fail} gagal` : ''}.`);
+      } catch (e) {
+        Progress.hide();
+        alert('File korup: ' + e.message);
+      } finally {
+        e.target.value = '';
+      }
+    });
   },
 
   refresh(keep = true) {
@@ -1494,58 +1522,46 @@ const App = {
     App.updateButtons();
     if (State.namesDirty) { App.renderNames(); State.namesDirty = false; }
     App.updateStatusBar();
-    $('btnUndo').disabled = !State.undo;
-    $('btnRedo').disabled = !State.redo;
+    els.btnUndo.disabled = !State.undo;
+    els.btnRedo.disabled = !State.redo;
+    State.queueSync();
   },
 
   updateButtons() {
     const has = State.lines.length > 0;
     const sel = State.selected.size > 0;
-    $('btnExport').disabled = !has;
-    $('btnProofread').disabled = !has;
-    $('btnSelectAll').disabled = !has;
-    $('pasteArea').disabled = !has;
-    $('btnApply').disabled = !has;
-    $('rangeFromInput').disabled = !has;
-    $('rangeToInput').disabled = !has;
-    $('btnSelectRange').disabled = !has;
-    $('btnClearSelection').disabled = !sel;
-    $('btnCopyForAi').disabled = !sel;
+    els.btnExport.disabled = !has;
+    els.btnProofread.disabled = !has;
+    els.btnSelectAll.disabled = !has;
+    els.pasteArea.disabled = !has;
+    els.btnApply.disabled = !has;
+    els.rangeFromInput.disabled = !has;
+    els.rangeToInput.disabled = !has;
+    els.btnSelectRange.disabled = !has;
+    els.btnClearSelection.disabled = !sel;
+    els.btnCopyForAi.disabled = !sel;
     const n = State.selected.size;
-    $('btnCopyForAi').textContent = n > 0 ? `Copy ${n} Baris` : 'Copy';
+    els.btnCopyForAi.textContent = n > 0 ? `Copy ${n} Baris` : 'Copy';
   },
 
   updateStatusBar() {
     const total = State.lines.length;
     const tl = State.translatedCount;
     const pct = total ? Math.floor((tl / total) * 100) : 0;
-    const mode = State.projectType === 'uninitialized' ? '-' : (State.projectType === 'epub' ? 'EPUB' : 'JSON');
-    const fileRaw = State.files.length > 1 ? `${State.files.length} files` : (State.files[0] || '-');
-    const file = baseName(fileRaw);
-    $('statusBar').textContent = `${mode} · ${file} · ${tl}/${total} (${pct}%)`;
-    $('progressFill').style.width = `${pct}%`;
-    $('progressText').textContent = `${tl}/${total}`;
-  },
-
-  flashSaved() {
-    const bar = $('statusBar');
-    if (!bar || !State.projectId) return;
-    bar.classList.remove('saved');
-    void bar.offsetWidth;
-    bar.classList.add('saved');
-    clearTimeout(App.savedTimer);
-    App.savedTimer = setTimeout(() => bar.classList.remove('saved'), SAVED_TIMEOUT_MS);
+    els.progressText.textContent = `${tl}/${total} (${pct}%)`;
   },
 
   updateFileBadge() {
-    const bar = $('stickyFileBar');
-    const nameEl = $('stickyFileName');
-    const rangeEl = $('stickyFileRange');
-    const cb = $('stickyFileCheckbox');
+    const bar = els.stickyFileBar;
+    const nameEl = els.stickyFileName;
+    const rangeEl = els.stickyFileRange;
+    const cb = els.stickyFileCheckbox;
     if (!bar || !nameEl || !App.main) return;
-    const scrollTop = $('previewViewport').scrollTop;
-    const rows = State.rows;
-    if (!rows.length) {
+
+    const scrollTop = els.previewViewport.scrollTop;
+    const headers = State.headerIdx;
+
+    if (!headers.length) {
       bar.classList.remove('show');
       nameEl.textContent = '';
       rangeEl.textContent = '';
@@ -1557,14 +1573,19 @@ const App = {
       App.fileCache = null;
       return;
     }
-    let activeFile = null;
-    for (let i = 0; i < rows.length; i++) {
-      if (rows[i].type !== 'header') continue;
-      const p = App.main.pos[i];
-      const h = App.main.heights[i];
-      if (p + h <= scrollTop) activeFile = rows[i].file;
-      else break;
+
+    let activeHeaderIdx = -1;
+    let lo = 0, hi = headers.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const idx = headers[mid];
+      const p = App.main.pos[idx];
+      const h = App.main.heights[idx];
+      if (p + h <= scrollTop) { activeHeaderIdx = idx; lo = mid + 1; }
+      else hi = mid - 1;
     }
+    const activeFile = activeHeaderIdx >= 0 ? State.rows[activeHeaderIdx].file : null;
+
     if (activeFile !== App.lastFile) {
       if (activeFile) {
         if (App.lastFile !== null) {
@@ -1589,6 +1610,7 @@ const App = {
       App.lastFile = activeFile;
       App.fileCache = null;
     }
+
     if (activeFile) {
       const key = `${activeFile}:${State.selected.size}:${State.translatedCount}`;
       if (!App.fileCache || App.fileCache.key !== key) {
@@ -1613,10 +1635,9 @@ const App = {
     if (!file) return;
     const lines = State.fileLines.get(file) || [];
     lines.forEach(l => {
-      if (!isTrans(l)) {
-        if (cb.checked) State.selected.add(l.line_num);
-        else State.selected.delete(l.line_num);
-      }
+      if (isTrans(l)) return;
+      if (cb.checked) State.selected.add(l.line_num);
+      else State.selected.delete(l.line_num);
     });
     App.syncCheckboxes();
   },
@@ -1657,14 +1678,8 @@ const App = {
     hRange.className = 'file-range';
     hdr.append(hCb, hName, hRange);
     row.append(cell, hdr);
-    row._cell = cell;
-    row._cb = cb;
-    row._orig = orig;
-    row._trans = trans;
-    row._hdr = hdr;
-    row._hCb = hCb;
-    row._hName = hName;
-    row._hRange = hRange;
+    row._cell = cell; row._cb = cb; row._orig = orig; row._trans = trans;
+    row._hdr = hdr; row._hCb = hCb; row._hName = hName; row._hRange = hRange;
     return row;
   },
 
@@ -1713,21 +1728,23 @@ const App = {
 
   renderNames() {
     const set = new Set();
-    State.lines.forEach(l => { if (l.name) set.add(l.name); });
+    for (const l of State.lines) if (l.name) set.add(l.name);
     const arr = Array.from(set).sort();
-    $('nameTotalCount').textContent = arr.length;
+    els.nameTotalCount.textContent = arr.length;
+
     const hasNames = arr.length > 0;
     const gloss = App.buildGlossaryMap();
     const hasGloss = hasNames && arr.some(n => gloss.has(n));
     const hasMissing = hasNames && arr.some(n => !gloss.has(n));
-    $('btnCopyAllNames').disabled = !hasNames;
-    $('btnCopyNamesPlain').disabled = !hasNames;
-    $('btnCopyNamesWithGlossary').disabled = !hasGloss;
-    $('btnCopyNamesMissingGlossary').disabled = !hasMissing;
-    const body = $('nameTableBody');
+    els.btnCopyAllNames.disabled = !hasNames;
+    els.btnCopyNamesPlain.disabled = !hasNames;
+    els.btnCopyNamesWithGlossary.disabled = !hasGloss;
+    els.btnCopyNamesMissingGlossary.disabled = !hasMissing;
+
+    const body = els.nameTableBody;
     body.replaceChildren();
     const frag = document.createDocumentFragment();
-    arr.forEach(name => {
+    for (const name of arr) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
       td.className = 'mono';
@@ -1735,14 +1752,14 @@ const App = {
       td.title = 'Klik untuk copy';
       tr.appendChild(td);
       frag.appendChild(tr);
-    });
+    }
     body.appendChild(frag);
   },
 
   async copyAllNames(mode) {
     closeDropdowns();
     const names = new Set();
-    State.lines.forEach(l => { if (l.name) names.add(l.name); });
+    for (const l of State.lines) if (l.name) names.add(l.name);
     const arr = Array.from(names).sort();
     if (!arr.length) return;
     const gloss = App.buildGlossaryMap();
@@ -1764,8 +1781,8 @@ const App = {
   },
 
   selectRange() {
-    const from = parseInt($('rangeFromInput').value);
-    const to = parseInt($('rangeToInput').value);
+    const from = parseInt(els.rangeFromInput.value);
+    const to = parseInt(els.rangeToInput.value);
     const max = State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) : 0;
     if (isNaN(from) || isNaN(to) || from > to || from < 1 || from > max || to > max) return alert('Range tidak valid.');
 
@@ -1777,15 +1794,14 @@ const App = {
     App.syncCheckboxes();
 
     const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === from);
-    if (idx !== -1) {
-      App.main.scrollToIndex(idx);
-      App.flashRow(from, 50);
-    }
+    if (idx !== -1) { App.main.scrollToIndex(idx); App.flashRow(from, 50); }
   },
 
   buildGlossaryMap() {
     const map = new Map();
-    if (State.vndbEnabled && State.vndbGlossary?.length) State.vndbGlossary.forEach(e => map.set(e[0], e[1]));
+    if (State.vndbEnabled && State.vndbGlossary?.length) {
+      State.vndbGlossary.forEach(e => map.set(e[0], e[1]));
+    }
     return map;
   },
 
@@ -1797,6 +1813,7 @@ const App = {
     const sel = State.lines.filter(l => State.selected.has(l.line_num));
     const parts = [];
     if (State.promptEnabled && State.prompt.trim()) parts.push(State.prompt.trim());
+    parts.push(FIXED_FORMAT_PROMPT);
 
     const gloss = App.buildGlossaryMap();
     if (gloss.size > 0) {
@@ -1804,14 +1821,11 @@ const App = {
       gloss.forEach((v, k) => lines.push(`${k}: ${v}`));
       parts.push(`VNDB Glossary:\n${lines.join('\n')}`);
     }
-
     if (State.customEnabled && State.customRaw.trim()) parts.push(`Custom Glossary:\n${State.customRaw.trim()}`);
-
     if (State.ringkasanEnabled) {
       if (State.ringkasan && State.ringkasan.trim()) parts.push(`Ringkasan Sebelumnya:\n${State.ringkasan.trim()}`);
       if (State.ringkasanPrompt && State.ringkasanPrompt.trim()) parts.push(State.ringkasanPrompt.trim());
     }
-
     parts.push(sel.map(App.formatLine).join('\n'));
     const text = parts.join('\n\n');
 
@@ -1819,7 +1833,7 @@ const App = {
       await clipboard(text);
       App.flash(`Disalin ${sel.length} baris.`);
     } catch {
-      $('pasteArea').value = text;
+      els.pasteArea.value = text;
       alert("Clipboard diblokir. Teks dipindah ke kolom 'Paste hasil AI'.");
     }
   },
@@ -1829,21 +1843,20 @@ const App = {
     if (fenceLines.length !== 0 && fenceLines.length !== 2) {
       return { results: [], errors: ['Harus ada pembuka dan penutup ``` bersamaan, atau tidak ada sama sekali.'], seen: new Set(), ringkasan: null };
     }
-    let lines = raw.split(/\r?\n/).filter(l => !/^\s*```\w*\s*$/.test(l));
-    let ringkasan = null;
-    const markerIdx = lines.findIndex(l => /^\s*ringkasan\s*:\s*$/i.test(l));
-    if (markerIdx !== -1) {
-      const numRe = /^\s*\d+\.\s+/;
-      let end = markerIdx + 1;
-      while (end < lines.length && !numRe.test(lines[end])) end++;
-      ringkasan = lines.slice(markerIdx + 1, end).join('\n').trim();
-      lines = lines.slice(0, markerIdx).concat(lines.slice(end));
+    const text = raw.split(/\r?\n/).filter(l => !/^\s*```\w*\s*$/.test(l)).join('\n');
+    const tagMatch = text.match(/<translate>([\s\S]*?)<\/translate>/i);
+    if (!tagMatch) {
+      return { results: [], errors: ['Tidak ditemukan tag <translate>...</translate>.'], seen: new Set(), ringkasan: null };
     }
+    const before = text.slice(0, tagMatch.index).trim();
+    const after = text.slice(tagMatch.index + tagMatch[0].length).trim();
+    const ringkasan = [before, after].filter(Boolean).join('\n\n').trim() || null;
+    const lines = tagMatch[1].split(/\r?\n/);
+
     const results = [];
     const errors = [];
     const seen = new Set();
     const re = /^(\d+)\.\s+(.*)$/;
-
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -1869,7 +1882,7 @@ const App = {
 
   applyTranslation() {
     if (!State.lines.length) return;
-    const raw = $('pasteArea').value.trim();
+    const raw = els.pasteArea.value.trim();
     if (!raw) return alert('Teks kosong.');
 
     const { results, errors, seen, ringkasan } = App.parseAi(raw, State.byNum);
@@ -1909,7 +1922,7 @@ const App = {
 
     if (State.ringkasanEnabled && ringkasan) State.ringkasan = ringkasan;
 
-    $('pasteArea').value = '';
+    els.pasteArea.value = '';
     State.namesDirty = true;
     App.refresh(true);
     State.queueSave();
@@ -1944,34 +1957,33 @@ const App = {
     const sel = window.getSelection();
     if (sel && sel.rangeCount) sel.removeAllRanges();
     App.activeLine = num;
-    $('lineEditorTitle').textContent = `Edit Baris ${num}`;
-    $('lineOriginalView').value = l.name ? `${l.name}: ${l.message}` : l.message;
-    $('lineNameWrap').style.display = l.name ? 'block' : 'none';
-    $('lineNameInput').value = l.name ? (l.trans_name || '') : '';
-    if (l.name) $('lineNameInput').placeholder = l.name;
-    $('lineMessageInput').value = (l.trans_message || '').trim();
-    $('lineTranslatedCheck').checked = isTrans(l);
-    App.toggleModal($('lineEditorModal'), true);
+    els.lineEditorTitle.textContent = `Edit Baris ${num}`;
+    els.lineOriginalView.value = l.name ? `${l.name}: ${l.message}` : l.message;
+    els.lineNameWrap.style.display = l.name ? 'block' : 'none';
+    els.lineNameInput.value = l.name ? (l.trans_name || '') : '';
+    if (l.name) els.lineNameInput.placeholder = l.name;
+    els.lineMessageInput.value = (l.trans_message || '').trim();
+    els.lineTranslatedCheck.checked = isTrans(l);
+    toggleModal(els.lineEditorModal, true);
   },
 
   saveLineEditor() {
     const l = State.byNum.get(App.activeLine);
     if (!l) return;
-    const msg = $('lineMessageInput').value.trim().replace(/\r?\n/g, '\\n');
+    const msg = els.lineMessageInput.value.trim().replace(/\r?\n/g, '\\n');
     const hasMsg = !!(l.message || '').trim();
-    if ($('lineTranslatedCheck').checked && !msg && hasMsg) return alert('Pesan kosong.');
+    if (els.lineTranslatedCheck.checked && !msg && hasMsg) return alert('Pesan kosong.');
 
     State.undo = snapshot();
     l.trans_message = msg || null;
-    const mark = $('lineTranslatedCheck').checked && (!!msg || !hasMsg);
-    l.is_translated = mark;
-    if (l.name) l.trans_name = $('lineNameInput').value.trim().replace(/\r?\n/g, '\\n') || null;
+    l.is_translated = els.lineTranslatedCheck.checked && (!!msg || !hasMsg);
+    if (l.name) l.trans_name = els.lineNameInput.value.trim().replace(/\r?\n/g, '\\n') || null;
 
     State.redo = null;
     State.namesDirty = true;
-    App.toggleModal($('lineEditorModal'), false);
+    toggleModal(els.lineEditorModal, false);
     App.refresh(true);
-    if ($('proofreadModal').classList.contains('open')) App.renderProofread();
+    if (els.proofreadModal.classList.contains('open')) App.renderProofread();
     State.queueSave();
   },
 
@@ -1995,67 +2007,58 @@ const App = {
 
   syncProofread() {
     PROOFREAD_FIELDS.forEach(({ id, key, type }) => {
-      State[key] = type === 'check' ? $(id).checked : $(id).value;
+      State[key] = type === 'check' ? els[id].checked : els[id].value;
     });
     if (State.projectId) State.queueSave();
   },
 
   openProofread() {
     PROOFREAD_FIELDS.forEach(({ id, key, type }) => {
-      const el = $(id);
-      if (type === 'check') el.checked = State[key];
-      else el.value = State[key];
+      const el = els[id];
+      if (type === 'check') el.checked = State[key]; else el.value = State[key];
     });
-    App.toggleModal($('proofreadModal'), true);
+    toggleModal(els.proofreadModal, true);
     setTimeout(() => App.renderProofread(), 340);
   },
 
-  buildRe(query, regex, exact, caseSensitive) {
-    if (!query) return null;
-    try {
-      let p = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (exact) p = `(?<![\\p{L}\\p{N}_])${p}(?![\\p{L}\\p{N}_])`;
-      return new RegExp(p, caseSensitive ? 'gu' : 'giu');
-    } catch { return null; }
-  },
+  async renderProofread() {
+    if (!els.proofreadModal.classList.contains('open')) return;
+    await State.syncNow();
+    const q = els.proofreadSearchInput.value;
+    const regex = els.proofreadRegexCheck.checked;
+    const exact = els.proofreadExactCheck.checked;
+    const caseSensitive = els.proofreadCaseCheck.checked;
+    const translatedOnly = els.proofreadTranslatedOnlyCheck.checked;
+    const scope = els.proofreadScope.value;
 
-  renderProofread() {
-    if (!$('proofreadModal').classList.contains('open')) return;
-    const q = $('proofreadSearchInput').value;
-    const re = App.buildRe(q, $('proofreadRegexCheck').checked, $('proofreadExactCheck').checked, $('proofreadCaseCheck').checked);
-    App.highlightRe = re ? new RegExp(re.source, re.flags) : null;
-    const onlyTrans = $('proofreadTranslatedOnlyCheck').checked;
-    const scope = $('proofreadScope').value;
+    if (q) {
+      let p;
+      try {
+        p = regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (exact) p = `(?<![\\p{L}\\p{N}_])${p}(?![\\p{L}\\p{N}_])`;
+        App.highlightRe = new RegExp(p, caseSensitive ? 'gu' : 'giu');
+      } catch { App.highlightRe = null; }
+    } else {
+      App.highlightRe = null;
+    }
 
-    State.matches = State.lines.filter(l => {
-      if (onlyTrans && !isTrans(l)) return false;
-      const on = l.name || '';
-      const tn = isTrans(l) ? (l.trans_name || '').trim() || l.name : null;
-      const msg = onlyTrans ? l.trans_message : l.message;
-      const name = onlyTrans ? tn : on;
-      if (q && re) {
-        let found = false;
-        re.lastIndex = 0;
-        if ((scope === 'all' || scope === 'message') && msg && re.test(msg)) found = true;
-        re.lastIndex = 0;
-        if (!found && (scope === 'all' || scope === 'name') && name && re.test(name)) found = true;
-        if (!found) return false;
+    let matches = [];
+    if (WorkerCli.ready()) {
+      try {
+        const r = await WorkerCli.call('proofread-search', {
+          lines: null, query: q, regex, exact, caseSensitive, scope, translatedOnly
+        });
+        matches = r.matches;
+      } catch {
+        matches = [];
       }
-      return true;
-    }).map(l => ({
-      num: l.line_num,
-      file: l.file,
-      origName: l.name || '',
-      origMsg: l.message,
-      transName: isTrans(l) ? (l.trans_name || '').trim() || l.name : null,
-      transMsg: l.trans_message,
-      isTrans: isTrans(l)
-    }));
+    }
 
-    $('proofreadStatus').textContent = `Ditemukan ${State.matches.length} baris.`;
+    State.matches = matches;
+    els.proofreadStatus.textContent = `Ditemukan ${matches.length} baris.`;
     const changed = q !== App.lastQuery;
     App.lastQuery = q;
-    App.pr.setItems(State.matches, !changed);
+    App.pr.setItems(matches, !changed);
   },
 
   createPrRow() {
@@ -2071,10 +2074,7 @@ const App = {
     trans.className = 'translated';
     wrap.append(meta, orig, trans);
     row.append(wrap);
-    row._wrap = wrap;
-    row._meta = meta;
-    row._orig = orig;
-    row._trans = trans;
+    row._wrap = wrap; row._meta = meta; row._orig = orig; row._trans = trans;
     return row;
   },
 
@@ -2084,8 +2084,8 @@ const App = {
     row._orig.replaceChildren();
     row._trans.replaceChildren();
 
-    const onlyTrans = $('proofreadTranslatedOnlyCheck').checked;
-    const scope = $('proofreadScope').value;
+    const onlyTrans = els.proofreadTranslatedOnlyCheck.checked;
+    const scope = els.proofreadScope.value;
 
     const build = (name, msg, hl) => {
       const frag = document.createDocumentFragment();
@@ -2099,8 +2099,7 @@ const App = {
       return frag;
     };
 
-    if (!d.isTrans) row._trans.classList.add('cell-muted');
-    else row._trans.classList.remove('cell-muted');
+    row._trans.classList.toggle('cell-muted', !d.isTrans);
 
     if (onlyTrans) {
       row._orig.textContent = d.origName ? `${d.origName}: ${d.origMsg}` : d.origMsg;
@@ -2113,46 +2112,50 @@ const App = {
     }
   },
 
-  replaceAll() {
-    const q = $('proofreadSearchInput').value;
-    const repl = $('proofreadReplaceInput').value;
+  async replaceAll() {
+    const q = els.proofreadSearchInput.value;
+    const repl = els.proofreadReplaceInput.value;
     if (!q) return alert('Pencarian kosong!');
 
-    const re = App.buildRe(q, $('proofreadRegexCheck').checked, $('proofreadExactCheck').checked, $('proofreadCaseCheck').checked);
-    if (!re) return alert('Regex tidak valid.');
+    await State.syncNow();
 
-    let count = 0;
+    const regex = els.proofreadRegexCheck.checked;
+    const exact = els.proofreadExactCheck.checked;
+    const caseSensitive = els.proofreadCaseCheck.checked;
+    const translatedOnly = els.proofreadTranslatedOnlyCheck.checked;
+    const scope = els.proofreadScope.value;
+
+    let result;
+    try {
+      if (WorkerCli.ready()) {
+        result = await WorkerCli.call('replace-all', {
+          lines: null, query: q, replace: repl, regex, exact, caseSensitive, scope, translatedOnly
+        });
+      } else { result = { modified: [], count: 0 }; }
+    } catch (e) { return alert('Error: ' + e.message); }
+
+    if (!result.count) return alert('Tidak ada yang cocok.');
+
     State.undo = snapshot();
     State.redo = null;
-
-    const onlyTrans = $('proofreadTranslatedOnlyCheck').checked;
-    const scope = $('proofreadScope').value;
-
-    State.lines.forEach(l => {
-      if (onlyTrans && !isTrans(l)) return;
-      let replaced = false;
-      const msgProp = onlyTrans ? 'trans_message' : 'message';
-      const nameProp = onlyTrans ? 'trans_name' : 'name';
-
-      if ((scope === 'all' || scope === 'message') && l[msgProp]) {
-        const v = l[msgProp].replace(re, repl);
-        if (v !== l[msgProp]) { l[msgProp] = v; replaced = true; }
+    const modMap = new Map(result.modified.map(m => [m.line_num, m]));
+    for (const l of State.lines) {
+      const m = modMap.get(l.line_num);
+      if (m) {
+        if (m.message !== undefined) l.message = m.message;
+        if (m.trans_message !== undefined) l.trans_message = m.trans_message;
+        if (m.name !== undefined) l.name = m.name;
+        if (m.trans_name !== undefined) l.trans_name = m.trans_name;
       }
-      if ((scope === 'all' || scope === 'name') && l[nameProp]) {
-        const v = l[nameProp].replace(re, repl);
-        if (v !== l[nameProp]) { l[nameProp] = v; replaced = true; }
-      }
-      if (replaced) count++;
-    });
-
-    if (count) {
-      State.namesDirty = true;
-      App.refresh(true);
-      App.renderProofread();
-      State.queueSave();
-      alert(`Berhasil replace ${count} baris.`);
-    } else alert('Tidak ada yang cocok.');
+    }
+    State.namesDirty = true;
+    App.refresh(true);
+    await App.renderProofread();
+    State.queueSave();
+    alert(`Berhasil replace ${result.count} baris.`);
   }
 };
 
 document.addEventListener('DOMContentLoaded', App.init);
+
+})();

@@ -10,11 +10,11 @@
   <link rel="manifest" href="./manifest.json" />
   <link rel="icon" type="image/svg+xml" href="./icon.svg" />
   <link rel="apple-touch-icon" href="./icon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script defer src="./app.js"></script>
 </head>
 <body>
@@ -23,7 +23,7 @@
       <div class="hero-head">
         <div class="hero-title-wrap">
           <h1 class="hero-title">Copas Tool</h1>
-          <span class="hero-badge">v16</span>
+          <span class="hero-badge">v1</span>
         </div>
       </div>
       <div class="actions">
@@ -48,7 +48,10 @@
   </div>
 
   <div id="workspaceView" class="workspace" style="display:none;">
-    <header class="toolbar">
+    <button id="btnShowHeader" class="btn-show-header" aria-label="Tampilkan Header">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <header id="workspaceToolbar" class="toolbar">
       <button id="btnBackToDashboard" class="btn btn-ghost btn-icon" aria-label="Kembali ke Dashboard">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         <span class="btn-text">Dashboard</span>
@@ -73,15 +76,16 @@
       </div>
       <span class="toolbar-sep desktop-only" style="margin-left:8px;"></span>
       <span id="projectNameDisplay" class="toolbar-project-name desktop-only">Project Aktif</span>
+      <button id="btnToggleHeader" class="btn btn-ghost btn-icon" aria-label="Sembunyikan Header">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
     </header>
+
     <main class="split">
       <section class="panel panel-left">
         <div class="panel-header">
           <h2 class="panel-title">Teks</h2>
-          <div class="progress-wrap">
-            <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
-            <span id="progressText" class="mono">0/0</span>
-          </div>
+          <span id="progressText" class="progress-text mono">0/0 (0%)</span>
         </div>
         <div id="previewViewport" class="viewport">
           <div class="sticky-file-header">
@@ -94,6 +98,7 @@
           <div id="previewContainer" class="preview-container"></div>
         </div>
       </section>
+
       <section class="panel panel-right">
         <h2 class="panel-title">Alat</h2>
         <div class="card mb-2">
@@ -111,7 +116,9 @@
           <div class="divider my-2"></div>
           <button id="btnCopyForAi" class="btn btn-primary w-full" disabled>Copy</button>
         </div>
+
         <div id="copyStatus" class="toast empty"></div>
+
         <label class="section-label" for="pasteArea">Hasil Teks</label>
         <textarea id="pasteArea" class="mono textarea" placeholder="Paste hasil dari AI di sini..." disabled></textarea>
         <div class="inline-actions">
@@ -119,6 +126,7 @@
           <button id="btnApply" class="btn btn-success grow" disabled>Terapkan Terjemahan</button>
           <button id="btnRedo" class="btn btn-ghost" disabled>Redo</button>
         </div>
+
         <div class="card mt-3 mb-2">
           <div class="row between mb-2">
             <div class="section-label" style="margin:0;">Daftar Nama (<span id="nameTotalCount">0</span>)</div>
@@ -138,7 +146,6 @@
         </div>
       </section>
     </main>
-    <footer id="statusBar" class="status-bar">File: - | Baris: 0 | Diterjemahkan: 0/0 (0%)</footer>
   </div>
 
   <input id="importFileInput" type="file" accept=".json,.epub" multiple hidden />
@@ -239,9 +246,15 @@
           <p class="hint m-0 mt-1 mb-2">Saat aktif, AI diminta menyertakan ringkasan karakter dan cerita. Ringkasan itu disimpan di sini dan otomatis menggantikan versi lama setiap sesi copy berikutnya.</p>
           <label class="check-line mb-2"><input id="ringkasanEnabledCheck" type="checkbox" />Sertakan Ringkasan</label>
           <div id="ringkasanWrap" class="nested-box">
-            <label class="section-label">Prompt Ringkasan</label>
+            <div class="row between">
+              <label class="section-label" style="margin:0;">Prompt Ringkasan</label>
+              <button id="btnRingkasanPromptReset" class="btn btn-ghost btn-xs">Reset Default</button>
+            </div>
             <textarea id="ringkasanPromptInput" class="mono textarea small"></textarea>
-            <label class="section-label mt-2">Ringkasan Tersimpan</label>
+            <div class="row between mt-2">
+              <label class="section-label" style="margin:0;">Ringkasan Tersimpan</label>
+              <button id="btnRingkasanStoredReset" class="btn btn-ghost btn-xs">Hapus</button>
+            </div>
             <textarea id="ringkasanStoredInput" class="mono textarea small" placeholder="Belum ada ringkasan tersimpan..."></textarea>
           </div>
         </div>
@@ -349,10 +362,15 @@
     </div>
   </div>
 
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
-    }
-  </script>
+  <div id="busyOverlay" class="busy-overlay" role="alertdialog" aria-modal="true" aria-live="polite">
+    <div class="busy-card">
+      <div class="busy-head">
+        <div class="busy-spinner"></div>
+        <div class="busy-title" id="busyTitle">Memproses...</div>
+      </div>
+      <div class="busy-bar"><div class="busy-bar-fill" id="busyBarFill"></div></div>
+      <div class="busy-msg" id="busyMsg"></div>
+    </div>
+  </div>
 </body>
 </html>
