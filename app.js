@@ -396,11 +396,12 @@ State.queueSync = () => {
 };
 
 class Scroller {
-  constructor(viewport, container, create, update) {
+  constructor(viewport, container, create, update, keyOf) {
     this.vp = viewport;
     this.container = container;
     this.create = create;
     this.update = update;
+    this.keyOf = keyOf || ((item, i) => i);
     this.items = [];
     this.heights = new Float32Array(0);
     this.pos = new Float32Array(0);
@@ -416,6 +417,8 @@ class Scroller {
     this.scheduled = false;
     this.lastW = 0;
     this.lastH = 0;
+    this.heightCache = new Map();
+    this.scrollGen = 0;
 
     viewport.addEventListener('scroll', () => {
       this.scrollTop = viewport.scrollTop;
@@ -444,21 +447,26 @@ class Scroller {
 
   setItems(items, keep = false) {
     const prev = keep ? this.vp.scrollTop : 0;
-    const keepH = keep && this.heights.length === items.length;
     this.items = items;
-    this.heights = keepH ? this.heights : new Float32Array(items.length);
-    if (!keepH) {
-      for (let i = 0; i < items.length; i++) {
-        this.heights[i] = items[i]?.type === 'header' ? 32 : this.defaultH;
-      }
+    const n = items.length;
+    this.itemKeys = new Array(n);
+    this.heights = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const item = items[i];
+      const key = this.keyOf(item, i);
+      this.itemKeys[i] = key;
+      const def = item?.type === 'header' ? 32 : this.defaultH;
+      const cached = keep ? this.heightCache.get(key) : undefined;
+      this.heights[i] = cached !== undefined ? cached : def;
     }
-    this.pos = new Float32Array(items.length);
+    this.pos = new Float32Array(n);
     this.updatePos();
     if (keep) {
       const max = Math.max(0, this.totalH - this.vp.clientHeight);
       this.vp.scrollTop = Math.min(prev, max);
     } else {
       this.vp.scrollTop = 0;
+      this.heightCache.clear();
     }
     this.scrollTop = this.vp.scrollTop;
     this.invalidate();
@@ -575,6 +583,7 @@ class Scroller {
           this.heights[di] = total;
           heightsChanged = true;
         }
+        this.heightCache.set(this.itemKeys[di], this.heights[di]);
       }
     }
 
@@ -599,12 +608,14 @@ class Scroller {
 
   scrollToIndex(idx) {
     if (idx < 0 || idx >= this.items.length) return;
+    const gen = ++this.scrollGen;
     const vh = this.vp.clientHeight || 800;
     const target = this.pos[idx] || 0;
     this.vp.scrollTop = Math.max(0, target - (vh / 2) + (this.heights[idx] / 2));
     this.scrollTop = this.vp.scrollTop;
     this.render();
     requestAnimationFrame(() => {
+      if (this.scrollGen !== gen) return;
       const t = this.pos[idx] || 0;
       this.vp.scrollTop = Math.max(0, t - (vh / 2) + (this.heights[idx] / 2));
       this.scrollTop = this.vp.scrollTop;
@@ -884,12 +895,16 @@ const App = {
       return;
     }
 
-    App.main = new Scroller(els.previewViewport, els.previewContainer, App.createMainRow, App.updateMainRow);
+    App.main = new Scroller(
+      els.previewViewport, els.previewContainer, App.createMainRow, App.updateMainRow,
+      (item) => item.type === 'header' ? `h:${item.file}` : `l:${item.line.line_num}`
+    );
     App.pr = new Scroller(
       els.proofreadContainer.closest('.proofread-results-wrap'),
       els.proofreadContainer,
       App.createPrRow,
-      App.updatePrRow
+      App.updatePrRow,
+      (item) => `p:${item.num}`
     );
 
     App.bind();
