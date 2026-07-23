@@ -1,10 +1,9 @@
-const CACHE = 'cstl-v1.1';
+const CACHE = 'cstl-v1.2';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
-  './worker.js',
   './manifest.json',
   './icon.svg',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
