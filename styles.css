@@ -316,7 +316,7 @@ input, textarea, button, select { font-family: inherit; font-size: inherit; }
   font-size: 13px;
   max-width: 240px;
 }
-.toolbar-dynamic { flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.toolbar-dynamic { flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .toolbar-dynamic::-webkit-scrollbar { display: none; }
 .toolbar-actions { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .toolbar-actions .btn:not(.btn-icon) { padding: 7px 11px; font-size: 12.5px; min-height: 32px; }
@@ -411,7 +411,6 @@ input, textarea, button, select { font-family: inherit; font-size: inherit; }
   border-radius: var(--r-lg);
   overflow: auto;
   background: var(--bg);
-  -webkit-overflow-scrolling: touch;
   overflow-anchor: none;
   min-height: 0;
   overscroll-behavior: contain;
@@ -630,7 +629,6 @@ input, textarea, button, select { font-family: inherit; font-size: inherit; }
 select {
   appearance: none;
   -webkit-appearance: none;
-  -moz-appearance: none;
   cursor: pointer;
   text-align: center;
   text-align-last: center;
@@ -713,7 +711,6 @@ select:hover:not(:disabled) { border-color: var(--ink-muted); }
   min-height: 120px;
   max-height: 240px;
   display: block;
-  -webkit-overflow-scrolling: touch;
 }
 .name-table { width: 100%; min-width: 280px; border-collapse: collapse; }
 .name-table th, .name-table td {

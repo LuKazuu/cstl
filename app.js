@@ -23,11 +23,36 @@ const SETTINGS_FIELDS = [
 ];
 
 const PROOFREAD_FIELDS = [
-  { id: 'proofreadScope',              key: 'prScope',          type: 'value', def: 'all'   },
-  { id: 'proofreadRegexCheck',         key: 'prRegex',          type: 'check', def: false   },
-  { id: 'proofreadCaseCheck',          key: 'prCase',           type: 'check', def: false   },
-  { id: 'proofreadExactCheck',         key: 'prExact',          type: 'check', def: false   },
-  { id: 'proofreadTranslatedOnlyCheck',key: 'prTranslatedOnly', type: 'check', def: false   }
+  { id: 'proofreadScope',               key: 'prScope',          type: 'value', def: 'all'   },
+  { id: 'proofreadRegexCheck',          key: 'prRegex',          type: 'check', def: false   },
+  { id: 'proofreadCaseCheck',           key: 'prCase',           type: 'check', def: false   },
+  { id: 'proofreadExactCheck',          key: 'prExact',          type: 'check', def: false   },
+  { id: 'proofreadTranslatedOnlyCheck', key: 'prTranslatedOnly', type: 'check', def: false   }
+];
+
+const STATE_SCHEMA = [
+  { key: 'projectName',        def: '' },
+  { key: 'projectType',        def: 'uninitialized',        coerce: true },
+  { key: 'epubTags',           def: 'p',                    coerce: true },
+  { key: 'epubSourceId',       def: null,                   coerce: true },
+  { key: 'prompt',             def: DEFAULT_PROMPT,         coerce: true, store: 'prompt_header' },
+  { key: 'ignoreName',         def: false,                  store: 'ignoreNameTranslation' },
+  { key: 'promptEnabled',      def: true },
+  { key: 'ringkasanEnabled',   def: false },
+  { key: 'ringkasanPrompt',    def: DEFAULT_RINGKASAN_PROMPT, coerce: true },
+  { key: 'ringkasan',          def: '' },
+  { key: 'vndbEnabled',        def: false },
+  { key: 'vndbId',             def: '' },
+  { key: 'vndbGlossary',       def: [],                     coerce: true },
+  { key: 'customEnabled',      def: false },
+  { key: 'customRaw',          def: '' },
+  { key: 'jumpToContext',      def: false },
+  { key: 'hideTools',          def: false },
+  { key: 'prScope',            def: 'all',                  coerce: true, store: 'proofreadScope' },
+  { key: 'prRegex',            def: false,                  store: 'proofreadRegex' },
+  { key: 'prCase',             def: false,                  store: 'proofreadCaseSensitive' },
+  { key: 'prExact',            def: false,                  store: 'proofreadExactMatch' },
+  { key: 'prTranslatedOnly',   def: false,                  store: 'proofreadTranslatedOnly' }
 ];
 
 const DROPDOWNS = [
@@ -44,6 +69,7 @@ const makeEpubId = () => 'epub_' + Date.now() + '.epub';
 const clone = obj => (typeof structuredClone === 'function') ? structuredClone(obj) : JSON.parse(JSON.stringify(obj));
 const snapshot = () => ({ lines: clone(State.lines), selected: new Set(State.selected) });
 const jsZipReady = () => typeof JSZip !== 'undefined';
+const yieldToEvent = () => new Promise(r => setTimeout(r, 0));
 
 function normalizeLine(l) {
   if (l._n) return l;
@@ -79,10 +105,6 @@ function isJapanese(s) {
   return /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(s);
 }
 
-function yieldToEvent() {
-  return new Promise(r => setTimeout(r, 0));
-}
-
 function download(url, name) {
   const a = document.createElement('a');
   a.href = url;
@@ -113,22 +135,36 @@ function withBusyCursor(fn) {
   return Promise.resolve(fn()).finally(() => { document.body.style.cursor = 'default'; });
 }
 
+async function withProgress(title, initialMsg, fn, failMsg) {
+  Progress.show(title, initialMsg || '');
+  let err = null;
+  let result;
+  await withBusyCursor(async () => {
+    try { result = await fn(); }
+    catch (e) { err = e; }
+  });
+  Progress.hide();
+  if (err) {
+    if (els.copyStatus) els.copyStatus.classList.add('empty');
+    const msg = failMsg ? failMsg(err) : err.message;
+    setTimeout(() => alert(msg), 10);
+    return undefined;
+  }
+  return result;
+}
+
 const Storage = {
-  async root() {
-    return await navigator.storage.getDirectory();
-  },
+  root() { return navigator.storage.getDirectory(); },
   async readIndex() {
     try {
       const root = await Storage.root();
-      const h = await root.getFileHandle(INDEX_FILE);
-      const f = await h.getFile();
+      const f = await (await root.getFileHandle(INDEX_FILE)).getFile();
       return JSON.parse(await f.text());
     } catch { return null; }
   },
   async writeIndex(items) {
     const root = await Storage.root();
-    const h = await root.getFileHandle(INDEX_FILE, { create: true });
-    const w = await h.createWritable();
+    const w = await (await root.getFileHandle(INDEX_FILE, { create: true })).createWritable();
     await w.write(JSON.stringify(items));
     await w.close();
   },
@@ -143,27 +179,26 @@ const Storage = {
     const items = (await Storage.readIndex()) || [];
     await Storage.writeIndex(items.filter(p => p.id !== id));
   },
-  async saveProject(id, data) {
+  async saveProject(id, data, counts) {
     data.updatedAt = Date.now();
     const root = await Storage.root();
-    const h = await root.getFileHandle(id, { create: true });
-    const w = await h.createWritable();
+    const w = await (await root.getFileHandle(id, { create: true })).createWritable();
     await w.write(JSON.stringify(data));
     await w.close();
+    const tc = counts?.translatedCount ?? data.lines?.reduce((n, l) => n + (l.is_translated ? 1 : 0), 0) ?? 0;
     await Storage.upsertIndex({
       id,
       name: data.projectName,
       projectType: data.projectType || 'uninitialized',
       updatedAt: data.updatedAt,
-      fileCount: data.imported_files?.length || 0,
-      lineCount: data.lines?.length || 0,
-      translatedCount: data.lines?.reduce((n, l) => n + (l.is_translated ? 1 : 0), 0) || 0
+      fileCount: counts?.fileCount ?? data.imported_files?.length ?? 0,
+      lineCount: counts?.lineCount ?? data.lines?.length ?? 0,
+      translatedCount: tc
     });
   },
   async load(id) {
     const root = await Storage.root();
-    const h = await root.getFileHandle(id);
-    const f = await h.getFile();
+    const f = await (await root.getFileHandle(id)).getFile();
     return JSON.parse(await f.text());
   },
   async remove(id, epubId) {
@@ -201,14 +236,12 @@ const Storage = {
   },
   async loadEpubBuffer(epubId) {
     const root = await Storage.root();
-    const h = await root.getFileHandle(epubId);
-    const f = await h.getFile();
+    const f = await (await root.getFileHandle(epubId)).getFile();
     return await f.arrayBuffer();
   },
   async saveEpub(epubId, buffer) {
     const root = await Storage.root();
-    const h = await root.getFileHandle(epubId, { create: true });
-    const w = await h.createWritable();
+    const w = await (await root.getFileHandle(epubId, { create: true })).createWritable();
     await w.write(buffer);
     await w.close();
   },
@@ -276,7 +309,7 @@ function parseJsonArray(arr, file, start) {
   return out;
 }
 
-async function parseJsonFiles(files, existing, start, onProgress) {
+async function parseFilesList(files, existing, start, onProgress, label = 'file') {
   existing = new Set(existing || []);
   const imported = [];
   const skipped = [];
@@ -289,7 +322,7 @@ async function parseJsonFiles(files, existing, start, onProgress) {
     const arr = JSON.parse(decodeBuffer(f.buffer));
     const parsed = parseJsonArray(arr, bn, cur);
     if (parsed.length) { existing.add(bn); imported.push(...parsed); cur += parsed.length; }
-    onProgress(`${i + 1} / ${sorted.length} file`, ((i + 1) / sorted.length) * 100);
+    onProgress(`${i + 1} / ${sorted.length} ${label}`, ((i + 1) / sorted.length) * 100);
     if (i % 50 === 0) await yieldToEvent();
   }
   return { imported, skipped, nextStart: cur, existing: Array.from(existing) };
@@ -297,26 +330,13 @@ async function parseJsonFiles(files, existing, start, onProgress) {
 
 async function parseZipJson(buffer, existing, start, onProgress) {
   if (!jsZipReady()) throw new Error('JSZip tidak tersedia.');
-  existing = new Set(existing || []);
   const zip = new JSZip();
   await zip.loadAsync(buffer);
-  const names = Object.keys(zip.files).filter(n => n.endsWith('.json'))
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-  const imported = [];
-  const skipped = [];
-  let cur = start;
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i];
-    const bn = baseName(name);
-    if (existing.has(bn)) { skipped.push(bn); continue; }
-    const buf = await zip.file(name).async('uint8array');
-    const arr = JSON.parse(decodeBuffer(buf));
-    const parsed = parseJsonArray(arr, bn, cur);
-    if (parsed.length) { existing.add(bn); imported.push(...parsed); cur += parsed.length; }
-    onProgress(`${i + 1} / ${names.length} file`, ((i + 1) / names.length) * 100);
-    if (i % 50 === 0) await yieldToEvent();
+  const files = [];
+  for (const name of Object.keys(zip.files).filter(n => n.endsWith('.json'))) {
+    files.push({ name, buffer: await zip.file(name).async('uint8array') });
   }
-  return { imported, skipped, nextStart: cur, existing: Array.from(existing) };
+  return parseFilesList(files, existing, start, onProgress);
 }
 
 async function parseEpub(buffer, tags, existing, start, epubId, onProgress) {
@@ -409,8 +429,7 @@ async function buildExportJson(lines, projectName, onProgress) {
 
 async function buildExportEpub(epubId, lines, tags, projectName, onProgress) {
   if (!jsZipReady()) throw new Error('JSZip tidak tersedia.');
-  let buffer = null;
-  if (epubId) buffer = await Storage.loadEpubBuffer(epubId);
+  let buffer = epubId ? await Storage.loadEpubBuffer(epubId) : null;
   if (!buffer) throw new Error('EPUB tidak ditemukan.');
   const zip = new JSZip();
   await zip.loadAsync(buffer);
@@ -419,12 +438,11 @@ async function buildExportEpub(epubId, lines, tags, projectName, onProgress) {
   const paths = Object.keys(byFile);
   for (let pi = 0; pi < paths.length; pi++) {
     const path = paths[pi];
-    const fileLines = byFile[path];
     const entry = zip.file(path);
     if (!entry) continue;
     const html = await entry.async('text');
     const xmlMatch = html.match(/^<\?xml.*?\?>/i);
-    const replacements = fileLines.map(l => (l.is_translated && l.trans_message) ? l.trans_message : null);
+    const replacements = byFile[path].map(l => (l.is_translated && l.trans_message) ? l.trans_message : null);
     let out = Html.rewriteTags(html, path.endsWith('.xhtml'), tags, replacements);
     if (xmlMatch && !out.startsWith('<?xml')) out = xmlMatch[0] + '\n' + out;
     zip.file(path, out);
@@ -479,6 +497,13 @@ function buildProjectZipInner(zip, data) {
   zip.file('name.txt', namesParts.join(''));
 }
 
+async function compressZip(zip, mimeType, level = 9) {
+  return await zip.generateAsync({
+    type: 'blob', mimeType,
+    compression: 'DEFLATE', compressionOptions: { level }
+  });
+}
+
 async function buildBackup(id, name, onProgress) {
   if (!jsZipReady()) throw new Error('JSZip tidak tersedia.');
   const data = await Storage.load(id);
@@ -490,10 +515,7 @@ async function buildBackup(id, name, onProgress) {
   buildProjectZipInner(zip, data);
   if (epubBuffer) zip.file(data.epubSourceId, epubBuffer);
   onProgress('Mengompres backup...', 90);
-  const blob = await zip.generateAsync({
-    type: 'blob', mimeType: 'application/octet-stream',
-    compression: 'DEFLATE', compressionOptions: { level: 9 }
-  });
+  const blob = await compressZip(zip, 'application/octet-stream');
   return { blob, name: `${sanitizeName(name)}_backup.cstl` };
 }
 
@@ -507,19 +529,13 @@ async function backupAll(onProgress) {
   onProgress(`0 / ${total} project`, 0);
   for (let i = 0; i < total; i++) {
     onProgress(`Memproses ${i + 1} / ${total} project`, (i / total) * 95);
-    const meta = items[i];
-    const data = await Storage.load(meta.id);
+    const data = await Storage.load(items[i].id);
     const zip = new JSZip();
     buildProjectZipInner(zip, data);
     if (data.projectType === 'epub' && data.epubSourceId) {
-      try {
-        const buf = await Storage.loadEpubBuffer(data.epubSourceId);
-        zip.file(data.epubSourceId, buf);
-      } catch {}
+      try { zip.file(data.epubSourceId, await Storage.loadEpubBuffer(data.epubSourceId)); } catch {}
     }
-    const blob = await zip.generateAsync({
-      type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 }
-    });
+    const blob = await compressZip(zip, '', 9);
     const base = sanitizeName(data.projectName);
     let name = base, k = 2;
     while (used.has(name)) name = `${base}_${k++}`;
@@ -529,10 +545,7 @@ async function backupAll(onProgress) {
     await yieldToEvent();
   }
   onProgress('Mengompres arsip utama...', 98);
-  const blob = await outer.generateAsync({
-    type: 'blob', mimeType: 'application/octet-stream',
-    compression: 'DEFLATE', compressionOptions: { level: 9 }
-  });
+  const blob = await compressZip(outer, 'application/octet-stream');
   return { blob, name: `ProjectBackupAll_${new Date().toISOString().slice(0, 10)}.cstl` };
 }
 
@@ -588,8 +601,7 @@ async function restoreOne(zip, fallbackName, onProgress) {
     const entry = zip.file(meta.epubSourceId);
     if (entry) {
       const newId = 'epub_' + Date.now() + '.epub';
-      const buf = await entry.async('arraybuffer');
-      await Storage.saveEpub(newId, buf);
+      await Storage.saveEpub(newId, await entry.async('arraybuffer'));
       meta.epubSourceId = newId;
     }
   }
@@ -830,12 +842,8 @@ const Progress = {
 
 const State = {
   projectId: null,
-  projectName: '',
-  projectType: 'uninitialized',
-  epubTags: 'p',
-  epubSourceId: null,
-  lines: [],
   files: [],
+  lines: [],
   rows: [],
   byNum: new Map(),
   fileLines: new Map(),
@@ -843,56 +851,83 @@ const State = {
   selected: new Set(),
   undo: null,
   redo: null,
-  prompt: DEFAULT_PROMPT,
-  ignoreName: false,
-  promptEnabled: true,
-  ringkasanEnabled: false,
-  ringkasanPrompt: DEFAULT_RINGKASAN_PROMPT,
-  ringkasan: '',
-  vndbEnabled: false,
-  vndbId: '',
-  vndbGlossary: [],
-  customEnabled: false,
-  customRaw: '',
-  jumpToContext: false,
-  hideTools: false,
-  prScope: 'all',
-  prRegex: false,
-  prCase: false,
-  prExact: false,
-  prTranslatedOnly: false,
   saveTimer: null,
   translatedCount: 0,
   namesDirty: true
 };
 
-State.toData = () => ({
-  version: VERSION,
-  projectName: State.projectName,
-  projectType: State.projectType,
-  epubTags: State.epubTags,
-  epubSourceId: State.epubSourceId,
-  imported_files: State.files,
-  lines: State.lines,
-  prompt_header: State.prompt,
-  ignoreNameTranslation: State.ignoreName,
-  promptEnabled: State.promptEnabled,
-  ringkasanEnabled: State.ringkasanEnabled,
-  ringkasanPrompt: State.ringkasanPrompt,
-  ringkasan: State.ringkasan,
-  vndbEnabled: State.vndbEnabled,
-  vndbId: State.vndbId,
-  vndbGlossary: State.vndbGlossary,
-  customEnabled: State.customEnabled,
-  customRaw: State.customRaw,
-  jumpToContext: State.jumpToContext,
-  hideTools: State.hideTools,
-  proofreadScope: State.prScope,
-  proofreadRegex: State.prRegex,
-  proofreadCaseSensitive: State.prCase,
-  proofreadExactMatch: State.prExact,
-  proofreadTranslatedOnly: State.prTranslatedOnly
-});
+for (const f of STATE_SCHEMA) State[f.key] = f.def;
+
+State.toData = () => {
+  const data = {
+    version: VERSION,
+    imported_files: State.files,
+    lines: State.lines
+  };
+  for (const f of STATE_SCHEMA) {
+    data[f.store || f.key] = State[f.key];
+  }
+  return data;
+};
+
+State.loadFromData = (data) => {
+  State.files = data.imported_files || [];
+  State.lines = (data.lines || []).map(normalizeLine);
+  for (const f of STATE_SCHEMA) {
+    const storeKey = f.store || f.key;
+    const v = data[storeKey];
+    State[f.key] = f.coerce ? (v || f.def) : (v ?? f.def);
+  }
+  if (!State.projectName) State.projectName = 'Unknown';
+};
+
+State.resetTransient = () => {
+  State.projectId = null;
+  State.projectName = '';
+  State.projectType = 'uninitialized';
+  State.epubSourceId = null;
+  State.files = [];
+  State.lines = [];
+  State.rows = [];
+  State.headerIdx = [];
+  State.byNum.clear();
+  State.fileLines.clear();
+  State.selected.clear();
+  State.undo = State.redo = null;
+  State.translatedCount = 0;
+  State.namesDirty = true;
+  State.prScope = 'all';
+  State.prRegex = false;
+  State.prCase = false;
+  State.prExact = false;
+  State.prTranslatedOnly = false;
+  State.hideTools = false;
+};
+
+State.initNewProject = () => {
+  State.projectType = 'uninitialized';
+  State.epubTags = 'p';
+  State.epubSourceId = null;
+  State.lines = [];
+  State.files = [];
+  State.prompt = State.prompt || DEFAULT_PROMPT;
+  State.ignoreName = false;
+  State.promptEnabled = true;
+  State.ringkasanEnabled = false;
+  State.ringkasanPrompt = DEFAULT_RINGKASAN_PROMPT;
+  State.ringkasan = '';
+  State.vndbEnabled = false;
+  State.vndbId = '';
+  State.vndbGlossary = [];
+  State.customEnabled = false;
+  State.customRaw = '';
+  State.jumpToContext = false;
+  State.hideTools = false;
+  State.selected.clear();
+  State.undo = State.redo = null;
+  State.namesDirty = true;
+  State.translatedCount = 0;
+};
 
 State.updateCount = () => {
   State.translatedCount = 0;
@@ -906,10 +941,9 @@ State.rebuild = () => {
   State.rows = [];
   State.headerIdx = [];
   const files = State.files;
-  const fileCount = files.length;
-  const grouped = new Array(fileCount);
+  const grouped = new Array(files.length);
   const fileIdx = new Map();
-  for (let i = 0; i < fileCount; i++) {
+  for (let i = 0; i < files.length; i++) {
     fileIdx.set(files[i], i);
     grouped[i] = [];
   }
@@ -920,16 +954,14 @@ State.rebuild = () => {
     const gi = fileIdx.get(l.file);
     if (gi !== undefined) grouped[gi].push(l);
   }
-  const rows = State.rows;
-  for (let i = 0; i < fileCount; i++) {
+  for (let i = 0; i < files.length; i++) {
     const fileLines = grouped[i];
     if (!fileLines.length) continue;
-    const file = files[i];
-    State.fileLines.set(file, fileLines);
-    State.headerIdx.push(rows.length);
-    rows.push({ type: 'header', file });
+    State.fileLines.set(files[i], fileLines);
+    State.headerIdx.push(State.rows.length);
+    State.rows.push({ type: 'header', file: files[i] });
     for (let j = 0, m = fileLines.length; j < m; j++) {
-      rows.push({ type: 'line', line: fileLines[j] });
+      State.rows.push({ type: 'line', line: fileLines[j] });
     }
   }
 };
@@ -941,7 +973,11 @@ State.queueSave = () => {
     const idle = window.requestIdleCallback || (fn => setTimeout(fn, 0));
     idle(async () => {
       try {
-        await Storage.saveProject(State.projectId, State.toData());
+        await Storage.saveProject(State.projectId, State.toData(), {
+          fileCount: State.files.length,
+          lineCount: State.lines.length,
+          translatedCount: State.translatedCount
+        });
         App.flashSaved();
       } catch {}
     });
@@ -956,10 +992,12 @@ class Scroller {
     this.update = update;
     this.keyOf = keyOf || ((item, i) => i);
     this.items = [];
-    this.heights = new Float32Array(0);
-    this.pos = new Float32Array(0);
+    this.keys = [];
+    this.heights = [];
+    this.pos = [];
     this.els = [];
     this.indices = [];
+    this.heightCache = new Map();
     this.defaultH = 80;
     this.gap = 8;
     this.topPad = 8;
@@ -968,10 +1006,6 @@ class Scroller {
     this.scrollTop = 0;
     this.totalH = 0;
     this.scheduled = false;
-    this.lastW = 0;
-    this.lastH = 0;
-    this.heightCache = new Map();
-    this.scrollGen = 0;
 
     viewport.addEventListener('scroll', () => {
       this.scrollTop = viewport.scrollTop;
@@ -979,16 +1013,7 @@ class Scroller {
     }, { passive: true });
 
     if (window.ResizeObserver) {
-      this.ro = new ResizeObserver(() => {
-        const w = viewport.clientWidth, h = viewport.clientHeight;
-        if (w === this.lastW && h === this.lastH) return;
-        this.lastW = w; this.lastH = h;
-        this.invalidate();
-        this.schedule();
-      });
-      this.ro.observe(viewport);
-      this.lastW = viewport.clientWidth;
-      this.lastH = viewport.clientHeight;
+      new ResizeObserver(() => { this.invalidate(); this.schedule(); }).observe(viewport);
     }
   }
 
@@ -999,41 +1024,28 @@ class Scroller {
   }
 
   setItems(items, keep = false) {
-    const prev = keep ? this.vp.scrollTop : 0;
+    const prevScroll = keep ? this.vp.scrollTop : 0;
     this.items = items;
-    const n = items.length;
-    this.itemKeys = new Array(n);
-    this.heights = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      const item = items[i];
-      const key = this.keyOf(item, i);
-      this.itemKeys[i] = key;
-      const def = item?.type === 'header' ? 32 : this.defaultH;
-      const cached = keep ? this.heightCache.get(key) : undefined;
-      this.heights[i] = cached !== undefined ? cached : def;
-    }
-    this.pos = new Float32Array(n);
+    this.keys = items.map((it, i) => this.keyOf(it, i));
+    this.heights = items.map((it, i) => {
+      if (!keep) return it?.type === 'header' ? 32 : this.defaultH;
+      const cached = this.heightCache.get(this.keys[i]);
+      return cached !== undefined ? cached : (it?.type === 'header' ? 32 : this.defaultH);
+    });
+    if (!keep) this.heightCache.clear();
+    this.pos = new Array(items.length);
     this.updatePos();
-    if (keep) {
-      const max = Math.max(0, this.totalH - this.vp.clientHeight);
-      this.vp.scrollTop = Math.min(prev, max);
-    } else {
-      this.vp.scrollTop = 0;
-      this.heightCache.clear();
-    }
+    this.vp.scrollTop = keep ? Math.min(prevScroll, Math.max(0, this.totalH - this.vp.clientHeight)) : 0;
     this.scrollTop = this.vp.scrollTop;
     this.invalidate();
     this.render();
   }
 
-  invalidate() {
-    for (let i = 0; i < this.indices.length; i++) this.indices[i] = -1;
-  }
+  invalidate() { this.indices.fill(-1); }
 
   updatePos() {
     let cur = this.topPad;
-    const n = this.items.length;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < this.items.length; i++) {
       this.pos[i] = cur;
       cur += this.heights[i];
     }
@@ -1047,8 +1059,8 @@ class Scroller {
     let lo = 0, hi = n - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      const end = this.pos[mid] + this.heights[mid];
-      if (end <= scrollTop) lo = mid + 1; else hi = mid;
+      if (this.pos[mid] + this.heights[mid] <= scrollTop) lo = mid + 1;
+      else hi = mid;
     }
     return lo;
   }
@@ -1060,15 +1072,15 @@ class Scroller {
   }
 
   render() {
-    let more = true, rerenders = 0;
-    while (more && rerenders < 5) {
-      more = this._render();
-      rerenders++;
+    let more = true, passes = 0;
+    while (more && passes < 5) {
+      more = this._renderPass();
+      passes++;
     }
     if (more) this.schedule();
   }
 
-  _render() {
+  _renderPass() {
     if (!this.items.length) {
       for (let i = 0; i < this.els.length; i++) {
         this.els[i].style.transform = 'translateY(-9999px)';
@@ -1078,8 +1090,8 @@ class Scroller {
       this.totalH = 0;
       return false;
     }
-    let vh = this.vp.clientHeight || 800;
-    if (vh === 0) vh = 800;
+
+    const vh = this.vp.clientHeight || 800;
     const scrollTop = this.scrollTop;
     const vStart = this.findStart(scrollTop);
     const vEnd = this.findEnd(vStart, vh);
@@ -1095,20 +1107,18 @@ class Scroller {
       this.container.appendChild(el);
     }
 
-    let updated = false;
+    const toMeasure = [];
     for (let i = 0; i < need; i++) {
       const di = rStart + i;
       if (this.indices[i] !== di) {
         this.update(this.els[i], this.items[di], di);
         this.indices[i] = di;
-        this.els[i]._measure = true;
-        updated = true;
+        toMeasure.push(i);
       }
     }
 
     for (let i = 0; i < need; i++) {
-      const di = rStart + i;
-      this.els[i].style.transform = `translateY(${this.pos[di]}px)`;
+      this.els[i].style.transform = `translateY(${this.pos[rStart + i]}px)`;
     }
 
     for (let i = need; i < this.els.length; i++) {
@@ -1118,36 +1128,26 @@ class Scroller {
       }
     }
 
-    let heightsChanged = false, adjust = 0;
-    if (updated) {
-      for (let i = 0; i < need; i++) {
-        const el = this.els[i];
-        if (!el._measure) continue;
-        el._measure = false;
-        const di = rStart + i;
-        const h = el.offsetHeight;
-        if (h === 0) continue;
-        const hdr = this.items[di]?.type === 'header';
-        const total = hdr ? h : h + this.gap;
-        if (Math.abs(total - this.heights[di]) > 1) {
-          const diff = total - this.heights[di];
-          if (this.pos[di] < scrollTop) adjust += diff;
-          this.heights[di] = total;
-          heightsChanged = true;
-        }
-        this.heightCache.set(this.itemKeys[di], this.heights[di]);
+    let heightsChanged = false;
+    let adjust = 0;
+    for (const i of toMeasure) {
+      const di = rStart + i;
+      const h = this.els[i].offsetHeight;
+      if (h === 0) continue;
+      const total = this.items[di]?.type === 'header' ? h : h + this.gap;
+      if (Math.abs(total - this.heights[di]) > 1) {
+        if (this.pos[di] < scrollTop) adjust += total - this.heights[di];
+        this.heights[di] = total;
+        this.heightCache.set(this.keys[di], total);
+        heightsChanged = true;
       }
     }
 
     if (heightsChanged) {
       this.updatePos();
-      if (adjust !== 0) {
-        this.vp.scrollTop += adjust;
-        this.scrollTop = this.vp.scrollTop;
-      }
+      if (adjust) { this.vp.scrollTop += adjust; this.scrollTop = this.vp.scrollTop; }
       for (let i = 0; i < need; i++) {
-        const di = rStart + i;
-        this.els[i].style.transform = `translateY(${this.pos[di]}px)`;
+        this.els[i].style.transform = `translateY(${this.pos[rStart + i]}px)`;
       }
       const vBot = this.scrollTop + vh;
       const lastBot = rEnd < this.items.length
@@ -1160,19 +1160,15 @@ class Scroller {
 
   scrollToIndex(idx) {
     if (idx < 0 || idx >= this.items.length) return;
-    const gen = ++this.scrollGen;
     const vh = this.vp.clientHeight || 800;
-    const target = this.pos[idx] || 0;
-    this.vp.scrollTop = Math.max(0, target - (vh / 2) + (this.heights[idx] / 2));
-    this.scrollTop = this.vp.scrollTop;
-    this.render();
-    requestAnimationFrame(() => {
-      if (this.scrollGen !== gen) return;
-      const t = this.pos[idx] || 0;
-      this.vp.scrollTop = Math.max(0, t - (vh / 2) + (this.heights[idx] / 2));
+    const center = (i) => Math.max(0, (this.pos[i] || 0) - (vh / 2) + (this.heights[i] / 2));
+    const apply = () => {
+      this.vp.scrollTop = center(idx);
       this.scrollTop = this.vp.scrollTop;
       this.render();
-    });
+    };
+    apply();
+    requestAnimationFrame(apply);
   }
 
   forceUpdate() { this.invalidate(); this.render(); }
@@ -1230,110 +1226,82 @@ const Importer = {
   },
 
   async process(input, isZip = false) {
-    Progress.show('Memproses file...', 'Mempersiapkan...');
-    await withBusyCursor(async () => {
-      try {
-        const startNum = State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) + 1 : 1;
-        const existing = new Set(State.files);
-        let result;
+    await withProgress('Memproses file...', 'Mempersiapkan...', async () => {
+      const startNum = State.lines.length ? State.lines.reduce((m, l) => Math.max(m, l.line_num), 0) + 1 : 1;
+      const existing = new Set(State.files);
+      let result;
 
-        if (isZip && input instanceof File) {
-          if (!Importer.assertProjectType('json')) { els.copyStatus.classList.add('empty'); Progress.hide(); return; }
-          const buffer = await input.arrayBuffer();
-          Progress.determinate('Mengimpor ZIP', `0 file`);
-          result = await parseZipJson(buffer, Array.from(existing), startNum, (msg, pct) => Progress.update(msg, pct));
-        } else {
-          const files = Array.from(input).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-          const hasEpub = files.some(f => f.name.toLowerCase().endsWith('.epub'));
-          const hasJson = files.some(f => f.name.toLowerCase().endsWith('.json'));
+      if (isZip && input instanceof File) {
+        if (!Importer.assertProjectType('json')) { els.copyStatus.classList.add('empty'); return; }
+        Progress.determinate('Mengimpor ZIP', `0 file`);
+        result = await parseZipJson(await input.arrayBuffer(), Array.from(existing), startNum, Progress.update);
+      } else {
+        const files = Array.from(input).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        const hasEpub = files.some(f => f.name.toLowerCase().endsWith('.epub'));
+        const hasJson = files.some(f => f.name.toLowerCase().endsWith('.json'));
 
-          if (hasEpub && hasJson) {
+        if (hasEpub && hasJson) {
+          Progress.hide();
+          alert('Tidak bisa mencampur EPUB dan JSON dalam satu import.');
+          return;
+        }
+
+        if (hasEpub) {
+          if (!Importer.assertProjectType('epub')) return;
+          if (State.projectType === 'epub' && State.epubSourceId) {
             Progress.hide();
-            alert('Tidak bisa mencampur EPUB dan JSON dalam satu import.');
+            alert('Project ini sudah memuat EPUB.');
             return;
           }
-
-          if (hasEpub) {
-            if (!Importer.assertProjectType('epub')) { Progress.hide(); return; }
-            if (State.projectType === 'epub' && State.epubSourceId) {
-              Progress.hide();
-              alert('Project ini sudah memuat EPUB.');
-              return;
-            }
-            if (!State.epubSourceId) {
-              State.projectType = 'epub';
-              State.epubSourceId = makeEpubId();
-            }
-            const f = files[0];
-            const buffer = await f.arrayBuffer();
-            Progress.determinate('Mengimpor EPUB', `0 file`);
-            result = await parseEpub(buffer, State.epubTags || 'p', Array.from(existing), startNum, State.epubSourceId, (msg, pct) => Progress.update(msg, pct));
-          } else {
-            if (!Importer.assertProjectType('json')) { Progress.hide(); return; }
-            const fileInputs = [];
-            for (const f of files) fileInputs.push({ name: f.name, buffer: await f.arrayBuffer() });
-            Progress.determinate('Mengimpor file', `0 / ${fileInputs.length} file`);
-            result = await parseJsonFiles(fileInputs, Array.from(existing), startNum, (msg, pct) => Progress.update(msg, pct));
+          if (!State.epubSourceId) {
+            State.projectType = 'epub';
+            State.epubSourceId = makeEpubId();
           }
-        }
-
-        Progress.hide();
-
-        if (result.imported.length) {
-          State.lines.push(...result.imported);
-          State.files = Array.from(result.existing || existing);
-          State.namesDirty = true;
-          App.refresh(true);
-          State.queueSave();
-          App.flash(`Berhasil impor ${result.imported.length} baris.${result.skipped.length ? ` (${result.skipped.length} file duplikat diabaikan)` : ''}`);
-        } else if (result.skipped.length) {
-          els.copyStatus.classList.add('empty');
-          setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${result.skipped.slice(0, 5).join('\n- ')}`), 10);
+          Progress.determinate('Mengimpor EPUB', `0 file`);
+          result = await parseEpub(await files[0].arrayBuffer(), State.epubTags || 'p', Array.from(existing), startNum, State.epubSourceId, Progress.update);
         } else {
-          App.flash('Tidak ada data valid.', false);
+          if (!Importer.assertProjectType('json')) return;
+          const fileInputs = [];
+          for (const f of files) fileInputs.push({ name: f.name, buffer: await f.arrayBuffer() });
+          Progress.determinate('Mengimpor file', `0 / ${fileInputs.length} file`);
+          result = await parseFilesList(fileInputs, Array.from(existing), startNum, Progress.update);
         }
-      } catch (e) {
-        Progress.hide();
-        els.copyStatus.classList.add('empty');
-        setTimeout(() => alert(`Error:\n${e.message}`), 10);
       }
-    });
+
+      if (result.imported.length) {
+        State.lines.push(...result.imported);
+        State.files = Array.from(result.existing || existing);
+        State.namesDirty = true;
+        App.refresh(true);
+        State.queueSave();
+        App.flash(`Berhasil impor ${result.imported.length} baris.${result.skipped.length ? ` (${result.skipped.length} file duplikat diabaikan)` : ''}`);
+      } else if (result.skipped.length) {
+        els.copyStatus.classList.add('empty');
+        setTimeout(() => alert(`Gagal impor: File duplikat.\n- ${result.skipped.slice(0, 5).join('\n- ')}`), 10);
+      } else {
+        App.flash('Tidak ada data valid.', false);
+      }
+    }, e => `Error:\n${e.message}`);
   }
 };
 
 const Exporter = {
   async runEpub() {
-    Progress.show('Membuat EPUB...', 'Memuat arsip...');
-    await withBusyCursor(async () => {
-      try {
-        Progress.determinate('Membuat EPUB', `0 file`);
-        const result = await buildExportEpub(State.epubSourceId, State.lines, State.epubTags || 'p', State.projectName, (msg, pct) => Progress.update(msg, pct));
-        const url = URL.createObjectURL(result.blob);
-        download(url, result.name);
-        Progress.hide();
-        App.flash('Ekspor EPUB berhasil!');
-      } catch (e) {
-        Progress.hide();
-        alert('Ekspor EPUB gagal: ' + e.message);
-      }
-    });
+    await withProgress('Membuat EPUB...', 'Memuat arsip...', async () => {
+      Progress.determinate('Membuat EPUB', `0 file`);
+      const result = await buildExportEpub(State.epubSourceId, State.lines, State.epubTags || 'p', State.projectName, Progress.update);
+      download(URL.createObjectURL(result.blob), result.name);
+      App.flash('Ekspor EPUB berhasil!');
+    }, e => 'Ekspor EPUB gagal: ' + e.message);
   },
 
   async runJson() {
-    Progress.show('Membuat JSON...', 'Mengelompokkan baris...');
-    await withBusyCursor(async () => {
-      try {
-        Progress.determinate('Membuat JSON', `0 file`);
-        const result = await buildExportJson(State.lines, State.projectName, (msg, pct) => Progress.update(msg, pct));
-        const url = URL.createObjectURL(result.blob);
-        download(url, result.name);
-        Progress.hide();
-        App.flash('Ekspor JSON berhasil!');
-      } catch (e) {
-        Progress.hide();
-        alert('Ekspor JSON gagal: ' + e.message);
-      }
-    });
+    await withProgress('Membuat JSON...', 'Mengelompokkan baris...', async () => {
+      Progress.determinate('Membuat JSON', `0 file`);
+      const result = await buildExportJson(State.lines, State.projectName, Progress.update);
+      download(URL.createObjectURL(result.blob), result.name);
+      App.flash('Ekspor JSON berhasil!');
+    }, e => 'Ekspor JSON gagal: ' + e.message);
   },
 
   async run() {
@@ -1414,6 +1382,20 @@ const App = {
   },
 
   bind() {
+    App.bindToolbar();
+    App.bindDropdowns();
+    App.bindImportExport();
+    App.bindSelection();
+    App.bindGlossary();
+    App.bindSettings();
+    App.bindContext();
+    App.bindLineEditor();
+    App.bindProofread();
+    App.bindPreview();
+    App.bindNames();
+  },
+
+  bindToolbar() {
     els.btnNewProject.addEventListener('click', App.createProject);
     els.btnBackToDashboard.addEventListener('click', App.closeProject);
     els.btnToggleHeader.addEventListener('click', () => {
@@ -1430,7 +1412,9 @@ const App = {
     els.btnDashboardSettingsClose.addEventListener('click', () => toggleModal(els.dashboardSettingsModal, false));
     els.btnBackupAll.addEventListener('click', App.backupAll);
     els.btnWipeAllData.addEventListener('click', App.wipeAllData);
+  },
 
+  bindDropdowns() {
     document.addEventListener('click', e => {
       for (const { trigger, panel } of DROPDOWNS) {
         if (e.target.closest(`#${trigger}`)) {
@@ -1455,7 +1439,9 @@ const App = {
     els.dynamicToolbarWrap.addEventListener('scroll', closeDropdowns, { passive: true });
     window.addEventListener('scroll', closeDropdowns, true);
     window.addEventListener('resize', closeDropdowns);
+  },
 
+  bindImportExport() {
     const importInputs = [els.importFileInput, els.importFolderInput, els.importZipInput];
     ['btnImportFile', 'btnImportFolder', 'btnImportZip'].forEach((id, i) => {
       const input = importInputs[i];
@@ -1473,14 +1459,18 @@ const App = {
     els.btnUndo.addEventListener('click', App.undo);
     els.btnRedo.addEventListener('click', App.redo);
     els.btnProofread.addEventListener('click', App.openProofread);
+  },
 
+  bindSelection() {
     els.btnSelectAll.addEventListener('click', () => {
       State.lines.forEach(l => { if (!isTrans(l)) State.selected.add(l.line_num); });
       App.syncCheckboxes();
     });
     els.btnClearSelection.addEventListener('click', () => { State.selected.clear(); App.syncCheckboxes(); });
     els.btnSelectRange.addEventListener('click', App.selectRange);
+  },
 
+  bindGlossary() {
     els.btnGlossary.addEventListener('click', () => {
       els.glossaryVndbCheck.checked = State.vndbEnabled;
       els.glossaryVndbIdInput.value = State.vndbId || '';
@@ -1544,7 +1534,9 @@ const App = {
       toggleModal(els.glossaryModal, false);
       State.queueSave();
     });
+  },
 
+  bindSettings() {
     els.btnSettings.addEventListener('click', () => {
       App.syncSettingsModal();
       toggleModal(els.settingsModal, true);
@@ -1562,7 +1554,9 @@ const App = {
       toggleModal(els.settingsModal, false);
       State.queueSave();
     });
+  },
 
+  bindContext() {
     els.btnContext.addEventListener('click', () => {
       els.ringkasanEnabledCheck.checked = State.ringkasanEnabled;
       els.ringkasanPromptInput.value = State.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT;
@@ -1593,10 +1587,14 @@ const App = {
       toggleModal(els.contextModal, false);
       State.queueSave();
     });
+  },
 
+  bindLineEditor() {
     els.btnLineCancel.addEventListener('click', () => toggleModal(els.lineEditorModal, false));
     els.btnLineSave.addEventListener('click', App.saveLineEditor);
+  },
 
+  bindProofread() {
     els.btnProofreadClose.addEventListener('click', () => toggleModal(els.proofreadModal, false));
     els.btnProofreadReset.addEventListener('click', () => {
       els.proofreadSearchInput.value = '';
@@ -1615,7 +1613,9 @@ const App = {
     PROOFREAD_FIELDS.forEach(({ id }) => {
       els[id].addEventListener('change', () => { App.syncProofread(); App.renderProofread(); });
     });
+  },
 
+  bindPreview() {
     els.previewContainer.addEventListener('change', e => {
       if (e.target.closest('.checkbox-cell') && e.target.type === 'checkbox') {
         const n = Number(e.target.dataset.num);
@@ -1656,7 +1656,9 @@ const App = {
         App.openLineEditor(n);
       }
     });
+  },
 
+  bindNames() {
     els.nameTableBody.addEventListener('click', async e => {
       if (e.target.tagName !== 'TD') return;
       try { await clipboard(e.target.textContent); App.flash('Nama disalin!'); }
@@ -1684,31 +1686,9 @@ const App = {
     const name = prompt('Nama project baru:')?.trim();
     if (!name) return;
     const id = makeProjId();
+    State.initNewProject();
     State.projectId = id;
     State.projectName = name;
-    State.projectType = 'uninitialized';
-    State.epubTags = 'p';
-    State.epubSourceId = null;
-    State.lines = [];
-    State.files = [];
-    State.prompt = State.prompt || DEFAULT_PROMPT;
-    State.ignoreName = false;
-    State.promptEnabled = true;
-    State.ringkasanEnabled = false;
-    State.ringkasanPrompt = DEFAULT_RINGKASAN_PROMPT;
-    State.ringkasan = '';
-    State.vndbEnabled = false;
-    State.vndbId = '';
-    State.vndbGlossary = [];
-    State.customEnabled = false;
-    State.customRaw = '';
-    State.jumpToContext = false;
-    State.hideTools = false;
-    State.selected.clear();
-    State.undo = State.redo = null;
-    State.namesDirty = true;
-    State.translatedCount = 0;
-
     try {
       await Storage.saveProject(id, State.toData());
       App.open(id, State.toData());
@@ -1718,31 +1698,8 @@ const App = {
   },
 
   open(id, data) {
+    State.loadFromData(data);
     State.projectId = id;
-    State.projectName = data.projectName || 'Unknown';
-    State.projectType = data.projectType || 'uninitialized';
-    State.epubTags = data.epubTags || 'p';
-    State.epubSourceId = data.epubSourceId || null;
-    State.lines = (data.lines || []).map(normalizeLine);
-    State.files = data.imported_files || [];
-    State.prompt = data.prompt_header || DEFAULT_PROMPT;
-    State.ignoreName = data.ignoreNameTranslation ?? false;
-    State.promptEnabled = data.promptEnabled ?? true;
-    State.ringkasanEnabled = data.ringkasanEnabled ?? false;
-    State.ringkasanPrompt = data.ringkasanPrompt || DEFAULT_RINGKASAN_PROMPT;
-    State.ringkasan = data.ringkasan || '';
-    State.vndbEnabled = data.vndbEnabled ?? false;
-    State.vndbId = data.vndbId || '';
-    State.vndbGlossary = data.vndbGlossary || [];
-    State.customEnabled = data.customEnabled ?? false;
-    State.customRaw = data.customRaw || '';
-    State.jumpToContext = data.jumpToContext ?? false;
-    State.hideTools = data.hideTools ?? false;
-    State.prScope = data.proofreadScope || 'all';
-    State.prRegex = data.proofreadRegex ?? false;
-    State.prCase = data.proofreadCaseSensitive ?? false;
-    State.prExact = data.proofreadExactMatch ?? false;
-    State.prTranslatedOnly = data.proofreadTranslatedOnly ?? false;
     State.selected.clear();
     State.undo = State.redo = null;
     State.namesDirty = true;
@@ -1772,24 +1729,7 @@ const App = {
   },
 
   finishClose() {
-    State.projectId = null;
-    State.epubSourceId = null;
-    State.undo = State.redo = null;
-    State.projectName = '';
-    State.lines = [];
-    State.files = [];
-    State.rows = [];
-    State.headerIdx = [];
-    State.selected.clear();
-    State.byNum.clear();
-    State.fileLines.clear();
-    State.translatedCount = 0;
-    State.prScope = 'all';
-    State.prRegex = State.prCase = State.prExact = false;
-    State.prTranslatedOnly = false;
-    State.hideTools = false;
-    State.namesDirty = true;
-
+    State.resetTransient();
     App.main?.setItems([], false);
     App.pr?.setItems([], false);
     els.nameTableBody.replaceChildren();
@@ -1958,60 +1898,35 @@ const App = {
   },
 
   async backup(p) {
-    Progress.show('Mem-backup project...', 'Membaca data...');
-    await withBusyCursor(async () => {
-      try {
-        Progress.determinate('Mem-backup project', 'Memproses...');
-        const result = await buildBackup(p.id, p.name, (msg, pct) => Progress.update(msg, pct));
-        const url = URL.createObjectURL(result.blob);
-        download(url, result.name);
-        Progress.hide();
-      } catch (e) {
-        Progress.hide();
-        alert('Gagal backup: ' + e.message);
-      }
-    });
+    await withProgress('Mem-backup project...', 'Membaca data...', async () => {
+      Progress.determinate('Mem-backup project', 'Memproses...');
+      const result = await buildBackup(p.id, p.name, Progress.update);
+      download(URL.createObjectURL(result.blob), result.name);
+    }, e => 'Gagal backup: ' + e.message);
   },
 
   async backupAll() {
-    Progress.show('Mem-backup semua project...', 'Menghitung project...');
-    await withBusyCursor(async () => {
-      try {
-        Progress.determinate('Mem-backup semua project', 'Memulai...');
-        const result = await backupAll((msg, pct) => Progress.update(msg, pct));
-        const url = URL.createObjectURL(result.blob);
-        download(url, result.name);
-        Progress.hide();
-      } catch (e) {
-        Progress.hide();
-        if (e.message === 'Belum ada Project untuk di-backup.') alert(e.message);
-        else alert('Gagal backup semua project: ' + e.message);
-      }
-    });
+    await withProgress('Mem-backup semua project...', 'Menghitung project...', async () => {
+      Progress.determinate('Mem-backup semua project', 'Memulai...');
+      const result = await backupAll(Progress.update);
+      download(URL.createObjectURL(result.blob), result.name);
+    }, e => e.message === 'Belum ada Project untuk di-backup.' ? e.message : 'Gagal backup semua project: ' + e.message);
   },
 
   async restoreProject(e) {
     const uploadedFile = e.target.files?.[0];
     if (!uploadedFile) return;
-    Progress.show('Memulihkan project...', 'Memuat arsip...');
-    await withBusyCursor(async () => {
-      try {
-        const buffer = await uploadedFile.arrayBuffer();
-        const fallbackName = uploadedFile.name.replace(/\.cstl$/i, '');
-        Progress.determinate('Memulihkan project', 'Membaca arsip...');
-        const result = await parseRestore(buffer, fallbackName, (msg, pct) => Progress.update(msg, pct));
-
-        await App.loadDashboard();
-        Progress.hide();
-        if (result.single) alert(`Project "${result.name}" dipulihkan!`);
-        else alert(`${result.ok} project berhasil dipulihkan${result.fail ? `, ${result.fail} gagal` : ''}.`);
-      } catch (e) {
-        Progress.hide();
-        alert('File korup: ' + e.message);
-      } finally {
-        e.target.value = '';
-      }
-    });
+    const result = await withProgress('Memulihkan project...', 'Memuat arsip...', async () => {
+      Progress.determinate('Memulihkan project', 'Membaca arsip...');
+      const r = await parseRestore(await uploadedFile.arrayBuffer(), uploadedFile.name.replace(/\.cstl$/i, ''), Progress.update);
+      await App.loadDashboard();
+      return r;
+    }, e => 'File korup: ' + e.message);
+    if (result) {
+      if (result.single) alert(`Project "${result.name}" dipulihkan!`);
+      else alert(`${result.ok} project berhasil dipulihkan${result.fail ? `, ${result.fail} gagal` : ''}.`);
+    }
+    e.target.value = '';
   },
 
   refresh(keep = true) {
