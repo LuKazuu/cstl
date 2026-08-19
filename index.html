@@ -98,6 +98,18 @@
           </div>
           <div id="previewContainer" class="preview-container"></div>
         </div>
+        <div id="bookmarkDock" class="bookmark-dock">
+          <div id="bookmarkPanel" class="bookmark-panel" role="dialog" aria-modal="false">
+            <div class="bookmark-panel-head">
+              <span class="bookmark-panel-title">Bookmark <span id="bookmarkPanelCount" class="bookmark-panel-count">(0)</span></span>
+              <button id="btnBookmarkClear" class="btn btn-ghost btn-xs" disabled>Hapus Semua</button>
+            </div>
+            <div id="bookmarkList" class="bookmark-list"></div>
+          </div>
+          <button id="btnBookmarks" class="bookmark-fab" aria-label="Bookmark" aria-haspopup="dialog" disabled>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
+          </button>
+        </div>
       </section>
 
       <section class="panel panel-right">

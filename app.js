@@ -52,7 +52,8 @@ const STATE_SCHEMA = [
   { key: 'prRegex',            def: false,                  store: 'proofreadRegex' },
   { key: 'prCase',             def: false,                  store: 'proofreadCaseSensitive' },
   { key: 'prExact',            def: false,                  store: 'proofreadExactMatch' },
-  { key: 'prTranslatedOnly',   def: false,                  store: 'proofreadTranslatedOnly' }
+  { key: 'prTranslatedOnly',   def: false,                  store: 'proofreadTranslatedOnly' },
+  { key: 'bookmarks',          def: [],                     coerce: true }
 ];
 
 const DROPDOWNS = [
@@ -627,7 +628,8 @@ async function restoreOne(zip, fallbackName, onProgress) {
     customEnabled: meta.customEnabled ?? false,
     customRaw: meta.customRaw || '',
     jumpToContext: meta.jumpToContext ?? false,
-    hideTools: meta.hideTools ?? false
+    hideTools: meta.hideTools ?? false,
+    bookmarks: Array.isArray(meta.bookmarks) ? meta.bookmarks.filter(n => Number.isInteger(n) && n > 0) : []
   });
   return name;
 }
@@ -811,7 +813,9 @@ function cacheEls() {
     'btnProofreadReset', 'proofreadReplaceInput', 'btnProofreadReplaceAll',
     'proofreadStatus', 'proofreadContainer', 'btnProofreadClose',
     'dashboardSettingsModal',
-    'busyOverlay', 'busyTitle', 'busyMsg', 'busyBarFill'
+    'busyOverlay', 'busyTitle', 'busyMsg', 'busyBarFill',
+    'bookmarkDock', 'btnBookmarks', 'bookmarkPanel',
+    'bookmarkPanelCount', 'bookmarkList', 'btnBookmarkClear'
   ];
   for (const id of ids) els[id] = $(id);
 }
@@ -902,6 +906,7 @@ State.resetTransient = () => {
   State.prExact = false;
   State.prTranslatedOnly = false;
   State.hideTools = false;
+  State.bookmarks = [];
 };
 
 State.initNewProject = () => {
@@ -923,6 +928,7 @@ State.initNewProject = () => {
   State.customRaw = '';
   State.jumpToContext = false;
   State.hideTools = false;
+  State.bookmarks = [];
   State.selected.clear();
   State.undo = State.redo = null;
   State.namesDirty = true;
@@ -963,6 +969,9 @@ State.rebuild = () => {
     for (let j = 0, m = fileLines.length; j < m; j++) {
       State.rows.push({ type: 'line', line: fileLines[j] });
     }
+  }
+  if (State.bookmarks.length) {
+    State.bookmarks = State.bookmarks.filter(n => State.byNum.has(n));
   }
 };
 
@@ -1393,6 +1402,7 @@ const App = {
     App.bindProofread();
     App.bindPreview();
     App.bindNames();
+    App.bindBookmarks();
   },
 
   bindToolbar() {
@@ -1630,6 +1640,14 @@ const App = {
     });
     els.previewContainer.addEventListener('click', e => {
       if (e.target.matches('input[type="checkbox"]')) return;
+      const bmBtn = e.target.closest('.row-bookmark-btn');
+      if (bmBtn) {
+        e.stopPropagation();
+        e.preventDefault();
+        const n = Number(bmBtn.dataset.num);
+        if (n) App.toggleBookmark(n);
+        return;
+      }
       const wrap = e.target.closest('.text-content');
       if (!wrap) return;
       const row = wrap.closest('.preview-row');
@@ -1667,6 +1685,140 @@ const App = {
     els.btnCopyNamesPlain.addEventListener('click', () => App.copyAllNames('plain'));
     els.btnCopyNamesWithGlossary.addEventListener('click', () => App.copyAllNames('glossary'));
     els.btnCopyNamesMissingGlossary.addEventListener('click', () => App.copyAllNames('missing'));
+  },
+
+  bindBookmarks() {
+    els.btnBookmarks.addEventListener('click', () => {
+      const panel = els.bookmarkPanel;
+      const willShow = !panel.classList.contains('show');
+      App.toggleBookmarkPanel(willShow);
+    });
+
+    els.bookmarkList.addEventListener('click', e => {
+      const del = e.target.closest('.bookmark-item-del');
+      if (del) {
+        e.stopPropagation();
+        const item = del.closest('.bookmark-item');
+        const n = Number(item?.dataset.num);
+        if (n) App.toggleBookmark(n, false);
+        return;
+      }
+      const item = e.target.closest('.bookmark-item');
+      if (!item) return;
+      const n = Number(item.dataset.num);
+      if (!n) return;
+      App.scrollToBookmark(n);
+      App.toggleBookmarkPanel(false);
+    });
+
+    els.btnBookmarkClear.addEventListener('click', () => {
+      if (!State.bookmarks.length) return;
+      if (!confirm('Hapus semua bookmark?')) return;
+      State.bookmarks = [];
+      App.syncBookmarkUI();
+      App.renderBookmarkList();
+      State.queueSave();
+    });
+
+    document.addEventListener('click', e => {
+      if (!els.bookmarkPanel.classList.contains('show')) return;
+      if (e.target.closest('.bookmark-dock')) return;
+      App.toggleBookmarkPanel(false);
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      if (els.bookmarkPanel.classList.contains('show')) {
+        App.toggleBookmarkPanel(false);
+      }
+    });
+
+    window.addEventListener('blur', () => App.toggleBookmarkPanel(false), { once: true });
+  },
+
+  toggleBookmarkPanel(show) {
+    els.bookmarkPanel.classList.toggle('show', show);
+    els.btnBookmarks.classList.toggle('active', show);
+    els.btnBookmarks.setAttribute('aria-expanded', show ? 'true' : 'false');
+    if (show) App.renderBookmarkList();
+  },
+
+  toggleBookmark(num, force) {
+    if (!num) return;
+    const idx = State.bookmarks.indexOf(num);
+    const has = idx !== -1;
+    const next = force === undefined ? !has : force;
+    if (next && !has) State.bookmarks.push(num);
+    else if (!next && has) State.bookmarks.splice(idx, 1);
+    else return;
+    App.syncBookmarkUI();
+    if (els.bookmarkPanel.classList.contains('show')) App.renderBookmarkList();
+    State.queueSave();
+  },
+
+  syncBookmarkUI() {
+    const count = State.bookmarks.length;
+    if (els.bookmarkPanelCount) {
+      els.bookmarkPanelCount.textContent = `(${count})`;
+    }
+    if (els.btnBookmarks) {
+      els.btnBookmarks.disabled = !State.lines.length;
+    }
+    if (els.btnBookmarkClear) {
+      els.btnBookmarkClear.disabled = count === 0;
+    }
+    if (App.main) App.main.forceUpdate();
+  },
+
+  renderBookmarkList() {
+    const list = els.bookmarkList;
+    if (!list) return;
+    list.replaceChildren();
+    const nums = [...State.bookmarks].sort((a, b) => a - b);
+    if (!nums.length) return;
+    const frag = document.createDocumentFragment();
+    for (const num of nums) {
+      const l = State.byNum.get(num);
+      if (!l) continue;
+      const item = document.createElement('div');
+      item.className = 'bookmark-item';
+      item.dataset.num = num;
+
+      const numEl = document.createElement('span');
+      numEl.className = 'bookmark-item-num';
+      numEl.textContent = num;
+
+      const meta = document.createElement('div');
+      meta.className = 'bookmark-item-meta';
+      const fileEl = document.createElement('span');
+      fileEl.className = 'bookmark-item-file';
+      fileEl.textContent = baseName(l.file);
+      fileEl.title = l.file;
+      const textEl = document.createElement('span');
+      textEl.className = 'bookmark-item-text';
+      const preview = l.message || (l.name ? `${l.name}: ` : '');
+      textEl.textContent = preview || '(kosong)';
+      textEl.title = preview;
+      meta.append(fileEl, textEl);
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'bookmark-item-del';
+      del.setAttribute('aria-label', `Hapus bookmark baris ${num}`);
+      del.tabIndex = -1;
+      del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+      item.append(numEl, meta, del);
+      frag.appendChild(item);
+    }
+    list.appendChild(frag);
+  },
+
+  scrollToBookmark(num) {
+    const idx = State.rows.findIndex(r => r.type === 'line' && r.line.line_num === num);
+    if (idx === -1) return;
+    App.main.scrollToIndex(idx);
+    App.flashRow(num, 60);
   },
 
   syncSettingsModal() {
@@ -1711,6 +1863,8 @@ const App = {
     els.workspaceView.style.display = 'flex';
     App.applyHideTools();
     App.refresh(false);
+    App.syncBookmarkUI();
+    App.toggleBookmarkPanel(false);
   },
 
   closeProject() {
@@ -1746,6 +1900,9 @@ const App = {
     delete els.stickyFileCheckbox.dataset.file;
     App.lastFile = null;
     App.fileCache = null;
+    App.toggleBookmarkPanel(false);
+    if (els.bookmarkList) els.bookmarkList.replaceChildren();
+    App.syncBookmarkUI();
     els.workspaceView.style.display = 'none';
     const split = document.querySelector('.split');
     if (split) split.classList.remove('hide-tools');
@@ -1935,6 +2092,7 @@ const App = {
     App.main.setItems(State.rows, keep);
     App.updateFileBadge();
     App.updateButtons();
+    App.syncBookmarkUI();
     if (State.namesDirty) { App.renderNames(); State.namesDirty = false; }
     App.updateStatusBar();
     els.btnUndo.disabled = !State.undo;
@@ -2091,9 +2249,16 @@ const App = {
     const hRange = document.createElement('span');
     hRange.className = 'file-range';
     hdr.append(hCb, hName, hRange);
-    row.append(cell, hdr);
+    const bm = document.createElement('button');
+    bm.type = 'button';
+    bm.className = 'row-bookmark-btn';
+    bm.setAttribute('aria-label', 'Toggle bookmark');
+    bm.tabIndex = -1;
+    bm.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
+    row.append(cell, hdr, bm);
     row._cell = cell; row._cb = cb; row._orig = orig; row._trans = trans;
     row._hdr = hdr; row._hCb = hCb; row._hName = hName; row._hRange = hRange;
+    row._bm = bm;
     return row;
   },
 
@@ -2111,11 +2276,13 @@ const App = {
       row._hCb.disabled = st.disabled;
       row._hCb.checked = st.checked;
       row._hCb.indeterminate = st.indeterminate;
+      row._bm.style.display = 'none';
     } else {
       const l = data.line;
       let cls = 'preview-row';
       if (isTrans(l)) cls += ' row-translated';
       if (State.selected.has(l.line_num)) cls += ' row-selected';
+      if (State.bookmarks.includes(l.line_num)) cls += ' row-bookmarked';
       row.className = cls;
       row._cell.style.display = 'flex';
       row._hdr.style.display = 'none';
@@ -2131,6 +2298,11 @@ const App = {
         row._trans.classList.add('cell-muted');
         row._trans.textContent = '——';
       }
+      row._bm.style.display = 'inline-flex';
+      row._bm.dataset.num = l.line_num;
+      const isBm = State.bookmarks.includes(l.line_num);
+      row._bm.setAttribute('aria-pressed', isBm ? 'true' : 'false');
+      row._bm.title = isBm ? 'Hapus bookmark' : 'Tambah bookmark';
     }
   },
 
