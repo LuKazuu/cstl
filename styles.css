@@ -359,6 +359,7 @@ a:focus-visible,
   z-index: 20;
   max-height: 56px;
   overflow: hidden;
+  contain: layout paint;
   transition: max-height var(--d3) var(--ease), opacity var(--d2) var(--ease), border-color var(--d3) var(--ease);
 }
 .toolbar.hidden {
@@ -458,6 +459,7 @@ a:focus-visible,
   transform: translateY(-4px) scale(0.985);
   pointer-events: none;
   transform-origin: top center;
+  will-change: opacity, transform;
   transition: opacity var(--d1) var(--ease), transform var(--d1) var(--ease);
 }
 .dropdown-content.show {
@@ -921,6 +923,7 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   background: rgba(5,6,8,0.82);
   padding: 0;
   z-index: 50;
+  will-change: opacity;
 }
 .backdrop.open { display: flex; animation: fade-in var(--d1) var(--ease); }
 .backdrop.closing { display: flex; animation: fade-out var(--d1) var(--ease) forwards; }
@@ -943,6 +946,7 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   border-radius: var(--r-2xl) var(--r-2xl) 0 0;
   padding: 18px 16px 16px;
   overflow: hidden;
+  will-change: opacity, transform;
 }
 .backdrop.open .modal {
   animation: modal-slide-up var(--d2) var(--ease);
@@ -1220,6 +1224,7 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   transform: translateY(6px) scale(0.985);
   pointer-events: none;
   transform-origin: bottom right;
+  will-change: opacity, transform;
   transition: opacity var(--d2) var(--ease), transform var(--d2) var(--ease);
   overflow: hidden;
 }

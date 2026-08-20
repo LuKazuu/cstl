@@ -1022,7 +1022,15 @@ class Scroller {
     }, { passive: true });
 
     if (window.ResizeObserver) {
-      new ResizeObserver(() => { this.invalidate(); this.schedule(); }).observe(viewport);
+      this.lastVpWidth = viewport.clientWidth;
+      new ResizeObserver(() => {
+        const w = viewport.clientWidth;
+        if (w !== this.lastVpWidth) {
+          this.lastVpWidth = w;
+          this.invalidate();
+        }
+        this.schedule();
+      }).observe(viewport);
     }
   }
 
