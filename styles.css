@@ -359,7 +359,6 @@ a:focus-visible,
   z-index: 20;
   max-height: 56px;
   overflow: hidden;
-  contain: layout paint;
   transition: max-height var(--d3) var(--ease), opacity var(--d2) var(--ease), border-color var(--d3) var(--ease);
 }
 .toolbar.hidden {
