@@ -53,7 +53,8 @@ const STATE_SCHEMA = [
   { key: 'prCase',             def: false,                  store: 'proofreadCaseSensitive' },
   { key: 'prExact',            def: false,                  store: 'proofreadExactMatch' },
   { key: 'prTranslatedOnly',   def: false,                  store: 'proofreadTranslatedOnly' },
-  { key: 'bookmarks',          def: [],                     coerce: true }
+  { key: 'bookmarks',          def: [],                     coerce: true },
+  { key: 'images',             def: [],                     coerce: true }
 ];
 
 const DROPDOWNS = [
@@ -95,6 +96,21 @@ function decodeBuffer(buf) {
 
 function stripNewlines(v) {
   return v == null ? null : String(v).replace(/\r?\n/g, '\\n').trim();
+}
+
+function resolveZipPath(baseDir, rel) {
+  if (!rel) return null;
+  if (/^(?:[a-z]+:)?\/\//i.test(rel) || /^data:/i.test(rel)) return null;
+  rel = rel.split('#')[0].split('?')[0];
+  if (!rel) return null;
+  const parts = (baseDir + rel).split('/');
+  const stack = [];
+  for (const p of parts) {
+    if (p === '' || p === '.') continue;
+    if (p === '..') stack.pop();
+    else stack.push(p);
+  }
+  return stack.join('/');
 }
 
 function sanitizeName(s) {
@@ -264,20 +280,38 @@ const Html = {
   opfManifest(xml) {
     const doc = new DOMParser().parseFromString(xml, 'application/xml');
     const manifest = {};
-    doc.querySelectorAll('manifest > item').forEach(it => {
+    const items = Array.from(doc.querySelectorAll('manifest > item'));
+    items.forEach(it => {
       manifest[it.getAttribute('id')] = decodeURIComponent(it.getAttribute('href'));
     });
     const spine = Array.from(doc.querySelectorAll('spine > itemref')).map(it => it.getAttribute('idref'));
-    return { manifest, spine };
+    let coverId = doc.querySelector('metadata > meta[name="cover"]')?.getAttribute('content') || null;
+    if (!coverId) {
+      const coverItem = items.find(it => (it.getAttribute('properties') || '').split(/\s+/).includes('cover-image'));
+      if (coverItem) coverId = coverItem.getAttribute('id');
+    }
+    const coverHref = coverId && manifest[coverId] ? manifest[coverId] : null;
+    return { manifest, spine, coverHref };
   },
-  extractTags(html, isXhtml, tags) {
+  extractContent(html, isXhtml, tags, baseDir) {
     const doc = new DOMParser().parseFromString(html, isXhtml ? 'application/xhtml+xml' : 'text/html');
-    const out = [];
-    doc.querySelectorAll(tags).forEach(el => {
-      const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
-      if (txt) out.push(txt);
+    const texts = [];
+    const images = [];
+    let nodes;
+    try { nodes = doc.querySelectorAll(`${tags}, img, image`); }
+    catch { nodes = doc.querySelectorAll(tags); }
+    nodes.forEach(el => {
+      const tag = (el.tagName || '').toLowerCase();
+      if (tag === 'img' || tag === 'image') {
+        const src = el.getAttribute('src') || el.getAttribute('xlink:href') || el.getAttribute('href');
+        const zipPath = resolveZipPath(baseDir, src);
+        if (zipPath) images.push({ afterIndex: texts.length - 1, zipPath });
+      } else {
+        const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
+        if (txt) texts.push(txt);
+      }
     });
-    return out;
+    return { texts, images };
   },
   rewriteTags(html, isXhtml, tags, replacements) {
     const doc = new DOMParser().parseFromString(html, isXhtml ? 'application/xhtml+xml' : 'text/html');
@@ -288,6 +322,46 @@ const Html = {
       if (r != null) el.textContent = r;
     });
     return new XMLSerializer().serializeToString(doc);
+  }
+};
+
+const IMG_MIME = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  svg: 'image/svg+xml', webp: 'image/webp', bmp: 'image/bmp'
+};
+
+const EpubImages = {
+  zipCache: null,
+  urlCache: new Map(),
+  async getZip(epubId) {
+    if (this.zipCache && this.zipCache.epubId === epubId) return this.zipCache.zip;
+    if (!jsZipReady()) return null;
+    const buffer = await Storage.loadEpubBuffer(epubId);
+    const zip = new JSZip();
+    await zip.loadAsync(buffer);
+    this.zipCache = { epubId, zip };
+    return zip;
+  },
+  async getUrl(epubId, zipPath) {
+    if (!epubId || !zipPath) return null;
+    const key = `${epubId}|${zipPath}`;
+    if (this.urlCache.has(key)) return this.urlCache.get(key);
+    try {
+      const zip = await this.getZip(epubId);
+      const entry = zip?.file(zipPath);
+      if (!entry) { this.urlCache.set(key, null); return null; }
+      const ext = zipPath.split('.').pop().toLowerCase();
+      const bytes = await entry.async('uint8array');
+      const blob = new Blob([bytes], { type: IMG_MIME[ext] || 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      this.urlCache.set(key, url);
+      return url;
+    } catch { this.urlCache.set(key, null); return null; }
+  },
+  clear() {
+    for (const url of this.urlCache.values()) { if (url) URL.revokeObjectURL(url); }
+    this.urlCache.clear();
+    this.zipCache = null;
   }
 };
 
@@ -350,11 +424,18 @@ async function parseEpub(buffer, tags, existing, start, epubId, onProgress) {
   const opfPath = Html.containerRoot(containerXml);
   const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) + '/' : '';
   const opfXml = await zip.file(opfPath).async('text');
-  const { manifest, spine } = Html.opfManifest(opfXml);
+  const { manifest, spine, coverHref } = Html.opfManifest(opfXml);
   const htmls = spine.map(idref => manifest[idref] ? opfDir + manifest[idref] : null).filter(Boolean);
 
   const imported = [];
   const skipped = [];
+  const images = [];
+  if (coverHref) {
+    const coverPath = resolveZipPath(opfDir, coverHref);
+    if (coverPath && zip.file(coverPath)) {
+      images.push({ zipPath: coverPath, file: null, isCover: true, insertAfter: null });
+    }
+  }
   let cur = start;
   for (let i = 0; i < htmls.length; i++) {
     const path = htmls[i];
@@ -362,8 +443,9 @@ async function parseEpub(buffer, tags, existing, start, epubId, onProgress) {
     const entry = zip.file(path);
     if (!entry) continue;
     const html = await entry.async('text');
-    const texts = Html.extractTags(html, path.endsWith('.xhtml'), tags);
-    let has = false;
+    const chapterDir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) + '/' : '';
+    const { texts, images: chImages } = Html.extractContent(html, path.endsWith('.xhtml'), tags, chapterDir);
+    const startNum = cur;
     for (const txt of texts) {
       imported.push({
         line_num: cur++,
@@ -374,13 +456,20 @@ async function parseEpub(buffer, tags, existing, start, epubId, onProgress) {
         trans_message: null,
         is_translated: false
       });
-      has = true;
     }
-    if (has) existing.add(path);
+    for (const img of chImages) {
+      images.push({
+        zipPath: img.zipPath,
+        file: path,
+        isCover: false,
+        insertAfter: img.afterIndex >= 0 ? (startNum + img.afterIndex) : null
+      });
+    }
+    if (texts.length || chImages.length) existing.add(path);
     onProgress(`${i + 1} / ${htmls.length} file`, ((i + 1) / htmls.length) * 100);
     if (i % 20 === 0) await yieldToEvent();
   }
-  return { imported, skipped, nextStart: cur, existing: Array.from(existing) };
+  return { imported, skipped, nextStart: cur, existing: Array.from(existing), images };
 }
 
 async function buildExportJson(lines, projectName, onProgress) {
@@ -629,7 +718,8 @@ async function restoreOne(zip, fallbackName, onProgress) {
     customRaw: meta.customRaw || '',
     jumpToContext: meta.jumpToContext ?? false,
     hideTools: meta.hideTools ?? false,
-    bookmarks: Array.isArray(meta.bookmarks) ? meta.bookmarks.filter(n => Number.isInteger(n) && n > 0) : []
+    bookmarks: Array.isArray(meta.bookmarks) ? meta.bookmarks.filter(n => Number.isInteger(n) && n > 0) : [],
+    images: Array.isArray(meta.images) ? meta.images : []
   });
   return name;
 }
@@ -907,6 +997,7 @@ State.resetTransient = () => {
   State.prTranslatedOnly = false;
   State.hideTools = false;
   State.bookmarks = [];
+  State.images = [];
 };
 
 State.initNewProject = () => {
@@ -929,6 +1020,7 @@ State.initNewProject = () => {
   State.jumpToContext = false;
   State.hideTools = false;
   State.bookmarks = [];
+  State.images = [];
   State.selected.clear();
   State.undo = State.redo = null;
   State.namesDirty = true;
@@ -960,14 +1052,43 @@ State.rebuild = () => {
     const gi = fileIdx.get(l.file);
     if (gi !== undefined) grouped[gi].push(l);
   }
+
+  const coverImages = [];
+  const imagesByFile = new Map();
+  for (const im of (State.images || [])) {
+    if (im.isCover) { coverImages.push(im); continue; }
+    let arr = imagesByFile.get(im.file);
+    if (!arr) { arr = []; imagesByFile.set(im.file, arr); }
+    arr.push(im);
+  }
+  for (const arr of imagesByFile.values()) {
+    arr.sort((a, b) => (a.insertAfter ?? -1) - (b.insertAfter ?? -1));
+  }
+
+  for (const im of coverImages) State.rows.push({ type: 'image', img: im });
+
   for (let i = 0; i < files.length; i++) {
     const fileLines = grouped[i];
-    if (!fileLines.length) continue;
+    const fileImages = imagesByFile.get(files[i]) || [];
+    if (!fileLines.length && !fileImages.length) continue;
     State.fileLines.set(files[i], fileLines);
     State.headerIdx.push(State.rows.length);
     State.rows.push({ type: 'header', file: files[i] });
+    let imgPtr = 0;
+    while (imgPtr < fileImages.length && fileImages[imgPtr].insertAfter == null) {
+      State.rows.push({ type: 'image', img: fileImages[imgPtr] });
+      imgPtr++;
+    }
     for (let j = 0, m = fileLines.length; j < m; j++) {
       State.rows.push({ type: 'line', line: fileLines[j] });
+      while (imgPtr < fileImages.length && fileImages[imgPtr].insertAfter === fileLines[j].line_num) {
+        State.rows.push({ type: 'image', img: fileImages[imgPtr] });
+        imgPtr++;
+      }
+    }
+    while (imgPtr < fileImages.length) {
+      State.rows.push({ type: 'image', img: fileImages[imgPtr] });
+      imgPtr++;
     }
   }
   if (State.bookmarks.length) {
@@ -1175,6 +1296,27 @@ class Scroller {
     return false;
   }
 
+  remeasureEl(el) {
+    const idx = this.els.indexOf(el);
+    if (idx === -1) return;
+    const di = this.indices[idx];
+    if (di === -1 || di == null) return;
+    const h = el.offsetHeight;
+    if (!h) return;
+    const total = this.items[di]?.type === 'header' ? h : h + this.gap;
+    if (Math.abs(total - this.heights[di]) <= 1) return;
+    const scrollTop = this.scrollTop;
+    const adjust = this.pos[di] < scrollTop ? total - this.heights[di] : 0;
+    this.heights[di] = total;
+    this.heightCache.set(this.keys[di], total);
+    this.updatePos();
+    if (adjust) { this.vp.scrollTop += adjust; this.scrollTop = this.vp.scrollTop; }
+    for (let i = 0; i < this.els.length; i++) {
+      const d = this.indices[i];
+      if (d !== -1) this.els[i].style.transform = `translateY(${this.pos[d]}px)`;
+    }
+  }
+
   scrollToIndex(idx) {
     if (idx < 0 || idx >= this.items.length) return;
     const vh = this.vp.clientHeight || 800;
@@ -1285,9 +1427,16 @@ const Importer = {
         }
       }
 
-      if (result.imported.length) {
+      if (result.imported.length || (result.images && result.images.length)) {
         State.lines.push(...result.imported);
         State.files = Array.from(result.existing || existing);
+        if (result.images && result.images.length) {
+          const known = new Set(State.images.map(im => `${im.zipPath}|${im.isCover ? 1 : 0}`));
+          for (const im of result.images) {
+            const key = `${im.zipPath}|${im.isCover ? 1 : 0}`;
+            if (!known.has(key)) { known.add(key); State.images.push(im); }
+          }
+        }
         State.namesDirty = true;
         App.refresh(true);
         State.queueSave();
@@ -1380,7 +1529,7 @@ const App = {
 
     App.main = new Scroller(
       els.previewViewport, els.previewContainer, App.createMainRow, App.updateMainRow,
-      (item) => item.type === 'header' ? `h:${item.file}` : `l:${item.line.line_num}`
+      (item) => item.type === 'header' ? `h:${item.file}` : item.type === 'image' ? `i:${item.img.file || ''}:${item.img.zipPath}:${item.img.insertAfter ?? 'c'}` : `l:${item.line.line_num}`
     );
     App.pr = new Scroller(
       els.proofreadContainer.closest('.proofread-results-wrap'),
@@ -1858,6 +2007,7 @@ const App = {
   },
 
   open(id, data) {
+    EpubImages.clear();
     State.loadFromData(data);
     State.projectId = id;
     State.selected.clear();
@@ -1891,6 +2041,7 @@ const App = {
   },
 
   finishClose() {
+    EpubImages.clear();
     State.resetTransient();
     App.main?.setItems([], false);
     App.pr?.setItems([], false);
@@ -2263,14 +2414,45 @@ const App = {
     bm.setAttribute('aria-label', 'Toggle bookmark');
     bm.tabIndex = -1;
     bm.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
-    row.append(cell, hdr, bm);
+    const imgBox = document.createElement('div');
+    imgBox.className = 'row-image-box';
+    const imgEl = document.createElement('img');
+    imgEl.className = 'row-image-el';
+    imgEl.loading = 'lazy';
+    imgEl.alt = '';
+    const imgLabel = document.createElement('span');
+    imgLabel.className = 'row-image-label';
+    imgBox.append(imgEl, imgLabel);
+    imgEl.addEventListener('error', () => imgBox.classList.add('img-error'));
+    row.append(cell, hdr, bm, imgBox);
     row._cell = cell; row._cb = cb; row._orig = orig; row._trans = trans;
     row._hdr = hdr; row._hCb = hCb; row._hName = hName; row._hRange = hRange;
     row._bm = bm;
+    row._imgBox = imgBox; row._imgEl = imgEl; row._imgLabel = imgLabel; row._imgToken = 0;
     return row;
   },
 
   updateMainRow(row, data) {
+    if (data.type === 'image') {
+      row.className = 'preview-row row-image';
+      row._cell.style.display = 'none';
+      row._hdr.style.display = 'none';
+      row._bm.style.display = 'none';
+      row._imgBox.style.display = 'flex';
+      row._imgBox.classList.remove('img-error');
+      const entry = data.img;
+      row._imgLabel.textContent = entry.isCover ? 'Sampul EPUB' : 'Gambar';
+      row._imgEl.removeAttribute('src');
+      row._imgEl.alt = entry.isCover ? 'Sampul EPUB' : 'Gambar dalam chapter';
+      const token = ++row._imgToken;
+      EpubImages.getUrl(State.epubSourceId, entry.zipPath).then(url => {
+        if (row._imgToken !== token) return;
+        if (url) row._imgEl.src = url;
+        else row._imgBox.classList.add('img-error');
+      });
+      return;
+    }
+    row._imgBox.style.display = 'none';
     if (data.type === 'header') {
       row.className = 'preview-row file-header';
       row._cell.style.display = 'none';
