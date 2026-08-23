@@ -342,15 +342,30 @@ const IMG_MIME = {
 
 const EpubImages = {
   zipCache: null,
+  zipLoading: null,
   urlCache: new Map(),
   async getZip(epubId) {
     if (this.zipCache && this.zipCache.epubId === epubId) return this.zipCache.zip;
+    if (this.zipLoading && this.zipLoading.epubId === epubId) return this.zipLoading.promise;
     if (!jsZipReady()) return null;
-    const buffer = await Storage.loadEpubBuffer(epubId);
-    const zip = new JSZip();
-    await zip.loadAsync(buffer);
-    this.zipCache = { epubId, zip };
-    return zip;
+    const promise = (async () => {
+      const buffer = await Storage.loadEpubBuffer(epubId);
+      const zip = new JSZip();
+      await zip.loadAsync(buffer);
+      return zip;
+    })();
+    this.zipLoading = { epubId, promise };
+    try {
+      const zip = await promise;
+      this.zipCache = { epubId, zip };
+      return zip;
+    } finally {
+      if (this.zipLoading && this.zipLoading.epubId === epubId) this.zipLoading = null;
+    }
+  },
+  preload(epubId) {
+    if (!epubId) return;
+    this.getZip(epubId).catch(() => {});
   },
   async getUrl(epubId, zipPath) {
     if (!epubId || !zipPath) return null;
@@ -372,6 +387,7 @@ const EpubImages = {
     for (const url of this.urlCache.values()) { if (url) URL.revokeObjectURL(url); }
     this.urlCache.clear();
     this.zipCache = null;
+    this.zipLoading = null;
   }
 };
 
@@ -2030,6 +2046,8 @@ const App = {
     State.selected.clear();
     State.undo = State.redo = null;
     State.namesDirty = true;
+
+    if (data.projectType === 'epub' && data.epubSourceId) EpubImages.preload(data.epubSourceId);
 
     if (App.dashboardObserver) { App.dashboardObserver.disconnect(); App.dashboardObserver = null; }
 
