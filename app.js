@@ -2436,7 +2436,6 @@ const App = {
     imgBox.className = 'row-image-box';
     const imgEl = document.createElement('img');
     imgEl.className = 'row-image-el';
-    imgEl.loading = 'lazy';
     imgEl.alt = '';
     const imgLabel = document.createElement('span');
     imgLabel.className = 'row-image-label';
