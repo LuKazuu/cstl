@@ -172,6 +172,22 @@ async function withProgress(title, initialMsg, fn, failMsg) {
 
 const Storage = {
   root() { return navigator.storage.getDirectory(); },
+  async atomicWrite(root, name, content) {
+    const tmpName = `.${name}.tmp`;
+    const tmpHandle = await root.getFileHandle(tmpName, { create: true });
+    const w = await tmpHandle.createWritable();
+    await w.write(content);
+    await w.close();
+    if (typeof tmpHandle.move === 'function') {
+      await tmpHandle.move(name);
+    } else {
+      const finalHandle = await root.getFileHandle(name, { create: true });
+      const w2 = await finalHandle.createWritable();
+      await w2.write(content);
+      await w2.close();
+      try { await root.removeEntry(tmpName); } catch {}
+    }
+  },
   async readIndex() {
     try {
       const root = await Storage.root();
@@ -181,9 +197,7 @@ const Storage = {
   },
   async writeIndex(items) {
     const root = await Storage.root();
-    const w = await (await root.getFileHandle(INDEX_FILE, { create: true })).createWritable();
-    await w.write(JSON.stringify(items));
-    await w.close();
+    await Storage.atomicWrite(root, INDEX_FILE, JSON.stringify(items));
   },
   async upsertIndex(meta) {
     const items = (await Storage.readIndex()) || [];
@@ -199,9 +213,7 @@ const Storage = {
   async saveProject(id, data, counts) {
     data.updatedAt = Date.now();
     const root = await Storage.root();
-    const w = await (await root.getFileHandle(id, { create: true })).createWritable();
-    await w.write(JSON.stringify(data));
-    await w.close();
+    await Storage.atomicWrite(root, id, JSON.stringify(data));
     const tc = counts?.translatedCount ?? data.lines?.reduce((n, l) => n + (l.is_translated ? 1 : 0), 0) ?? 0;
     await Storage.upsertIndex({
       id,
@@ -258,9 +270,7 @@ const Storage = {
   },
   async saveEpub(epubId, buffer) {
     const root = await Storage.root();
-    const w = await (await root.getFileHandle(epubId, { create: true })).createWritable();
-    await w.write(buffer);
-    await w.close();
+    await Storage.atomicWrite(root, epubId, buffer);
   },
   async wipe() {
     const root = await navigator.storage.getDirectory();
@@ -1527,6 +1537,13 @@ const App = {
       return;
     }
 
+    if (navigator.storage?.persist) {
+      try {
+        const already = await navigator.storage.persisted?.();
+        if (!already) await navigator.storage.persist();
+      } catch {}
+    }
+
     App.main = new Scroller(
       els.previewViewport, els.previewContainer, App.createMainRow, App.updateMainRow,
       (item) => item.type === 'header' ? `h:${item.file}` : item.type === 'image' ? `i:${item.img.file || ''}:${item.img.zipPath}:${item.img.insertAfter ?? 'c'}` : `l:${item.line.line_num}`
@@ -2159,6 +2176,7 @@ const App = {
   buildProjectCard(p) {
     const card = document.createElement('div');
     card.className = 'project-card';
+
     const hasData = p.fileCount || p.lineCount;
     let badge = '';
     if (hasData) {
