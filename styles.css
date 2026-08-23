@@ -767,6 +767,20 @@ a:focus-visible,
 }
 .row-image-box.img-error .row-image-el { display: none; }
 .row-image-box.img-error .row-image-label::before { content: '⚠ Gagal memuat — '; color: var(--danger); }
+.row-image-box.img-loading .row-image-el { display: none; }
+.row-image-spinner {
+  display: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid var(--surface-2);
+  border-top-color: var(--accent);
+  animation: row-image-spin 0.7s linear infinite;
+}
+.row-image-box.img-loading .row-image-spinner { display: block; }
+@keyframes row-image-spin {
+  to { transform: rotate(360deg); }
+}
 
 .highlight {
   background-color: rgba(245,177,78,0.85);

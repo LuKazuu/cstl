@@ -365,7 +365,16 @@ const EpubImages = {
   },
   preload(epubId) {
     if (!epubId) return;
-    this.getZip(epubId).catch(() => {});
+    this.getZip(epubId).then(zip => {
+      if (!zip) return;
+      const paths = [...new Set((State.images || []).map(im => im.zipPath).filter(Boolean))];
+      for (const zipPath of paths) this.getUrl(epubId, zipPath);
+    }).catch(() => {});
+  },
+  peekUrl(epubId, zipPath) {
+    if (!epubId || !zipPath) return undefined;
+    const key = `${epubId}|${zipPath}`;
+    return this.urlCache.has(key) ? this.urlCache.get(key) : undefined;
   },
   async getUrl(epubId, zipPath) {
     if (!epubId || !zipPath) return null;
@@ -2452,12 +2461,14 @@ const App = {
     bm.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
     const imgBox = document.createElement('div');
     imgBox.className = 'row-image-box';
+    const imgSpinner = document.createElement('div');
+    imgSpinner.className = 'row-image-spinner';
     const imgEl = document.createElement('img');
     imgEl.className = 'row-image-el';
     imgEl.alt = '';
     const imgLabel = document.createElement('span');
     imgLabel.className = 'row-image-label';
-    imgBox.append(imgEl, imgLabel);
+    imgBox.append(imgSpinner, imgEl, imgLabel);
     imgEl.addEventListener('error', () => imgBox.classList.add('img-error'));
     row.append(cell, hdr, bm, imgBox);
     row._cell = cell; row._cb = cb; row._orig = orig; row._trans = trans;
@@ -2480,11 +2491,20 @@ const App = {
       row._imgEl.removeAttribute('src');
       row._imgEl.alt = entry.isCover ? 'Sampul EPUB' : 'Gambar dalam chapter';
       const token = ++row._imgToken;
-      EpubImages.getUrl(State.epubSourceId, entry.zipPath).then(url => {
-        if (row._imgToken !== token) return;
-        if (url) row._imgEl.src = url;
+      const cached = EpubImages.peekUrl(State.epubSourceId, entry.zipPath);
+      if (cached !== undefined) {
+        row._imgBox.classList.remove('img-loading');
+        if (cached) row._imgEl.src = cached;
         else row._imgBox.classList.add('img-error');
-      });
+      } else {
+        row._imgBox.classList.add('img-loading');
+        EpubImages.getUrl(State.epubSourceId, entry.zipPath).then(url => {
+          if (row._imgToken !== token) return;
+          row._imgBox.classList.remove('img-loading');
+          if (url) row._imgEl.src = url;
+          else row._imgBox.classList.add('img-error');
+        });
+      }
       return;
     }
     row._imgBox.style.display = 'none';
