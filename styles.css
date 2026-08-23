@@ -1442,6 +1442,7 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
 #proofreadModal { z-index: 65; }
 #lineEditorModal { z-index: 70; }
 #dashboardSettingsModal { z-index: 60; }
+#opfsExplorerModal { z-index: 63; }
 
 .modal {
   width: 100%;
@@ -1988,6 +1989,152 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   .name-table tbody tr:hover td { background-color: transparent; }
   .row-bookmark-btn { opacity: 0.65; }
   .preview-row.row-bookmarked .row-bookmark-btn { opacity: 1; }
+}
+
+/* ============ OPFS File Explorer ============ */
+.opfs-explorer {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.opfs-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.opfs-item {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--hairline);
+  transition: background-color var(--d1) var(--ease);
+}
+.opfs-item:last-child { border-bottom: none; }
+.opfs-item:hover { background: var(--surface); }
+
+.opfs-item-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+  color: var(--ink-dim);
+  flex-shrink: 0;
+}
+.opfs-item-icon.kind-project { color: var(--accent); background: var(--accent-tint); }
+.opfs-item-icon.kind-epub { color: var(--success); background: var(--success-soft); }
+.opfs-item-icon.kind-index { color: var(--ink-dim); background: var(--surface-2); }
+.opfs-item-icon.kind-tmp { color: var(--danger); background: var(--danger-soft); }
+
+.opfs-item-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.opfs-item-name {
+  font-size: 12.5px;
+  color: var(--ink);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  letter-spacing: -0.1px;
+}
+
+.opfs-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ink-muted);
+  flex-wrap: wrap;
+}
+.opfs-item-meta .opfs-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink-dim);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+.opfs-item-meta .opfs-tag.kind-project { color: var(--accent); background: var(--accent-tint); }
+.opfs-item-meta .opfs-tag.kind-epub { color: var(--success); background: var(--success-soft); }
+.opfs-item-meta .opfs-tag.kind-index { color: var(--ink-dim); background: var(--surface-2); }
+.opfs-item-meta .opfs-tag.kind-tmp { color: var(--danger); background: var(--danger-soft); }
+
+.opfs-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.opfs-item-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: background-color var(--d1) var(--ease), color var(--d1) var(--ease), border-color var(--d1) var(--ease);
+  padding: 0;
+}
+.opfs-item-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+  border-color: var(--hairline-2);
+}
+.opfs-item-btn:active:not(:disabled) { transform: scale(0.94); }
+.opfs-item-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.opfs-item-btn.danger:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: transparent;
+}
+
+.opfs-empty,
+.opfs-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 16px;
+  color: var(--ink-muted);
+  font-size: 12.5px;
+}
+.opfs-empty svg { color: var(--hairline-3); }
+
+@media (max-width: 480px) {
+  .opfs-item {
+    grid-template-columns: 26px 1fr auto;
+    gap: 8px;
+    padding: 9px 10px;
+  }
+  .opfs-item-meta { font-size: 10.5px; gap: 6px; }
+  .opfs-item-name { font-size: 12px; }
+  .opfs-list { max-height: 280px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

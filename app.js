@@ -280,6 +280,206 @@ const Storage = {
   }
 };
 
+const OpfsExplorer = {
+  // Classify a file by its name so the UI can show a meaningful label/icon.
+  // 'project' = .cstl project file, 'epub' = extracted EPUB buffer,
+  // 'index'   = internal _index.json, 'tmp' = atomic-write temp file, 'other' = anything else.
+  classify(name) {
+    if (name === INDEX_FILE) return 'index';
+    if (name.endsWith('.cstl')) return 'project';
+    if (name.startsWith('.') && name.endsWith('.tmp')) return 'tmp';
+    if (/^epub_/.test(name) || /\.(epub|epub3)$/i.test(name)) return 'epub';
+    return 'other';
+  },
+  kindLabel(kind) {
+    return ({
+      project: 'Project',
+      epub: 'EPUB',
+      index: 'Index',
+      tmp: 'Tmp',
+      other: 'File'
+    })[kind] || 'File';
+  },
+  kindIconSvg(kind) {
+    if (kind === 'project') {
+      return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>';
+    }
+    if (kind === 'epub') {
+      return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
+    }
+    if (kind === 'index') {
+      return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg>';
+    }
+    if (kind === 'tmp') {
+      return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>';
+  },
+  formatSize(bytes) {
+    if (bytes == null || isNaN(bytes)) return '?';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  },
+  formatDate(ms) {
+    if (!ms) return '';
+    try {
+      const d = new Date(ms);
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch { return ''; }
+  },
+  escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  },
+  async listAll() {
+    if (!navigator.storage?.getDirectory) return [];
+    const root = await navigator.storage.getDirectory();
+    const out = [];
+    for await (const [name, handle] of root.entries()) {
+      if (handle.kind !== 'file') continue;
+      let size = 0, lastModified = 0;
+      try {
+        const file = await handle.getFile();
+        size = file.size;
+        lastModified = file.lastModified;
+      } catch {}
+      out.push({ name, size, lastModified, kind: this.classify(name) });
+    }
+    // Sort: by kind priority first (project → epub → other → index → tmp), then by name asc.
+    const kindPriority = { project: 0, epub: 1, other: 2, index: 3, tmp: 4 };
+    out.sort((a, b) => {
+      const p = (kindPriority[a.kind] ?? 2) - (kindPriority[b.kind] ?? 2);
+      if (p !== 0) return p;
+      return a.name.localeCompare(b.name);
+    });
+    return out;
+  },
+  _showLoading(show) {
+    if (!els.opfsLoading) return;
+    els.opfsLoading.hidden = !show;
+  },
+  _showEmpty(show) {
+    if (!els.opfsEmpty) return;
+    els.opfsEmpty.hidden = !show;
+  },
+  async refresh() {
+    if (!els.opfsList) return;
+    if (!navigator.storage?.getDirectory) {
+      els.opfsList.innerHTML = '';
+      this._showEmpty(false);
+      this._showLoading(false);
+      const notice = document.createElement('div');
+      notice.className = 'opfs-empty';
+      notice.style.color = 'var(--danger)';
+      notice.textContent = 'Browser tidak mendukung OPFS.';
+      els.opfsList.appendChild(notice);
+      return;
+    }
+    this._showLoading(true);
+    this._showEmpty(false);
+    els.opfsList.innerHTML = '';
+    try {
+      const items = await this.listAll();
+      this._showLoading(false);
+      if (!items.length) {
+        this._showEmpty(true);
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const item of items) {
+        frag.appendChild(this._renderItem(item));
+      }
+      els.opfsList.appendChild(frag);
+    } catch (e) {
+      this._showLoading(false);
+      els.opfsList.innerHTML = '';
+      const notice = document.createElement('div');
+      notice.className = 'opfs-empty';
+      notice.style.color = 'var(--danger)';
+      notice.textContent = 'Gagal memuat: ' + (e?.message || e);
+      els.opfsList.appendChild(notice);
+    }
+  },
+  _renderItem(item) {
+    const row = document.createElement('div');
+    row.className = 'opfs-item';
+    row.setAttribute('role', 'listitem');
+    row.dataset.name = item.name;
+    row.dataset.kind = item.kind;
+    const downloadTitle = item.kind === 'tmp'
+      ? 'File tmp mungkin tidak utuh — unduh dengan hati-hati'
+      : 'Unduh file';
+    row.innerHTML = `
+      <div class="opfs-item-icon kind-${item.kind}" aria-hidden="true">${this.kindIconSvg(item.kind)}</div>
+      <div class="opfs-item-info">
+        <span class="opfs-item-name" title="${this.escapeHtml(item.name)}">${this.escapeHtml(item.name)}</span>
+        <div class="opfs-item-meta">
+          <span class="opfs-tag kind-${item.kind}">${this.kindLabel(item.kind)}</span>
+          <span class="opfs-meta-size">${this.formatSize(item.size)}</span>
+          ${item.lastModified ? `<span class="opfs-meta-date" title="Terakhir diubah">${this.formatDate(item.lastModified)}</span>` : ''}
+        </div>
+      </div>
+      <div class="opfs-item-actions">
+        <button type="button" class="opfs-item-btn opfs-download" aria-label="Unduh ${this.escapeHtml(item.name)}" title="${downloadTitle}" data-action="download">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button type="button" class="opfs-item-btn danger opfs-delete" aria-label="Hapus ${this.escapeHtml(item.name)}" title="Hapus file" data-action="delete">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        </button>
+      </div>
+    `;
+    return row;
+  },
+  async download(name) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      const handle = await root.getFileHandle(name);
+      const file = await handle.getFile();
+      const url = URL.createObjectURL(file);
+      download(url, name);
+    } catch (e) {
+      alert('Gagal mengunduh "' + name + '": ' + (e?.message || e));
+    }
+  },
+  async remove(name) {
+    const kind = this.classify(name);
+    const warnings = {
+      project: 'Ini adalah file project (.cstl). Project akan hilang dari dashboard setelah dihapus.',
+      epub: 'Ini adalah file EPUB yang dipakai project. Project terkait mungkin tidak bisa menampilkan gambar lagi.',
+      index: 'Ini adalah file index internal. Aplikasi akan membangun ulang index otomatis saat dibuka.',
+      tmp: 'Ini adalah file sementara dari operasi tulis yang gagal. Aman untuk dihapus.',
+      other: 'File ini tidak dikenali. Hapus jika Anda yakin.'
+    };
+    const warning = warnings[kind] || warnings.other;
+    if (!confirm(`Hapus "${name}" dari OPFS?\n\n${warning}\n\nTindakan ini tidak dapat dibatalkan.`)) return;
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry(name, { recursive: false });
+      // Remove the row from the DOM optimistically; if list is now empty, show empty state.
+      const row = els.opfsList?.querySelector(`.opfs-item[data-name="${CSS.escape(name)}"]`);
+      if (row) row.remove();
+      if (els.opfsList && !els.opfsList.children.length) {
+        this._showEmpty(true);
+      }
+    } catch (e) {
+      alert('Gagal menghapus "' + name + '": ' + (e?.message || e));
+    }
+  },
+  handleClick(e) {
+    const btn = e.target.closest('.opfs-item-btn[data-action]');
+    if (!btn) return;
+    const row = btn.closest('.opfs-item');
+    if (!row) return;
+    const name = row.dataset.name;
+    if (!name) return;
+    const action = btn.dataset.action;
+    if (action === 'download') this.download(name);
+    else if (action === 'delete') this.remove(name);
+  }
+};
+
 const Html = {
   containerRoot(xml) {
     const doc = new DOMParser().parseFromString(xml, 'application/xml');
@@ -939,6 +1139,8 @@ function cacheEls() {
     'btnProofreadReset', 'proofreadReplaceInput', 'btnProofreadReplaceAll',
     'proofreadStatus', 'proofreadContainer', 'btnProofreadClose',
     'dashboardSettingsModal',
+    'opfsExplorerModal', 'btnOpfsExplorerOpen', 'btnOpfsExplorerClose',
+    'opfsExplorer', 'opfsList', 'opfsEmpty', 'opfsLoading', 'btnOpfsRefresh',
     'busyOverlay', 'busyTitle', 'busyMsg', 'busyBarFill',
     'bookmarkDock', 'btnBookmarks', 'bookmarkPanel',
     'bookmarkPanelCount', 'bookmarkList', 'btnBookmarkClear'
@@ -1642,6 +1844,23 @@ const App = {
     els.btnDashboardSettingsClose.addEventListener('click', () => toggleModal(els.dashboardSettingsModal, false));
     els.btnBackupAll.addEventListener('click', App.backupAll);
     els.btnWipeAllData.addEventListener('click', App.wipeAllData);
+
+    // File Explorer lives in its own separate modal so the user must intentionally
+    // open it — that prevents accidental deletes from the main Pengaturan modal.
+    els.btnOpfsExplorerOpen?.addEventListener('click', () => {
+      toggleModal(els.opfsExplorerModal, true);
+      OpfsExplorer.refresh();
+    });
+    els.btnOpfsExplorerClose?.addEventListener('click', () => {
+      toggleModal(els.opfsExplorerModal, false);
+      // If a file was deleted while the explorer was open, the dashboard project
+      // list may now be stale — silently refresh it so the user sees the truth.
+      if (els.dashboardView && els.dashboardView.classList.contains('open')) {
+        try { App.loadDashboard(); } catch {}
+      }
+    });
+    els.btnOpfsRefresh?.addEventListener('click', () => OpfsExplorer.refresh());
+    els.opfsList?.addEventListener('click', e => OpfsExplorer.handleClick(e));
   },
 
   bindSortDropdown() {
