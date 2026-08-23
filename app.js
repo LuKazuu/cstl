@@ -906,6 +906,7 @@ const els = {};
 function cacheEls() {
   const ids = [
     'dashboardView', 'workspaceView', 'projectList',
+    'projectCount', 'projectSearch', 'projectSearchClear', 'projectSort',
     'btnNewProject', 'btnRestoreProject', 'btnDashboardSettings', 'btnDashboardSettingsClose',
     'btnBackupAll', 'btnWipeAllData',
     'btnBackToDashboard', 'projectNameDisplay', 'dynamicToolbarWrap',
@@ -1617,10 +1618,158 @@ const App = {
     });
     els.btnRestoreProject.addEventListener('click', () => els.restoreProjectInput.click());
     els.restoreProjectInput.addEventListener('change', App.restoreProject);
+
+    if (els.projectSearch) {
+      let searchTimer = null;
+      els.projectSearch.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => App.renderDashboardItems(), 180);
+      });
+    }
+    if (els.projectSearchClear) {
+      els.projectSearchClear.addEventListener('click', () => {
+        if (els.projectSearch) {
+          els.projectSearch.value = '';
+          els.projectSearch.focus();
+        }
+        App.renderDashboardItems();
+      });
+    }
+
+    App.bindSortDropdown();
+
     els.btnDashboardSettings.addEventListener('click', () => toggleModal(els.dashboardSettingsModal, true));
     els.btnDashboardSettingsClose.addEventListener('click', () => toggleModal(els.dashboardSettingsModal, false));
     els.btnBackupAll.addEventListener('click', App.backupAll);
     els.btnWipeAllData.addEventListener('click', App.wipeAllData);
+  },
+
+  bindSortDropdown() {
+    const box = document.getElementById('projectSortBox');
+    const trigger = document.getElementById('projectSortTrigger');
+    const menu = document.getElementById('projectSortMenu');
+    const label = document.getElementById('projectSortLabel');
+    const hidden = document.getElementById('projectSort');
+    if (!box || !trigger || !menu || !label || !hidden) return;
+
+    const labelMap = {};
+    menu.querySelectorAll('.sort-menu-item').forEach(item => {
+      labelMap[item.dataset.value] = item.querySelector('.sort-menu-text')?.textContent || item.dataset.value;
+    });
+
+    const closeMenu = () => {
+      box.classList.remove('open');
+      menu.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+    };
+    const openMenu = () => {
+      box.classList.add('open');
+      menu.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      const active = menu.querySelector('.sort-menu-item.active');
+      if (active) setTimeout(() => active.focus(), 30);
+    };
+    const toggleMenu = () => {
+      if (box.classList.contains('open')) closeMenu();
+      else openMenu();
+    };
+    const selectValue = (value) => {
+      if (!value || !labelMap[value]) return;
+      hidden.value = value;
+      label.textContent = labelMap[value];
+      menu.querySelectorAll('.sort-menu-item').forEach(item => {
+        const isActive = item.dataset.value === value;
+        item.classList.toggle('active', isActive);
+        item.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      });
+      App.renderDashboardItems();
+      closeMenu();
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleMenu();
+    });
+
+    trigger.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        toggleMenu();
+      } else if (e.key === 'Escape' && box.classList.contains('open')) {
+        e.preventDefault();
+        closeMenu();
+        trigger.focus();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (!box.classList.contains('open')) openMenu();
+        else {
+          const active = menu.querySelector('.sort-menu-item.active');
+          const next = active ? active.nextElementSibling : menu.querySelector('.sort-menu-item');
+          if (next) next.focus();
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!box.classList.contains('open')) openMenu();
+        else {
+          const active = menu.querySelector('.sort-menu-item.active');
+          const prev = active ? active.previousElementSibling : null;
+          if (prev) prev.focus();
+        }
+      }
+    });
+
+    menu.querySelectorAll('.sort-menu-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectValue(item.dataset.value);
+      });
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          selectValue(e.currentTarget.dataset.value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeMenu();
+          trigger.focus();
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          const next = e.currentTarget.nextElementSibling;
+          if (next) next.focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          const prev = e.currentTarget.previousElementSibling;
+          if (prev) prev.focus();
+        }
+      });
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!box.contains(e.target) && box.classList.contains('open')) {
+        closeMenu();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && box.classList.contains('open')) {
+        closeMenu();
+        trigger.focus();
+      }
+    });
+
+    const reposition = () => {
+      if (!box.classList.contains('open')) return;
+      const r = menu.getBoundingClientRect();
+      if (r.right > window.innerWidth - 8) {
+        menu.style.left = 'auto';
+        menu.style.right = '0';
+      }
+      if (r.left < 8) {
+        menu.style.right = 'auto';
+        menu.style.left = '0';
+      }
+    };
+    trigger.addEventListener('click', () => setTimeout(reposition, 50));
+    window.addEventListener('resize', reposition);
   },
 
   bindDropdowns() {
@@ -2143,39 +2292,135 @@ const App = {
   async loadDashboard() {
     const list = els.projectList;
     const content = list.parentElement;
+    const countBadge = els.projectCount || document.getElementById('projectCount');
 
     if (App.dashboardObserver) { App.dashboardObserver.disconnect(); App.dashboardObserver = null; }
     App.dashboardSentinel = null;
     App.dashboardItems = [];
+    App.dashboardAllItems = [];
     App.dashboardRendered = 0;
     list.innerHTML = '';
 
     try {
       const items = await Storage.list();
+      App.dashboardAllItems = items;
+
+      if (countBadge) {
+        countBadge.textContent = items.length;
+        countBadge.hidden = false;
+      }
+      const heroActions = document.querySelector('.hero .actions');
+      if (heroActions) {
+        heroActions.style.display = items.length ? '' : 'none';
+      }
       if (!items.length) {
         content.classList.add('is-empty');
-        list.innerHTML = `<p class="hint" style="grid-column:1/-1;">Belum ada Project. Buat atau Pulihkan!</p>`;
+        list.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+            </div>
+            <h3 class="empty-state-title">Belum ada project</h3>
+            <p class="empty-state-desc">Mulai dengan membuat project baru, atau pulihkan dari file backup yang sudah ada.</p>
+            <div class="empty-state-actions">
+              <button type="button" class="btn btn-primary btn-sm" data-action="new">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                Buat Project
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" data-action="restore">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
+                Pulihkan Project
+              </button>
+            </div>
+          </div>
+        `;
+        const newBtn = list.querySelector('.empty-state [data-action="new"]');
+        const restoreBtn = list.querySelector('.empty-state [data-action="restore"]');
+        if (newBtn) newBtn.addEventListener('click', () => document.getElementById('btnNewProject')?.click());
+        if (restoreBtn) restoreBtn.addEventListener('click', () => document.getElementById('btnRestoreProject')?.click());
         return;
       }
       content.classList.remove('is-empty');
-      App.dashboardItems = items;
-
-      const sentinel = document.createElement('div');
-      sentinel.className = 'dashboard-sentinel';
-      list.appendChild(sentinel);
-      App.dashboardSentinel = sentinel;
-
-      App.dashboardObserver = new IntersectionObserver(entries => {
-        if (entries[0].isIntersecting && App.dashboardRendered < App.dashboardItems.length) {
-          App.renderDashboardPage();
-        }
-      }, { rootMargin: '300px' });
-      App.dashboardObserver.observe(sentinel);
-
-      App.renderDashboardPage();
+      App.renderDashboardItems();
     } catch {
       list.innerHTML = `<p class="hint" style="color:var(--danger);">Gagal akses storage.</p>`;
     }
+  },
+
+  renderDashboardItems() {
+    const list = els.projectList;
+    if (!list) return;
+    if (App.dashboardObserver) { App.dashboardObserver.disconnect(); App.dashboardObserver = null; }
+    App.dashboardSentinel = null;
+    App.dashboardRendered = 0;
+    list.innerHTML = '';
+
+    const searchInput = els.projectSearch;
+    const sortSelect = els.projectSort;
+    const clearBtn = els.projectSearchClear;
+
+    const query = (searchInput?.value || '').trim().toLowerCase();
+    const sortMode = sortSelect?.value || 'newest';
+    if (clearBtn) clearBtn.hidden = !query;
+
+    let items = (App.dashboardAllItems || []).slice();
+
+    if (query) {
+      items = items.filter(p => (p.name || '').toLowerCase().includes(query));
+    }
+
+    items.sort((a, b) => {
+      switch (sortMode) {
+        case 'oldest':
+          return (a.updatedAt || 0) - (b.updatedAt || 0);
+        case 'name-asc':
+          return (a.name || '').localeCompare(b.name || '', 'id');
+        case 'name-desc':
+          return (b.name || '').localeCompare(a.name || '', 'id');
+        case 'progress-desc': {
+          const pa = a.lineCount ? a.translatedCount / a.lineCount : 0;
+          const pb = b.lineCount ? b.translatedCount / b.lineCount : 0;
+          return pb - pa || (b.updatedAt || 0) - (a.updatedAt || 0);
+        }
+        case 'progress-asc': {
+          const pa = a.lineCount ? a.translatedCount / a.lineCount : 0;
+          const pb = b.lineCount ? b.translatedCount / b.lineCount : 0;
+          return pa - pb || (b.updatedAt || 0) - (a.updatedAt || 0);
+        }
+        case 'newest':
+        default:
+          return (b.updatedAt || 0) - (a.updatedAt || 0);
+      }
+    });
+
+    App.dashboardItems = items;
+
+    if (!items.length) {
+      list.innerHTML = `
+        <div class="no-results">
+          <div class="no-results-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          </div>
+          <h3 class="no-results-title">Tidak ada project yang cocok</h3>
+          <p class="no-results-desc">${query ? `Tidak ditemukan project dengan kata kunci "<strong>${escapeHtml(query)}</strong>". Coba kata kunci lain atau hapus filter pencarian.` : 'Tidak ada project untuk ditampilkan.'}</p>
+        </div>
+      `;
+      return;
+    }
+
+    const sentinel = document.createElement('div');
+    sentinel.className = 'dashboard-sentinel';
+    list.appendChild(sentinel);
+    App.dashboardSentinel = sentinel;
+
+    App.dashboardObserver = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && App.dashboardRendered < App.dashboardItems.length) {
+        App.renderDashboardPage();
+      }
+    }, { rootMargin: '300px' });
+    App.dashboardObserver.observe(sentinel);
+
+    App.renderDashboardPage();
   },
 
   renderDashboardPage() {
@@ -2206,26 +2451,71 @@ const App = {
 
     const hasData = p.fileCount || p.lineCount;
     let badge = '';
+    let typeClass = '';
     if (hasData) {
-      if (p.projectType === 'epub') badge = '<span class="badge badge-epub">EPUB</span>';
-      else if (p.projectType === 'json') badge = '<span class="badge badge-json">JSON-VNTP</span>';
+      if (p.projectType === 'epub') {
+        badge = '<span class="badge badge-epub">EPUB</span>';
+        typeClass = 'is-epub';
+      } else if (p.projectType === 'json') {
+        badge = '<span class="badge badge-json">JSON-VNTP</span>';
+        typeClass = 'is-json';
+      }
     }
-    const pct = p.lineCount ? Math.floor(p.translatedCount / p.lineCount * 100) : 0;
+    if (typeClass) card.classList.add(typeClass);
+
+    const pct = p.lineCount ? Math.min(100, Math.floor(p.translatedCount / p.lineCount * 100)) : 0;
+    const isComplete = pct >= 100 && p.lineCount > 0;
+    const fillClass = isComplete ? 'project-progress-fill is-complete' : 'project-progress-fill';
+    const updatedStr = new Date(p.updatedAt).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+    const updatedTime = new Date(p.updatedAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+
     card.innerHTML = `
       <div class="project-card-main">
-        <h3>${escapeHtml(p.name)}</h3>
-        <div class="project-meta mt-2">
-          ${badge ? `<div style="margin-bottom:8px;">${badge}</div>` : ''}
-          Diubah: ${new Date(p.updatedAt).toLocaleString('id-ID')}<br>
-          File: ${p.fileCount}<br>
-          Baris: ${p.translatedCount}/${p.lineCount} (${pct}%)
+        <div class="project-card-head">
+          <h3>${escapeHtml(p.name)}</h3>
+          ${badge}
+        </div>
+        ${p.lineCount > 0 ? `
+        <div class="project-progress">
+          <div class="project-progress-bar">
+            <div class="${fillClass}" style="width:${pct}%"></div>
+          </div>
+          <div class="project-progress-text">
+            <span>${p.translatedCount}/${p.lineCount} baris</span>
+            <span class="pct">${pct}%</span>
+          </div>
+        </div>
+        ` : ''}
+        <div class="project-meta">
+          <div class="project-meta-item">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span>${updatedStr} · ${updatedTime}</span>
+          </div>
+          <div class="project-meta-item">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>${p.fileCount} file</span>
+          </div>
         </div>
       </div>
       <div class="project-actions">
-        <button class="btn btn-primary btn-sm btn-open">Buka</button>
-        <button class="btn btn-ghost btn-sm btn-rename">Ubah</button>
-        <button class="btn btn-ghost btn-sm btn-backup">Backup</button>
-        <button class="btn btn-danger btn-sm btn-delete">Hapus</button>
+        <button class="btn btn-primary btn-sm btn-open">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+          Buka Project
+        </button>
+        <div class="project-actions-row">
+          <button class="btn btn-ghost btn-rename" title="Ubah Nama">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            Ubah
+          </button>
+          <button class="btn btn-ghost btn-backup" title="Backup">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Backup
+          </button>
+          <button class="btn btn-ghost btn-delete" title="Hapus">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1.4 14.1A2 2 0 0 1 15.6 22H8.4a2 2 0 0 1-2-1.9L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+            Hapus
+          </button>
+        </div>
       </div>
     `;
     card.querySelector('.btn-open').addEventListener('click', async () => {
