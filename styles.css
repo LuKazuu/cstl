@@ -1991,7 +1991,6 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   .preview-row.row-bookmarked .row-bookmark-btn { opacity: 1; }
 }
 
-/* ============ OPFS File Explorer ============ */
 .opfs-explorer {
   display: flex;
   flex-direction: column;

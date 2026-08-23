@@ -281,9 +281,6 @@ const Storage = {
 };
 
 const OpfsExplorer = {
-  // Classify a file by its name so the UI can show a meaningful label/icon.
-  // 'project' = .cstl project file, 'epub' = extracted EPUB buffer,
-  // 'index'   = internal _index.json, 'tmp' = atomic-write temp file, 'other' = anything else.
   classify(name) {
     if (name === INDEX_FILE) return 'index';
     if (name.endsWith('.cstl')) return 'project';
@@ -347,7 +344,6 @@ const OpfsExplorer = {
       } catch {}
       out.push({ name, size, lastModified, kind: this.classify(name) });
     }
-    // Sort: by kind priority first (project → epub → other → index → tmp), then by name asc.
     const kindPriority = { project: 0, epub: 1, other: 2, index: 3, tmp: 4 };
     out.sort((a, b) => {
       const p = (kindPriority[a.kind] ?? 2) - (kindPriority[b.kind] ?? 2);
@@ -457,7 +453,6 @@ const OpfsExplorer = {
     try {
       const root = await navigator.storage.getDirectory();
       await root.removeEntry(name, { recursive: false });
-      // Remove the row from the DOM optimistically; if list is now empty, show empty state.
       const row = els.opfsList?.querySelector(`.opfs-item[data-name="${CSS.escape(name)}"]`);
       if (row) row.remove();
       if (els.opfsList && !els.opfsList.children.length) {
@@ -1845,16 +1840,12 @@ const App = {
     els.btnBackupAll.addEventListener('click', App.backupAll);
     els.btnWipeAllData.addEventListener('click', App.wipeAllData);
 
-    // File Explorer lives in its own separate modal so the user must intentionally
-    // open it — that prevents accidental deletes from the main Pengaturan modal.
     els.btnOpfsExplorerOpen?.addEventListener('click', () => {
       toggleModal(els.opfsExplorerModal, true);
       OpfsExplorer.refresh();
     });
     els.btnOpfsExplorerClose?.addEventListener('click', () => {
       toggleModal(els.opfsExplorerModal, false);
-      // If a file was deleted while the explorer was open, the dashboard project
-      // list may now be stale — silently refresh it so the user sees the truth.
       if (els.dashboardView && els.dashboardView.classList.contains('open')) {
         try { App.loadDashboard(); } catch {}
       }
