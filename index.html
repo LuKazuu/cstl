@@ -1,21 +1,43 @@
 <!doctype html>
-<html lang="id">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0c0e" />
+  <meta name="theme-color" content="#000000" />
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Copas Tool" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <script>
+    (function () {
+      if (window.crossOriginIsolated || !('serviceWorker' in navigator)) return;
+      navigator.serviceWorker.register('./sw.js').then(function (reg) {
+        if (navigator.serviceWorker.controller) {
+          if (!sessionStorage.getItem('coiReload')) {
+            sessionStorage.setItem('coiReload', '1');
+            location.reload();
+          }
+        } else {
+          reg.addEventListener('updatefound', function () {
+            var sw = reg.installing;
+            if (!sw) return;
+            sw.addEventListener('statechange', function () {
+              if (sw.state === 'activated' && !sessionStorage.getItem('coiReload')) {
+                sessionStorage.setItem('coiReload', '1');
+                location.reload();
+              }
+            });
+          });
+        }
+      }).catch(function () {});
+    })();
+  </script>
   <title>Copas Tool</title>
   <link rel="manifest" href="./manifest.json" />
   <link rel="icon" type="image/svg+xml" href="./icon.svg" />
   <link rel="apple-touch-icon" href="./icon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script defer src="./jszip.min.js"></script>
+  <script defer src="./plugins.js"></script>
   <script defer src="./app.js"></script>
 </head>
 <body>
@@ -45,18 +67,18 @@
               <h1 class="hero-title">Copas Tool</h1>
             </div>
           </div>
-          <button id="btnDashboardSettings" class="btn btn-ghost hero-settings-btn" aria-label="Pengaturan" title="Pengaturan">
+          <button id="btnDashboardSettings" class="btn btn-ghost hero-settings-btn" aria-label="Settings" title="Settings">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
         </div>
         <div class="actions">
           <button id="btnNewProject" class="btn btn-primary btn-lg">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
-            Buat Project
+            Create Project
           </button>
           <button id="btnRestoreProject" class="btn btn-ghost btn-lg">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
-            Pulihkan Project
+            Restore Project
           </button>
         </div>
       </div>
@@ -64,46 +86,46 @@
     <main class="dashboard-content">
       <div class="dashboard-section-head">
         <div class="dashboard-section-label">
-          <div class="section-label section-label-lg">Project Tersimpan</div>
+          <div class="section-label section-label-lg">Saved Projects</div>
           <span id="projectCount" class="project-count-badge" hidden>0</span>
         </div>
         <div class="dashboard-section-tools">
           <div class="search-box">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input id="projectSearch" type="search" placeholder="Cari project..." autocomplete="off" />
-            <button id="projectSearchClear" class="search-clear" aria-label="Hapus pencarian" hidden>
+            <input id="projectSearch" type="search" placeholder="Search project..." autocomplete="off" aria-label="Search projects" />
+            <button id="projectSearchClear" class="search-clear" aria-label="Clear search" hidden>
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
           <div class="sort-box" id="projectSortBox">
-            <button type="button" class="sort-trigger" id="projectSortTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Urutkan project">
+            <button type="button" class="sort-trigger" id="projectSortTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Sort projects">
               <svg class="sort-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M6 12h12"/><path d="M9 18h6"/></svg>
-              <span class="sort-label" id="projectSortLabel">Terbaru</span>
+              <span class="sort-label" id="projectSortLabel">Newest</span>
               <svg class="sort-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
-            <div class="sort-menu" id="projectSortMenu" role="listbox" aria-label="Pilih urutan">
+            <div class="sort-menu" id="projectSortMenu" role="listbox" aria-label="Sort order">
               <button type="button" class="sort-menu-item active" data-value="newest" role="option" aria-selected="true">
-                <span class="sort-menu-text">Terbaru</span>
+                <span class="sort-menu-text">Newest</span>
                 <svg class="sort-menu-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </button>
               <button type="button" class="sort-menu-item" data-value="oldest" role="option" aria-selected="false">
-                <span class="sort-menu-text">Terlama</span>
+                <span class="sort-menu-text">Oldest</span>
                 <svg class="sort-menu-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </button>
               <button type="button" class="sort-menu-item" data-value="name-asc" role="option" aria-selected="false">
-                <span class="sort-menu-text">Nama A-Z</span>
+                <span class="sort-menu-text">Name A-Z</span>
                 <svg class="sort-menu-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </button>
               <button type="button" class="sort-menu-item" data-value="name-desc" role="option" aria-selected="false">
-                <span class="sort-menu-text">Nama Z-A</span>
+                <span class="sort-menu-text">Name Z-A</span>
                 <svg class="sort-menu-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </button>
               <button type="button" class="sort-menu-item" data-value="progress-desc" role="option" aria-selected="false">
-                <span class="sort-menu-text">Progress tertinggi</span>
+                <span class="sort-menu-text">Highest progress</span>
                 <svg class="sort-menu-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </button>
               <button type="button" class="sort-menu-item" data-value="progress-asc" role="option" aria-selected="false">
-                <span class="sort-menu-text">Progress terendah</span>
+                <span class="sort-menu-text">Lowest progress</span>
                 <svg class="sort-menu-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               </button>
             </div>
@@ -115,12 +137,12 @@
     </main>
   </div>
 
-  <div id="workspaceView" class="workspace" style="display:none;">
-    <button id="btnShowHeader" class="btn-show-header" aria-label="Tampilkan Header">
+  <div id="workspaceView" class="workspace" hidden>
+    <button id="btnShowHeader" class="btn-show-header" aria-label="Show Header">
       <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
     </button>
     <header id="workspaceToolbar" class="toolbar">
-      <button id="btnBackToDashboard" class="btn btn-ghost btn-icon" aria-label="Kembali ke Dashboard">
+      <button id="btnBackToDashboard" class="btn btn-ghost btn-icon" aria-label="Back to Dashboard">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         <span class="btn-text">Dashboard</span>
       </button>
@@ -129,48 +151,55 @@
         <div class="toolbar-actions">
           <div class="toolbar-group">
             <div class="dropdown" id="importGroup">
-              <button id="btnImportMain" class="btn">
+              <button id="btnImportMain" class="btn" title="Import" aria-label="Import">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Import
               </button>
               <div id="importDropdown" class="dropdown-content">
                 <button id="btnImportFile" class="dropdown-item">Import File(s)</button>
                 <button id="btnImportFolder" class="dropdown-item">Import Folder</button>
                 <button id="btnImportZip" class="dropdown-item">Import ZIP</button>
+                <div class="dropdown-sep"></div>
+                <button id="btnImportTranslation" class="dropdown-item">Import Translation (JSON)</button>
+                <button id="btnImportUntranslated" class="dropdown-item">Import Untranslated (JSON)</button>
+                <button id="btnImportOriginal" class="dropdown-item">Import All Original Text (JSON)</button>
               </div>
             </div>
-            <button id="btnExport" class="btn" disabled>
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              Export
-            </button>
+            <div class="dropdown" id="exportGroup">
+              <button id="btnExport" class="btn" disabled title="Export" aria-label="Export">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              </button>
+              <div id="exportDropdown" class="dropdown-content">
+                <button id="btnExportProject" class="dropdown-item">Export Project</button>
+                <div class="dropdown-sep"></div>
+                <button id="btnExportTranslation" class="dropdown-item">Export Translation (JSON)</button>
+                <button id="btnExportUntranslated" class="dropdown-item">Export Untranslated (JSON)</button>
+                <button id="btnExportOriginal" class="dropdown-item">Export All Original Text (JSON)</button>
+              </div>
+            </div>
           </div>
           <span class="toolbar-sep"></span>
           <div class="toolbar-group">
-            <button id="btnProofread" class="btn" disabled title="Cari &amp; Replace" aria-label="Cari &amp; Replace">
+            <button id="btnProofread" class="btn" disabled title="Search &amp; Replace" aria-label="Search &amp; Replace">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              Cari
             </button>
-          </div>
-          <span class="toolbar-sep"></span>
-          <div class="toolbar-group">
-            <button id="btnGlossary" class="btn" title="Glossary">
+            <button id="btnGlossary" class="btn" title="Glossary" aria-label="Glossary">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-              Glossary
             </button>
-            <button id="btnContext" class="btn" title="Context">
+            <button id="btnContext" class="btn" title="Context" aria-label="Context">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              Context
             </button>
-            <button id="btnSettings" class="btn" title="Pengaturan" aria-label="Pengaturan">
+            <button id="btnOpenPlugins" class="btn" title="Plugin" aria-label="Plugin">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h4.5a2.5 2.5 0 1 1 5 0H19v4.5a2.5 2.5 0 1 1 0 5V19h-4.5a2.5 2.5 0 1 0-5 0H5v-4.5a2.5 2.5 0 1 0 0-5z"/></svg>
+            </button>
+            <button id="btnSettings" class="btn" title="Settings" aria-label="Settings">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-              <span class="btn-text">Pengaturan</span>
             </button>
           </div>
         </div>
       </div>
-      <span class="toolbar-sep desktop-only" style="margin-left:8px;"></span>
-      <span id="projectNameDisplay" class="toolbar-project-name desktop-only">Project Aktif</span>
-      <button id="btnToggleHeader" class="btn btn-ghost btn-icon" aria-label="Sembunyikan Header">
+      <span class="toolbar-sep desktop-only toolbar-sep-ml"></span>
+      <span id="projectNameDisplay" class="toolbar-project-name desktop-only">Active Project</span>
+      <button id="btnToggleHeader" class="btn btn-ghost btn-icon" aria-label="Hide Header">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
       </button>
     </header>
@@ -178,24 +207,24 @@
     <main class="split">
       <section class="panel panel-left">
         <div class="panel-header">
-          <h2 class="panel-title">Teks</h2>
+          <h2 class="panel-title">Text</h2>
           <span id="progressText" class="progress-text mono">0/0 (0%)</span>
         </div>
         <div id="previewViewport" class="viewport">
           <div class="sticky-file-header">
             <div id="stickyFileBar" class="sticky-file-bar">
-              <input id="stickyFileCheckbox" type="checkbox" title="Pilih semua baris di file ini" />
+              <input id="stickyFileCheckbox" type="checkbox" aria-label="Select all lines in this file" title="Select all lines in this file" />
               <span id="stickyFileName" class="sticky-file-name"></span>
               <span id="stickyFileRange" class="sticky-file-range"></span>
             </div>
           </div>
           <div id="previewContainer" class="preview-container"></div>
         </div>
-        <div id="bookmarkDock" class="bookmark-dock">
-          <div id="bookmarkPanel" class="bookmark-panel" role="dialog" aria-modal="false">
+        <div class="bookmark-dock">
+          <div id="bookmarkPanel" class="bookmark-panel" role="dialog" aria-modal="false" aria-label="Bookmarks">
             <div class="bookmark-panel-head">
               <span class="bookmark-panel-title">Bookmark <span id="bookmarkPanelCount" class="bookmark-panel-count">(0)</span></span>
-              <button id="btnBookmarkClear" class="btn btn-ghost btn-xs" disabled>Hapus Semua</button>
+              <button id="btnBookmarkClear" class="btn btn-ghost btn-xs" disabled>Clear All</button>
             </div>
             <div id="bookmarkList" class="bookmark-list"></div>
           </div>
@@ -206,18 +235,18 @@
       </section>
 
       <section class="panel panel-right">
-        <h2 class="panel-title">Alat</h2>
+        <h2 class="panel-title">Tools</h2>
         <div class="card mb-2">
-          <label class="section-label mt-0">Pilih Berdasarkan Baris</label>
+          <label class="section-label mt-0">Select by Line</label>
           <div class="row gap-2 mb-2 wrap row-center-y">
-            <input id="rangeFromInput" type="number" class="input grow" placeholder="Dari..." min="1" disabled />
+            <input id="rangeFromInput" type="number" class="input grow" placeholder="From..." min="1" disabled aria-label="Range from line" />
             <span class="text-muted">-</span>
-            <input id="rangeToInput" type="number" class="input grow" placeholder="Sampai..." min="1" disabled />
-            <button id="btnSelectRange" class="btn btn-ghost" disabled>Centang</button>
+            <input id="rangeToInput" type="number" class="input grow" placeholder="To..." min="1" disabled aria-label="Range to line" />
+            <button id="btnSelectRange" class="btn btn-ghost" disabled>Select Range</button>
           </div>
           <div class="row gap-2 mb-2 wrap">
-            <button id="btnClearSelection" class="btn btn-ghost grow" disabled>Hapus Pilihan</button>
-            <button id="btnSelectAll" class="btn btn-ghost grow" disabled>Pilih Semua</button>
+            <button id="btnClearSelection" class="btn btn-ghost grow" disabled>Clear Selection</button>
+            <button id="btnSelectAll" class="btn btn-ghost grow" disabled>Select All</button>
           </div>
           <div class="divider my-2"></div>
           <button id="btnCopyForAi" class="btn btn-primary w-full" disabled>Copy</button>
@@ -225,187 +254,207 @@
 
         <div id="copyStatus" class="toast empty"></div>
 
-        <label class="section-label" for="pasteArea">Hasil Teks</label>
-        <textarea id="pasteArea" class="mono textarea" placeholder="Paste hasil dari AI di sini..." disabled></textarea>
+        <label class="section-label" for="pasteArea">Result Text</label>
+        <textarea id="pasteArea" class="mono textarea" placeholder="Paste AI result here..." disabled></textarea>
         <div class="inline-actions">
           <button id="btnUndo" class="btn btn-ghost" disabled>Undo</button>
-          <button id="btnApply" class="btn btn-success grow" disabled>Terapkan Terjemahan</button>
+          <button id="btnApply" class="btn btn-success grow" disabled>Apply Translation</button>
           <button id="btnRedo" class="btn btn-ghost" disabled>Redo</button>
         </div>
 
         <div class="card mt-3 mb-2">
           <div class="row between mb-2">
-            <div class="section-label" style="margin:0;">Daftar Nama (<span id="nameTotalCount">0</span>)</div>
+            <div class="section-label m-0">Name List (<span id="nameTotalCount">0</span>)</div>
             <div class="dropdown" id="copyNamesGroup">
               <button id="btnCopyAllNames" class="btn btn-ghost btn-xs" disabled>Copy All</button>
               <div id="copyNamesDropdown" class="dropdown-content dropdown-right">
-                <button id="btnCopyNamesPlain" class="dropdown-item">Nama Saja</button>
-                <button id="btnCopyNamesWithGlossary" class="dropdown-item">Dengan Glossary</button>
-                <button id="btnCopyNamesMissingGlossary" class="dropdown-item">Belum di Glossary</button>
+                <button id="btnCopyNamesPlain" class="dropdown-item">Names Only</button>
+                <button id="btnCopyNamesWithGlossary" class="dropdown-item">With Glossary</button>
+                <button id="btnCopyNamesMissingGlossary" class="dropdown-item">Not in Glossary</button>
               </div>
             </div>
           </div>
-          <p class="hint mb-2 hint-tight">Klik pada baris nama untuk langsung menyalin teks ke clipboard.</p>
+          <p class="hint mb-2 hint-tight">Click a name row to copy the text to the clipboard.</p>
           <div class="name-table-wrap">
             <table class="name-table"><tbody id="nameTableBody"></tbody></table>
           </div>
         </div>
+
+        <div id="pluginPanels" class="plugin-panels"></div>
       </section>
     </main>
   </div>
 
-  <input id="importFileInput" type="file" accept=".json,.epub" multiple hidden />
-  <input id="importFolderInput" type="file" accept=".json,.epub" webkitdirectory multiple hidden />
-  <input id="importZipInput" type="file" accept=".zip" hidden />
-  <input id="restoreProjectInput" type="file" accept=".cstl" hidden />
+  <input id="importFileInput" type="file" accept=".json,.epub" multiple hidden aria-label="Import files" />
+  <input id="importFolderInput" type="file" accept=".json,.epub" webkitdirectory multiple hidden aria-label="Import folder" />
+  <input id="importZipInput" type="file" accept=".zip" hidden aria-label="Import ZIP archive" />
+  <input id="importTranslationInput" type="file" accept=".json,.zip" multiple hidden aria-label="Import translation JSON" />
+  <input id="importUntranslatedInput" type="file" accept=".json,.zip" multiple hidden aria-label="Import untranslated JSON" />
+  <input id="importOriginalInput" type="file" accept=".json,.zip" multiple hidden aria-label="Import original text JSON" />
+  <input id="restoreProjectInput" type="file" accept=".cstl" hidden aria-label="Restore project from backup" />
+  <input id="pluginFileInput" type="file" accept=".zip" hidden aria-label="Install plugin from ZIP" />
 
   <div id="settingsModal" class="backdrop">
-    <div class="modal modal-wide" role="dialog" aria-modal="true">
-      <div class="modal-head"><h3>Pengaturan</h3></div>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-head"><h3 id="settingsTitle">Settings</h3></div>
       <div class="modal-body">
         <div class="card mb-2 mt-2">
           <div class="row between mb-2">
-            <div class="section-label-lg" style="margin:0;">Pengaturan Dasar</div>
-            <button id="btnSettingsDasarReset" class="btn btn-ghost btn-xs">Reset Default</button>
+            <div class="section-label-lg m-0">Basic Settings</div>
+            <button id="btnSettingsBasicReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
           <div class="col gap-3">
-            <label class="check-line"><input id="settingsIgnoreNameCheck" type="checkbox" />Abaikan Terjemahan Nama</label>
-            <label class="check-line"><input id="settingsPromptCheck" type="checkbox" />Sertakan Prompt AI</label>
-            <label class="check-line"><input id="settingsJumpToContextCheck" type="checkbox" />Lompat ke Konteks Pencarian</label>
-            <label class="check-line"><input id="settingsHideToolsCheck" type="checkbox" />Sembunyikan Alat</label>
+            <label class="check-line"><input id="settingsIgnoreNameCheck" type="checkbox" />Exclude Names</label>
+            <label class="check-line"><input id="settingsPromptCheck" type="checkbox" />Include AI Prompt</label>
+            <label class="check-line"><input id="settingsJumpToContextCheck" type="checkbox" />Jump to Search Context</label>
+            <label class="check-line"><input id="settingsHideToolsCheck" type="checkbox" />Hide Tools</label>
           </div>
         </div>
         <div class="card mb-2 mt-3">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">Pengaturan Prompt AI</div>
+            <div class="section-label-lg m-0">AI Prompt Settings</div>
             <button id="btnSettingsPromptReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
-          <p class="hint m-0 mt-1">Teks instruksi otomatis ditambahkan saat menyalin teks.</p>
-          <textarea id="settingsPromptInput" class="mono textarea mt-2"></textarea>
+          <p class="hint m-0 mt-1">Instruction text automatically added when copying text.</p>
+          <textarea id="settingsPromptInput" class="mono textarea mt-2" aria-label="AI prompt"></textarea>
         </div>
         <div class="card mb-2 mt-3">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">Pengaturan Tag EPUB</div>
+            <div class="section-label-lg m-0">EPUB Tag Settings</div>
             <button id="btnSettingsEpubReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Digunakan untuk mengekstrak teks dari EPUB (pisahkan dengan koma).</p>
-          <input id="settingsEpubTagsInput" class="input w-full" type="text" placeholder="p, h1, h2, h3" />
+          <p class="hint m-0 mt-1 mb-2">Used to extract text from EPUB (separate with commas).</p>
+          <input id="settingsEpubTagsInput" class="input w-full" type="text" placeholder="p, h1, h2, h3" aria-label="EPUB tags" />
+        </div>
+        <div class="card mb-2 mt-3">
+          <div class="row between mb-1">
+            <div class="section-label-lg m-0">Line Auto-Increment</div>
+            <button id="btnSettingsIncrementReset" class="btn btn-ghost btn-xs">Reset Default</button>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">After translation is successfully applied, the "From - To" line range automatically advances and the next range is selected immediately.</p>
+          <label class="check-line mb-2"><input id="settingsIncrementCheck" type="checkbox" />Enable Auto-Increment</label>
+          <div id="incrementStepWrap" class="nested-box">
+            <div class="row gap-2 row-center-y wrap">
+              <span class="text-muted">Lines per range</span>
+              <input id="settingsIncrementStepInput" type="number" class="input input-step-w" min="1" step="1" value="100" aria-label="Lines per range" />
+            </div>
+          </div>
         </div>
       </div>
       <div class="modal-actions mt-3">
         <span class="grow"></span>
-        <button id="btnSettingsCancel" class="btn btn-ghost">Batal</button>
-        <button id="btnSettingsSave" class="btn btn-primary">Simpan Pengaturan</button>
+        <button id="btnSettingsCancel" class="btn btn-ghost">Cancel</button>
+        <button id="btnSettingsSave" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
   </div>
 
   <div id="glossaryModal" class="backdrop">
-    <div class="modal modal-wide" role="dialog" aria-modal="true">
-      <div class="modal-head"><h3>Glossary</h3></div>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="glossaryTitle">
+      <div class="modal-head"><h3 id="glossaryTitle">Glossary</h3></div>
       <div class="modal-body">
         <div class="card mb-2 mt-2">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">VNDB Glossary</div>
+            <div class="section-label-lg m-0">VNDB Glossary</div>
             <button id="btnGlossaryVndbReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Menambahkan glossary nama dari VNDB pada saat menyalin teks.</p>
-          <label class="check-line mb-2"><input id="glossaryVndbCheck" type="checkbox" />Sertakan VNDB Glossary</label>
+          <p class="hint m-0 mt-1 mb-2">Adds name glossary from VNDB when copying text.</p>
+          <label class="check-line mb-2"><input id="glossaryVndbCheck" type="checkbox" />Include VNDB Glossary</label>
           <div id="glossaryVndbWrap" class="nested-box">
             <div class="row gap-2 mb-2">
-              <input id="glossaryVndbIdInput" type="text" class="input grow" placeholder="ID VN (Contoh: v1234)" />
-              <button id="btnGlossaryVndbFetch" class="btn btn-ghost">Ambil</button>
+              <input id="glossaryVndbIdInput" type="text" class="input grow" placeholder="VN ID (Example: v1234)" aria-label="VNDB ID" />
+              <button id="btnGlossaryVndbFetch" class="btn btn-ghost">Fetch</button>
             </div>
             <div id="glossaryVndbStatus" class="toast empty mb-2"></div>
-            <textarea id="glossaryVndbPreviewArea" class="mono textarea small" readonly placeholder="Pratinjau glossary..."></textarea>
+            <textarea id="glossaryVndbPreviewArea" class="mono textarea small" readonly placeholder="Glossary preview..." aria-label="Glossary preview"></textarea>
           </div>
         </div>
         <div class="card mb-2 mt-3">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">Custom Glossary</div>
+            <div class="section-label-lg m-0">Custom Glossary</div>
             <button id="btnGlossaryCustomReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Catatan glossary bebas, format apa pun. Disalin apa adanya saat menyalin teks.</p>
-          <label class="check-line mb-2"><input id="glossaryCustomCheck" type="checkbox" />Sertakan Custom Glossary</label>
+          <p class="hint m-0 mt-1 mb-2">Free-form glossary notes, any format. Copied as-is when copying text.</p>
+          <label class="check-line mb-2"><input id="glossaryCustomCheck" type="checkbox" />Include Custom Glossary</label>
           <div id="glossaryCustomWrap" class="nested-box">
-            <textarea id="glossaryCustomInput" class="mono textarea small" placeholder="Tulis Custom Glossary disini..."></textarea>
+            <textarea id="glossaryCustomInput" class="mono textarea small" placeholder="Write Custom Glossary here..." aria-label="Custom glossary"></textarea>
           </div>
         </div>
       </div>
       <div class="modal-actions mt-3">
         <span class="grow"></span>
-        <button id="btnGlossaryCancel" class="btn btn-ghost">Batal</button>
-        <button id="btnGlossarySave" class="btn btn-primary">Simpan Glossary</button>
+        <button id="btnGlossaryCancel" class="btn btn-ghost">Cancel</button>
+        <button id="btnGlossarySave" class="btn btn-primary">Save Glossary</button>
       </div>
     </div>
   </div>
 
   <div id="contextModal" class="backdrop">
-    <div class="modal modal-wide" role="dialog" aria-modal="true">
-      <div class="modal-head"><h3>Context</h3></div>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="contextTitle">
+      <div class="modal-head"><h3 id="contextTitle">Context</h3></div>
       <div class="modal-body">
         <div class="card mb-2 mt-2">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">Ringkasan</div>
-            <button id="btnRingkasanReset" class="btn btn-ghost btn-xs">Reset Default</button>
+            <div class="section-label-lg m-0">Summary</div>
+            <button id="btnSummaryReset" class="btn btn-ghost btn-xs">Reset Default</button>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Saat aktif, AI diminta menyertakan ringkasan karakter dan cerita. Ringkasan itu disimpan di sini dan otomatis menggantikan versi lama setiap sesi copy berikutnya.</p>
-          <label class="check-line mb-2"><input id="ringkasanEnabledCheck" type="checkbox" />Sertakan Ringkasan</label>
-          <div id="ringkasanWrap" class="nested-box">
+          <p class="hint m-0 mt-1 mb-2">When enabled, the AI is asked to include a character and story summary. The summary is stored here and automatically replaces the old version on each subsequent copy session.</p>
+          <label class="check-line mb-2"><input id="summaryEnabledCheck" type="checkbox" />Include Summary</label>
+          <div id="summaryWrap" class="nested-box">
             <div class="row between">
-              <label class="section-label" style="margin:0;">Prompt Ringkasan</label>
-              <button id="btnRingkasanPromptReset" class="btn btn-ghost btn-xs">Reset Default</button>
+              <label class="section-label m-0">Summary Prompt</label>
+              <button id="btnSummaryPromptReset" class="btn btn-ghost btn-xs">Reset Default</button>
             </div>
-            <textarea id="ringkasanPromptInput" class="mono textarea small"></textarea>
+            <textarea id="summaryPromptInput" class="mono textarea small" aria-label="Summary prompt"></textarea>
             <div class="row between mt-2">
-              <label class="section-label" style="margin:0;">Ringkasan Tersimpan</label>
-              <button id="btnRingkasanStoredReset" class="btn btn-ghost btn-xs">Hapus</button>
+              <label class="section-label m-0">Saved Summary</label>
+              <button id="btnSummaryStoredReset" class="btn btn-ghost btn-xs">Clear</button>
             </div>
-            <textarea id="ringkasanStoredInput" class="mono textarea small" placeholder="Belum ada ringkasan tersimpan..."></textarea>
+            <textarea id="summaryStoredInput" class="mono textarea small" placeholder="No saved summary yet..." aria-label="Saved summary"></textarea>
           </div>
         </div>
       </div>
       <div class="modal-actions mt-3">
         <span class="grow"></span>
-        <button id="btnContextCancel" class="btn btn-ghost">Batal</button>
-        <button id="btnContextSave" class="btn btn-primary">Simpan Context</button>
+        <button id="btnContextCancel" class="btn btn-ghost">Cancel</button>
+        <button id="btnContextSave" class="btn btn-primary">Save Context</button>
       </div>
     </div>
   </div>
 
   <div id="lineEditorModal" class="backdrop">
-    <div class="modal modal-wide" role="dialog" aria-modal="true">
-      <div class="modal-head"><h3 id="lineEditorTitle">Edit Terjemahan</h3></div>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="lineEditorTitle">
+      <div class="modal-head"><h3 id="lineEditorTitle">Edit Translation</h3></div>
       <div class="modal-body">
-        <label class="section-label">Teks Asli</label>
+        <label class="section-label" for="lineOriginalView">Original Text</label>
         <textarea id="lineOriginalView" class="mono textarea small" readonly></textarea>
         <div id="lineNameWrap">
-          <label class="section-label mt-2">Nama Karakter</label>
+          <label class="section-label mt-2" for="lineNameInput">Character Name</label>
           <input id="lineNameInput" class="mono input w-full" type="text" />
         </div>
-        <label class="section-label mt-2">Terjemahan</label>
+        <label class="section-label mt-2" for="lineMessageInput">Translation</label>
         <textarea id="lineMessageInput" class="mono textarea"></textarea>
-        <label class="check-line mt-2"><input id="lineTranslatedCheck" type="checkbox" />Tandai sebagai sudah diterjemahkan</label>
+        <label class="check-line mt-2"><input id="lineTranslatedCheck" type="checkbox" />Mark as translated</label>
       </div>
       <div class="modal-actions">
         <span class="grow"></span>
-        <button id="btnLineCancel" class="btn btn-ghost">Batal</button>
-        <button id="btnLineSave" class="btn btn-primary">Simpan Perubahan</button>
+        <button id="btnLineCancel" class="btn btn-ghost">Cancel</button>
+        <button id="btnLineSave" class="btn btn-primary">Save Changes</button>
       </div>
     </div>
   </div>
 
   <div id="proofreadModal" class="backdrop">
-    <div class="modal modal-xl" role="dialog" aria-modal="true">
-      <div class="modal-head"><h3>Cari &amp; Replace</h3></div>
+    <div class="modal modal-xl" role="dialog" aria-modal="true" aria-labelledby="proofreadTitle">
+      <div class="modal-head"><h3 id="proofreadTitle">Search &amp; Replace</h3></div>
       <div class="modal-body">
         <div class="card mb-2">
           <div class="col gap-2">
-            <label for="proofreadSearchInput" class="label-bold">Cari:</label>
+            <label for="proofreadSearchInput" class="label-bold">Search:</label>
             <div class="row gap-2 wrap">
-              <input id="proofreadSearchInput" class="mono input grow min-w-200" type="text" placeholder="Ketik kata atau pola regex..." />
+              <input id="proofreadSearchInput" class="mono input grow min-w-200" type="text" placeholder="Type a word or regex pattern..." />
               <div class="row center gap-2 wrap">
-                <select id="proofreadScope" class="input select-sm">
+                <select id="proofreadScope" class="input select-sm" aria-label="Search scope">
                   <option value="all">All Text</option>
                   <option value="name">Name Only</option>
                   <option value="message">Message Only</option>
@@ -423,8 +472,8 @@
         </div>
         <div class="card mb-2">
           <div class="col gap-2">
-            <label for="proofreadReplaceInput" class="label-bold">Ganti dengan:</label>
-            <input id="proofreadReplaceInput" class="mono input w-full" type="text" placeholder="Teks pengganti untuk Replace All..." />
+            <label for="proofreadReplaceInput" class="label-bold">Replace with:</label>
+            <input id="proofreadReplaceInput" class="mono input w-full" type="text" placeholder="Replacement text for Replace All..." />
             <div class="row center">
               <button id="btnProofreadReplaceAll" class="btn btn-success btn-px-lg">Replace All</button>
             </div>
@@ -437,87 +486,160 @@
       </div>
       <div class="modal-actions">
         <span class="grow"></span>
-        <button id="btnProofreadClose" class="btn btn-primary">Tutup</button>
+        <button id="btnProofreadClose" class="btn btn-primary">Close</button>
       </div>
     </div>
   </div>
 
   <div id="dashboardSettingsModal" class="backdrop">
-    <div class="modal modal-wide" role="dialog" aria-modal="true">
-      <div class="modal-head"><h3>Pengaturan</h3></div>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="dashboardSettingsTitle">
+      <div class="modal-head"><h3 id="dashboardSettingsTitle">Settings</h3></div>
       <div class="modal-body">
         <div class="card mb-2 mt-2">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">Backup</div>
+            <div class="section-label-lg m-0">Backup</div>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Backup semua project dalam satu file CSTL.</p>
-          <button id="btnBackupAll" class="btn btn-primary w-full">Backup Semua</button>
+          <p class="hint m-0 mt-1 mb-2">Backup all projects in a single CSTL file.</p>
+          <button id="btnBackupAll" class="btn btn-primary w-full">Backup All</button>
         </div>
         <div class="card mb-2 mt-3">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">File Explorer</div>
+            <div class="section-label-lg m-0">File Explorer</div>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Lihat, unduh, atau hapus file yang tersimpan di OPFS browser.</p>
+          <p class="hint m-0 mt-1 mb-2">View, download, or delete files stored in the browser's OPFS.</p>
           <button id="btnOpfsExplorerOpen" class="btn w-full">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            Buka File Explorer
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-mr"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Open File Explorer
           </button>
         </div>
         <div class="card mb-2 mt-3">
           <div class="row between mb-1">
-            <div class="section-label-lg" style="margin:0;">Data Management</div>
+            <div class="section-label-lg m-0">Plugin</div>
           </div>
-          <p class="hint m-0 mt-1 mb-2">Hapus semua project dan data tersimpan dari perangkat ini. Tindakan ini tidak dapat dibatalkan.</p>
-          <button id="btnWipeAllData" class="btn btn-danger w-full">Hapus Semua Data</button>
+          <p class="hint m-0 mt-1 mb-2">Manage installed plugins.</p>
+          <button id="btnPluginManagerOpen" class="btn w-full">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-mr"><path d="M5 5h4.5a2.5 2.5 0 1 1 5 0H19v4.5a2.5 2.5 0 1 1 0 5V19h-4.5a2.5 2.5 0 1 0-5 0H5v-4.5a2.5 2.5 0 1 0 0-5z"/></svg>
+            Open Plugin Manager
+          </button>
+        </div>
+        <div class="card mb-2 mt-3">
+          <div class="row between mb-1">
+            <div class="section-label-lg m-0">Keyboard Shortcuts</div>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">View and change key combinations for quick actions across the app.</p>
+          <button id="btnShortcutsOpen" class="btn w-full">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-mr"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M7 16h10"/></svg>
+            Open Keyboard Shortcuts
+          </button>
+        </div>
+        <div class="card mb-2 mt-3">
+          <div class="row between mb-1">
+            <div class="section-label-lg m-0">Data Management</div>
+          </div>
+          <p class="hint m-0 mt-1 mb-2">Delete all projects and saved data from this device. This action cannot be undone.</p>
+          <button id="btnWipeAllData" class="btn btn-danger w-full">Delete All Data</button>
         </div>
       </div>
       <div class="modal-actions">
         <span class="grow"></span>
-        <button id="btnDashboardSettingsClose" class="btn btn-ghost">Tutup</button>
+        <button id="btnDashboardSettingsClose" class="btn btn-ghost">Close</button>
       </div>
     </div>
   </div>
 
   <div id="opfsExplorerModal" class="backdrop">
-    <div class="modal modal-wide" role="dialog" aria-modal="true">
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="opfsTitle">
       <div class="modal-head">
         <div class="between">
-          <h3>File Explorer</h3>
-          <button id="btnOpfsRefresh" class="btn btn-ghost btn-xs" title="Muat ulang daftar file">
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
+          <h3 id="opfsTitle">File Explorer</h3>
+          <button id="btnOpfsRefresh" class="btn btn-ghost btn-xs" title="Reload file list">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-mr-sm"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
             Refresh
           </button>
         </div>
       </div>
       <div class="modal-body">
-        <p class="hint m-0 mt-1 mb-2" style="color:var(--danger);">Hati-hati, menghapus file di sini bisa membuat project tidak bisa dibuka. Pastikan Anda tahu file apa yang sedang dihapus.</p>
-        <div id="opfsExplorer" class="opfs-explorer">
+        <p class="hint hint-danger m-0 mt-1 mb-2">Be careful, deleting files or folders here can make projects unopenable. Only delete files you recognize.</p>
+        <div class="opfs-explorer">
+          <div id="opfsCrumbs" class="opfs-crumbs" hidden></div>
           <div id="opfsList" class="opfs-list" role="list"></div>
           <div id="opfsEmpty" class="opfs-empty" hidden>
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            <span>Belum ada file di OPFS.</span>
+            <span id="opfsEmptyText">No files in OPFS yet.</span>
           </div>
           <div id="opfsLoading" class="opfs-loading" hidden>
-            <div class="busy-spinner" style="width:18px;height:18px;border-width:2px;"></div>
-            <span>Memuat...</span>
+            <div class="busy-spinner busy-spinner-sm"></div>
+            <span>Loading...</span>
           </div>
         </div>
       </div>
       <div class="modal-actions">
         <span class="grow"></span>
-        <button id="btnOpfsExplorerClose" class="btn btn-ghost">Tutup</button>
+        <button id="btnOpfsExplorerClose" class="btn btn-ghost">Close</button>
       </div>
     </div>
   </div>
 
-  <div id="busyOverlay" class="busy-overlay" role="alertdialog" aria-modal="true" aria-live="polite">
+  <div id="pluginManagerModal" class="backdrop">
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="pluginManagerTitle">
+      <div class="modal-head">
+        <div class="between">
+          <h3 id="pluginManagerTitle">Plugin Manager</h3>
+          <button id="btnPluginRefresh" class="btn btn-ghost btn-xs" title="Reload plugin list">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-mr-sm"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <p class="hint m-0 mt-1 mb-2">The ZIP package must be valid, make sure you trust it.</p>
+        <button id="btnInstallPlugin" class="btn btn-primary w-full mb-2">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-mr"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Import Plugin
+        </button>
+        <div id="pluginList" class="plugin-list"></div>
+      </div>
+      <div class="modal-actions">
+        <span class="grow"></span>
+        <button id="btnPluginManagerClose" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="shortcutModal" class="backdrop">
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
+      <div class="modal-head">
+        <div class="between">
+          <h3 id="shortcutsTitle">Keyboard Shortcuts</h3>
+          <button id="btnShortcutsResetAll" class="btn btn-ghost btn-xs" title="Reset all shortcuts to default">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-mr-sm"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
+            Reset All
+          </button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <p class="hint m-0 mt-1 mb-2">Click a combination button then press a key to change. Backspace removes the binding, Escape cancels.</p>
+        <p id="shortcutStatus" class="hint shortcut-status m-0 mb-2" hidden></p>
+        <div id="shortcutList" class="shortcut-list"></div>
+      </div>
+      <div class="modal-actions">
+        <span class="grow"></span>
+        <button id="btnShortcutsClose" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="busyOverlay" class="busy-overlay" role="alertdialog" aria-modal="true" aria-labelledby="busyTitle">
     <div class="busy-card">
       <div class="busy-head">
         <div class="busy-spinner"></div>
-        <div class="busy-title" id="busyTitle">Memproses...</div>
+        <div class="busy-title" id="busyTitle">Processing...</div>
       </div>
       <div class="busy-bar"><div class="busy-bar-fill" id="busyBarFill"></div></div>
       <div class="busy-msg" id="busyMsg"></div>
+      <div class="busy-actions" id="busyActions" hidden>
+        <button type="button" class="btn btn-ghost btn-busy-cancel" id="busyCancel">Cancel</button>
+      </div>
     </div>
   </div>
 </body>

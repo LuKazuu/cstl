@@ -1,11 +1,11 @@
 {
   "name": "Copas Tool",
   "short_name": "CSTL",
-  "description": "Tool Translate Multifungsi.",
+  "description": "Multi-purpose Translation Tool.",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#0b0c0e",
-  "theme_color": "#0b0c0e",
+  "background_color": "#000000",
+  "theme_color": "#000000",
   "icons": [
     {
       "src": "./icon.svg",
