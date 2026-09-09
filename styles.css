@@ -591,8 +591,7 @@ a:focus-visible,
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes cardOut {
-  0% { opacity: 1; transform: scale(1); max-height: 600px; }
-  70% { opacity: 0; transform: scale(0.94); max-height: 600px; }
+  0% { opacity: 1; transform: scale(1); max-height: 500px; }
   100% { opacity: 0; transform: scale(0.94); max-height: 0; padding-top: 0; padding-bottom: 0; margin-top: 0; margin-bottom: 0; border-width: 0; }
 }
 .project-card.is-removing,
@@ -2615,11 +2614,13 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   grid-template-rows: 0fr;
   opacity: 0;
   overflow: hidden;
-  transition: grid-template-rows 0.3s var(--ease-out), opacity 0.3s var(--ease-out);
+  margin-top: -9px;
+  transition: grid-template-rows 0.3s var(--ease-out), opacity 0.3s var(--ease-out), margin-top 0.3s var(--ease-out);
 }
 .plugin-row.show-detail .plugin-detail {
   grid-template-rows: 1fr;
   opacity: 1;
+  margin-top: 0;
 }
 .plugin-detail-grid {
   display: grid;
