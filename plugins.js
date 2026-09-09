@@ -519,7 +519,7 @@ const Dialogs = {
         observer.disconnect();
         overlay.classList.remove('open');
         resolve(val);
-        setTimeout(() => { try { overlay.remove(); } catch {} }, 320);
+        setTimeout(() => { try { overlay.remove(); } catch {} }, 420);
       };
       const observer = new MutationObserver(() => {
         if (!overlay.classList.contains('open')) finish(null);
@@ -528,13 +528,13 @@ const Dialogs = {
 
       overlay.querySelector('.cstl-dialog-cancel')?.addEventListener('click', () => finish(null));
       overlay.querySelector('.cstl-dialog-ok').addEventListener('click', () => finish(true));
-      requestAnimationFrame(() => {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
         overlay.classList.add('open');
         const focusEl = danger && !hideCancel
           ? overlay.querySelector('.cstl-dialog-cancel')
           : overlay.querySelector('.cstl-dialog-ok');
         focusEl?.focus({ preventScroll: true });
-      });
+      }));
     });
   },
 
@@ -1749,15 +1749,17 @@ const PluginUI = {
     const detail = `
       <div class="plugin-detail">
         <div class="plugin-detail-grid">
-          <div>
-            <div class="plugin-detail-label">Package info</div>
-            <div class="plugin-detail-kv"><span>Manifest</span><span>v${esc(String(p.manifest_version))}</span></div>
-            <div class="plugin-detail-kv"><span>Size</span><span>${esc(humanBytes(p.size))}</span></div>
-            <div class="plugin-detail-kv"><span>Installed</span><span>${esc(new Date(p.updatedAt || Date.now()).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span></div>
-            ${p.fingerprint ? `<div class="plugin-detail-kv is-stack"><span>SHA-256</span><code class="plugin-detail-fp" title="Click to copy">${esc(p.fingerprint)}</code></div>` : ''}
-          </div>
-          <div>
-            ${p.files.length ? `<div class="plugin-detail-label">Package files (${p.files.length})</div><div class="plugin-detail-files">${p.files.map(f => `<span>${esc(f)}</span>`).join('')}</div>` : ''}
+          <div class="plugin-detail-grid-inner">
+            <div>
+              <div class="plugin-detail-label">Package info</div>
+              <div class="plugin-detail-kv"><span>Manifest</span><span>v${esc(String(p.manifest_version))}</span></div>
+              <div class="plugin-detail-kv"><span>Size</span><span>${esc(humanBytes(p.size))}</span></div>
+              <div class="plugin-detail-kv"><span>Installed</span><span>${esc(new Date(p.updatedAt || Date.now()).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span></div>
+              ${p.fingerprint ? `<div class="plugin-detail-kv is-stack"><span>SHA-256</span><code class="plugin-detail-fp" title="Click to copy">${esc(p.fingerprint)}</code></div>` : ''}
+            </div>
+            <div>
+              ${p.files.length ? `<div class="plugin-detail-label">Package files (${p.files.length})</div><div class="plugin-detail-files">${p.files.map(f => `<span>${esc(f)}</span>`).join('')}</div>` : ''}
+            </div>
           </div>
         </div>
       </div>`;
@@ -1784,6 +1786,7 @@ const PluginUI = {
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
           Detail
         </button>
+        <span class="grow"></span>
         ${(p.settings?.global?.length || (p.settings?.project?.length && host.state.projectId())) ? `<button type="button" class="btn btn-ghost btn-xs btn-plugin-settings" title="Plugin settings">
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           Settings
@@ -1962,7 +1965,7 @@ const PluginUI = {
     }
     body.append(scopeHint, form);
     document.body.appendChild(overlay);
-    requestAnimationFrame(() => overlay.classList.add('open'));
+    requestAnimationFrame(() => requestAnimationFrame(() => overlay.classList.add('open')));
 
     let settled = false;
     const close = () => {
@@ -1970,7 +1973,7 @@ const PluginUI = {
       settled = true;
       observer.disconnect();
       overlay.classList.remove('open');
-      overlay.remove();
+      setTimeout(() => { try { overlay.remove(); } catch {} }, 420);
     };
     const observer = new MutationObserver(() => {
       if (!overlay.classList.contains('open')) close();

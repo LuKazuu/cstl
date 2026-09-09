@@ -5387,7 +5387,7 @@ const App = {
       overlay.querySelector('.modal-body').replaceChildren(bodyHtml);
     }
     document.body.appendChild(overlay);
-    requestAnimationFrame(() => overlay.classList.add('open'));
+    requestAnimationFrame(() => requestAnimationFrame(() => overlay.classList.add('open')));
     overlay.querySelector('.cstl-plugin-modal-close')?.addEventListener('click', () => App.closeModal(overlay));
     overlay.addEventListener('click', e => { if (e.target === overlay) App.closeModal(overlay); });
     return overlay;

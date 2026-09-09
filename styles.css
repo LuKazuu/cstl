@@ -2614,6 +2614,7 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
+  overflow: hidden;
   transition: grid-template-rows 0.3s var(--ease-out), opacity 0.3s var(--ease-out);
 }
 .plugin-row.show-detail .plugin-detail {
@@ -2623,13 +2624,17 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
 .plugin-detail-grid {
   display: grid;
   grid-template-columns: 1fr;
+  min-height: 0;
+  overflow: hidden;
+}
+.plugin-detail-grid-inner {
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 14px;
   padding: 13px;
   background: var(--bg);
   border: 1px solid var(--hairline);
   border-radius: var(--r-lg);
-  min-height: 0;
-  overflow: hidden;
 }
 .plugin-row.show-detail .plugin-detail-grid {
   animation: slideDown 0.3s var(--ease-out);
@@ -2693,14 +2698,14 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
 .plugin-empty-sub { display: block; margin-top: 3px; font-size: 11.5px; color: var(--ink-muted); }
 
 @media (min-width: 769px) {
-  .plugin-detail-grid { grid-template-columns: 1fr 1fr; gap: 18px; }
+  .plugin-detail-grid-inner { grid-template-columns: 1fr 1fr; gap: 18px; }
 }
 
 @media (max-width: 480px) {
   .plugin-row { padding: 13px 14px; }
   .plugin-row .plugin-actions { gap: 6px; }
   .plugin-row .plugin-actions .btn { padding: 7px 10px; font-size: 11.5px; }
-  .plugin-detail-grid { padding: 11px; }
+  .plugin-detail-grid-inner { padding: 11px; }
 }
 
 .net-progress {
