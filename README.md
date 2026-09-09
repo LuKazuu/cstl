@@ -3,7 +3,7 @@
 Original by Atho64
 Fork by Aera
 
-[https://lukazuu.github.io/cstl/](https://lukazuu.github.io/cstl/)
+[https://lukazuu.github.io/cstl-next/](https://lukazuu.github.io/cstl-next/)
 
 ## What this is
 
@@ -125,13 +125,12 @@ plugins/<pluginId>/
 
 ```json
 {
-  "manifestVersion": 1,
+  "manifest_version": 1,
   "id": "my-plugin",
   "name": "My Plugin",
   "version": "1.0.0",
   "author": "Your Name",
   "description": "What it does",
-  "api": 1,
   "extensions": [".txt"],
   "magic": [{"hex": "504b0304", "offset": 0}],
   "ui": {"title": "Panel Title", "height": 300},
@@ -142,9 +141,7 @@ plugins/<pluginId>/
 }
 ```
 
-Only `id`, `name`, `version` are required. Everything else is optional. `extensions` and `magic` are how a plugin claims files, by file extension and/or by byte signature (magic bytes), so the app knows which plugin should handle a given import.
-
-`manifestVersion` and `api`, if provided, must be integers no higher than the app's current plugin API version. Lower values (including omitting the field, which is treated as version 1) are always accepted, so a plugin built against an older API keeps installing and working after the app updates. Only a plugin declaring a version *newer* than the app supports is rejected, with a message telling the user to update CSTL.
+`manifest_version`, `id`, `name`, and `version` are required. Everything else is optional. `manifest_version` is the plugin contract version the plugin was authored against (manifest schema + API surface combined into one number). Older versions keep working after the host updates. A plugin declaring a `manifest_version` *newer* than the host supports is rejected at install time with a message telling the user to update CSTL. `version` is the plugin's own release version (semver recommended). `extensions` and `magic` are how a plugin claims files, by file extension and/or by byte signature (magic bytes), so the app knows which plugin should handle a given import.
 
 ### plugin.js
 
@@ -169,7 +166,7 @@ Available in `activate(api)`, `panel(root, api)`, `extract({api})`, `pack({api})
 
 | Method | Description |
 |---|---|
-| `api.version` | API version (1) |
+| `api.version` | Host's current plugin contract version |
 | `api.pluginId` | Plugin ID |
 | `api.settings` | Project-scoped settings |
 | `api.globalSettings` | Global settings |

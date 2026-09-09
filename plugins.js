@@ -37,10 +37,9 @@ CSTL.util = {
 const { stripNewlines, isPlainObject, escapeHtml, humanBytes, validDataKey, sanitizeName } = CSTL.util;
 const esc = escapeHtml;
 
-const PLUGIN_VERSION = 1;
+const VERSION = 1;
 const MANIFEST_FILE = 'manifest.json';
 const ENTRY_FILE = 'plugin.js';
-const INDEX_SCHEMA = 2;
 const SETTING_SCOPES = ['global', 'project'];
 const BUILTIN_EXTENSIONS = new Set(['.json', '.epub']);
 
@@ -258,12 +257,6 @@ const ZipReader = {
 };
 
 const Manifest = {
-  validateVersion(m) {
-    if (!isPlainObject(m)) return null;
-    const v = m.manifestVersion ?? PLUGIN_VERSION;
-    if (v > PLUGIN_VERSION) return null;
-    return m;
-  },
   parse(text) {
     let raw;
     try { raw = JSON.parse(text); }
@@ -281,11 +274,12 @@ const Manifest = {
     const errors = [];
     if (!isPlainObject(m)) return ['manifest must be an object.'];
 
-    if (m.manifestVersion !== undefined && (typeof m.manifestVersion !== 'number' || !Number.isInteger(m.manifestVersion) || m.manifestVersion < 1 || m.manifestVersion > PLUGIN_VERSION)) {
-      errors.push(`"manifestVersion" if provided must be an integer 1-${PLUGIN_VERSION} (found ${JSON.stringify(m.manifestVersion)}).`);
-    }
-    if (m.api !== undefined && (typeof m.api !== 'number' || !Number.isInteger(m.api) || m.api < 1 || m.api > PLUGIN_VERSION)) {
-      errors.push(`"api" if provided must be an integer 1-${PLUGIN_VERSION}.`);
+    if (m.manifest_version === undefined) {
+      errors.push(`"manifest_version" required, integer (current: ${VERSION}).`);
+    } else if (typeof m.manifest_version !== 'number' || !Number.isInteger(m.manifest_version) || m.manifest_version < 1) {
+      errors.push(`"manifest_version" must be a positive integer.`);
+    } else if (m.manifest_version > VERSION) {
+      errors.push(`"manifest_version" ${m.manifest_version} is newer than this build supports (max: ${VERSION}). Update CSTL to use this plugin.`);
     }
 
     const idRe = new RegExp(`^[a-z0-9][a-z0-9_-]{0,${CFG.manifest.idMax - 1}}$`);
@@ -433,14 +427,12 @@ const Manifest = {
       ...(typeof m.ui.height === 'number' && Number.isFinite(m.ui.height) ? { height: clampInt(m.ui.height, CFG.manifest.uiHeightMin, CFG.manifest.uiHeightMax, CFG.manifest.uiHeightDefault) } : {})
     } : null;
     return Object.assign({
-      schema: INDEX_SCHEMA,
-      manifestVersion: PLUGIN_VERSION,
+      manifest_version: m.manifest_version,
       id: m.id,
       name: m.name.trim(),
       version: m.version.trim(),
       author: (m.author || '').trim(),
       description: (m.description || '').trim(),
-      api: typeof m.api === 'number' ? m.api : PLUGIN_VERSION,
       extensions: (m.extensions || []).map(e => String(e).toLowerCase()),
       magic,
       ui: ui && Object.keys(ui).length ? ui : null,
@@ -979,11 +971,10 @@ const Runtime = {
         dropped.push(p?.id || '<unknown>');
         continue;
       }
-      if (p.schema === INDEX_SCHEMA) valid.push(p);
-      else dropped.push(p.id);
+      valid.push(p);
     }
     if (dropped.length) {
-      console.warn(`[plugins] dropped ${dropped.length} plugin(s) with unsupported schema: ${dropped.join(', ')}. Reinstall to use them.`);
+      console.warn(`[plugins] dropped ${dropped.length} plugin(s) with invalid metadata: ${dropped.join(', ')}.`);
     }
     Runtime._index = valid;
     await Runtime._sweepOrphanPacks();
@@ -1203,10 +1194,9 @@ const Runtime = {
 
       const parsed = Manifest.parse(manifestText);
       if (!parsed.ok) throw new Error(parsed.errors.join('\n'));
-      const manifest = Manifest.validateVersion(parsed.data);
-      if (!manifest) throw new Error(`Plugin manifest v${parsed.data.manifestVersion ?? 'unknown'} is not supported (current: v${PLUGIN_VERSION}).`);
-      const errors = Manifest.validate(manifest);
+      const errors = Manifest.validate(parsed.data);
       if (errors.length) throw new Error('Invalid manifest:\n- ' + errors.join('\n- '));
+      const manifest = parsed.data;
 
       if (!zip.has(ENTRY_FILE)) throw new Error(`${ENTRY_FILE} not found at package root. It is required as the entry point.`);
       pluginCode = await zip.readText(ENTRY_FILE);
@@ -1293,7 +1283,7 @@ const Runtime = {
   _buildApi(inst) {
     const meta = inst.meta;
     const api = {
-      version: PLUGIN_VERSION,
+      version: VERSION,
       pluginId: meta.id,
       get settings() { return Runtime.projectSettingsFor(meta); },
       get globalSettings() { return Runtime.globalSettingsFor(meta); },
@@ -1761,10 +1751,10 @@ const PluginUI = {
         <div class="plugin-detail-grid">
           <div>
             <div class="plugin-detail-label">Package info</div>
-            <div class="plugin-detail-kv"><span>API</span><span>v${esc(String(p.api))}</span></div>
+            <div class="plugin-detail-kv"><span>Manifest</span><span>v${esc(String(p.manifest_version))}</span></div>
             <div class="plugin-detail-kv"><span>Size</span><span>${esc(humanBytes(p.size))}</span></div>
             <div class="plugin-detail-kv"><span>Installed</span><span>${esc(new Date(p.updatedAt || Date.now()).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span></div>
-            ${p.fingerprint ? `<div class="plugin-detail-kv"><span>SHA-256</span><code class="plugin-detail-fp" title="Click to copy">${esc(p.fingerprint)}</code></div>` : ''}
+            ${p.fingerprint ? `<div class="plugin-detail-kv is-stack"><span>SHA-256</span><code class="plugin-detail-fp" title="Click to copy">${esc(p.fingerprint)}</code></div>` : ''}
           </div>
           <div>
             ${p.files.length ? `<div class="plugin-detail-label">Package files (${p.files.length})</div><div class="plugin-detail-files">${p.files.map(f => `<span>${esc(f)}</span>`).join('')}</div>` : ''}
@@ -1827,10 +1817,13 @@ const PluginUI = {
       try {
         const ok = await Runtime.uninstall(p.id);
         if (ok) {
-          PluginUI.renderList();
-          host.ui.loadDashboard();
-          host.ui.onShortcutListMaybeRender();
-          host.ui.flash(`Plugin "${p.name}" deleted.`);
+          row.classList.add('is-removing');
+          setTimeout(() => {
+            PluginUI.renderList();
+            host.ui.loadDashboard();
+            host.ui.onShortcutListMaybeRender();
+            host.ui.flash(`Plugin "${p.name}" deleted.`);
+          }, 280);
         }
       } catch (e) {
         await Dialogs.info("Couldn't delete plugin", `<p class="hint m-0">${esc(e?.message || String(e))}</p>`);
@@ -1857,7 +1850,7 @@ const PluginUI = {
         <span class="plugin-panel-title">${esc(cfg.title || meta.name)}</span>
         <svg class="plugin-panel-chevron" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </button>
-      <div class="plugin-panel-body" style="height:${cfg.height || CFG.panel.defaultHeight}px"></div>`;
+      <div class="plugin-panel-body" style="--plugin-panel-height:${cfg.height || CFG.panel.defaultHeight}px"></div>`;
     wrap.appendChild(card);
     return { card, body: card.querySelector('.plugin-panel-body') };
   },

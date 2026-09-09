@@ -1092,8 +1092,15 @@ const OpfsExplorer = {
       const dir = await this.dirHandle(this.path);
       await dir.removeEntry(name, { recursive: !!isDir });
       const row = [...els.opfsList.children].find(el => el.dataset.name === name);
-      if (row) row.remove();
-      if (!els.opfsList.children.length) this._showEmpty(true);
+      if (row) {
+        row.classList.add('is-removing');
+        setTimeout(() => {
+          row.remove();
+          if (!els.opfsList.children.length) this._showEmpty(true);
+        }, 280);
+      } else if (!els.opfsList.children.length) {
+        this._showEmpty(true);
+      }
       if (atPluginsRoot && isDir) await CSTL.plugins.sync();
       if (atProjectsRoot && isDir) App.loadDashboard();
       if (kind === 'index' && this.path.length === 1 && this.path[0] === PLUGINS_DIR) await CSTL.plugins.sync();
@@ -3670,7 +3677,10 @@ const App = {
         e.stopPropagation();
         const item = del.closest('.bookmark-item');
         const n = Number(item?.dataset.num);
-        if (n) App.toggleBookmark(n, false);
+        if (n) {
+          if (item) item.classList.add('is-removing');
+          setTimeout(() => App.toggleBookmark(n, false), 220);
+        }
         return;
       }
       const item = e.target.closest('.bookmark-item');
@@ -4447,7 +4457,8 @@ const App = {
       if (!await App.dialogConfirm(`Delete "${p.name}"?`, 'This project and all its data will be permanently deleted.')) return;
       try {
         await Storage.deleteProject(p.id);
-        App.loadDashboard();
+        card.classList.add('is-removing');
+        setTimeout(() => App.loadDashboard(), 280);
       } catch (e) {
         App.flash(friendlyError(e, "Couldn't delete: "), true, 'error');
         if (e?.storage) App.loadDashboard();

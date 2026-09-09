@@ -586,6 +586,23 @@ a:focus-visible,
   from { opacity: 0; transform: translateY(14px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+@keyframes rowIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes cardOut {
+  0% { opacity: 1; transform: scale(1); max-height: 600px; }
+  70% { opacity: 0; transform: scale(0.94); max-height: 600px; }
+  100% { opacity: 0; transform: scale(0.94); max-height: 0; padding-top: 0; padding-bottom: 0; margin-top: 0; margin-bottom: 0; border-width: 0; }
+}
+.project-card.is-removing,
+.plugin-row.is-removing,
+.opfs-item.is-removing,
+.bookmark-item.is-removing {
+  pointer-events: none;
+  animation: cardOut 0.28s var(--ease) forwards;
+  overflow: hidden;
+}
 .project-card::before {
   content: '';
   position: absolute;
@@ -806,6 +823,7 @@ a:focus-visible,
   border-radius: var(--r-lg);
   background: var(--surface);
   transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease);
+  animation: rowIn 0.3s var(--ease-out);
 }
 .plugin-row.is-enabled { border-color: var(--hairline-2); }
 .plugin-row:not(.is-enabled) { opacity: 0.62; }
@@ -886,13 +904,25 @@ a:focus-visible,
 .plugin-panel-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .plugin-panel-chevron { flex-shrink: 0; transition: transform 0.3s var(--ease); }
 .plugin-panel-card.open .plugin-panel-chevron { transform: rotate(180deg); }
-.plugin-panel-body { display: none; border-top: 1px solid var(--hairline); }
-.plugin-panel-card.open .plugin-panel-body { display: block; animation: slideDown 0.3s var(--ease-out); }
+.plugin-panel-body {
+  display: block;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  border-top: 1px solid transparent;
+  transition: height 0.3s var(--ease-out), opacity 0.3s var(--ease-out), border-color 0.3s var(--ease);
+}
+.plugin-panel-body > * { box-sizing: border-box; }
+.plugin-panel-card.open .plugin-panel-body {
+  height: var(--plugin-panel-height, 300px);
+  opacity: 1;
+  border-top-color: var(--hairline);
+}
+.plugin-panel-card.open .plugin-panel-body > * { animation: slideDown 0.3s var(--ease-out); }
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.plugin-panel-body > * { box-sizing: border-box; }
 .plugin-empty {
   display: flex;
   flex-direction: column;
@@ -2580,10 +2610,15 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   overflow-y: auto;
 }
 
-.plugin-detail { display: none; }
+.plugin-detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.3s var(--ease-out), opacity 0.3s var(--ease-out);
+}
 .plugin-row.show-detail .plugin-detail {
-  display: block;
-  animation: slideDown 0.3s var(--ease-out);
+  grid-template-rows: 1fr;
+  opacity: 1;
 }
 .plugin-detail-grid {
   display: grid;
@@ -2593,6 +2628,11 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   background: var(--bg);
   border: 1px solid var(--hairline);
   border-radius: var(--r-lg);
+  min-height: 0;
+  overflow: hidden;
+}
+.plugin-row.show-detail .plugin-detail-grid {
+  animation: slideDown 0.3s var(--ease-out);
 }
 .plugin-detail-label {
   font-size: 10px;
@@ -2611,11 +2651,19 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   color: var(--ink-dim);
   border-bottom: 1px solid var(--hairline);
 }
-.plugin-detail-kv span:first-child { color: var(--ink-muted); }
-.plugin-detail-kv span:last-child { text-align: right; }
+.plugin-detail-kv span:first-child { color: var(--ink-muted); flex-shrink: 0; }
+.plugin-detail-kv span:last-child { text-align: right; min-width: 0; }
+.plugin-detail-kv.is-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding-bottom: 8px;
+}
+.plugin-detail-kv.is-stack span:first-child { color: var(--ink-muted); }
+.plugin-detail-kv.is-stack .plugin-detail-fp { text-align: left; }
 .plugin-detail-fp {
   display: block;
-  margin-top: 6px;
+  margin-top: 0;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--ink-muted);
