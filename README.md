@@ -3,7 +3,7 @@
 Original by Atho64
 Fork by Aera
 
-[https://lukazuu.github.io/cstl-next/](https://lukazuu.github.io/cstl-next/)
+[https://lukazuu.github.io/cstl/](https://lukazuu.github.io/cstl/)
 
 ## What this is
 
