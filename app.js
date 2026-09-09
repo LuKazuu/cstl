@@ -5396,7 +5396,7 @@ const App = {
   closeModal(modal) {
     if (!modal) return;
     modal.classList.remove('open');
-    setTimeout(() => { try { modal.remove(); } catch {} }, 50);
+    setTimeout(() => { try { modal.remove(); } catch {} }, 420);
   },
 
   _ensureDashboardCardsEl() {

@@ -519,7 +519,7 @@ const Dialogs = {
         observer.disconnect();
         overlay.classList.remove('open');
         resolve(val);
-        setTimeout(() => { try { overlay.remove(); } catch {} }, 0);
+        setTimeout(() => { try { overlay.remove(); } catch {} }, 320);
       };
       const observer = new MutationObserver(() => {
         if (!overlay.classList.contains('open')) finish(null);
@@ -1784,7 +1784,6 @@ const PluginUI = {
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
           Detail
         </button>
-        <span class="grow"></span>
         ${(p.settings?.global?.length || (p.settings?.project?.length && host.state.projectId())) ? `<button type="button" class="btn btn-ghost btn-xs btn-plugin-settings" title="Plugin settings">
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           Settings
