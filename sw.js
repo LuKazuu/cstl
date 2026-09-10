@@ -1,4 +1,4 @@
-const CACHE = 'cstl-v1.0.5';
+const CACHE = 'cstl-v1.0.6';
 const ASSETS = [
   './',
   './index.html',
@@ -20,9 +20,10 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(
-    caches.keys().then(keys => Promise.all(keys.map(k => k !== CACHE ? caches.delete(k) : null)))
+    caches.keys()
+      .then(keys => Promise.all(keys.map(k => k !== CACHE ? caches.delete(k) : null)))
+      .then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 function withCoi(res) {
@@ -37,7 +38,7 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   const sameOrigin = url.origin === self.location.origin;
   e.respondWith(
-    caches.match(e.request).then(cached => {
+    caches.open(CACHE).then(c => c.match(e.request)).then(cached => {
       if (cached) return sameOrigin ? withCoi(cached) : cached;
       return fetch(e.request).then(res => {
         if (!res || res.status !== 200 || res.type === 'error') return res;

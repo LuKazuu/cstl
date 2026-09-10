@@ -40,6 +40,9 @@ const CFG = {
   toastTimeoutMs: 3000,
   savedTimeoutMs: 1800,
   dashboardPageSize: 30,
+  historyMax: 60,
+  historyMin: 15,
+  historyLineBudget: 900000,
   scroller: {
     overscan: 6,
     defaultH: 80,
@@ -47,10 +50,16 @@ const CFG = {
     topPad: 8,
     botPad: 12,
     headerH: 32,
-    maxRenderPasses: 5,
     defaultViewportH: 800,
-    recyclePos: -9999,
+    recyclePos: -10000,
   },
+  anim: {
+    itemMs: 160,
+    cardMs: 200,
+    flipMoveMs: 260,
+    flipInMs: 180,
+  },
+  saveChunkLines: 2000,
   delay: {
     repositionMs: 50,
     focusMs: 30,
@@ -60,12 +69,39 @@ const CFG = {
     proofreadDebounceMs: 200,
     storageWatchMs: 4000,
   },
-  chunkSize: { importBatch: 50, fileProgressBatch: 10 },
+  chunkSize: { importBatch: 50, fileProgressBatch: 10, namesBatch: 800 },
   warningDisplayMax: 10,
   skippedFilesDisplayMax: 5,
   storage: { criticalFreeMb: 10, safeFreeMb: 80 },
   debounceDefaultMs: 200,
 };
+
+const reducedMotionMedia = matchMedia('(prefers-reduced-motion: reduce)');
+const reducedMotion = () => reducedMotionMedia.matches;
+
+function flipList(container, mutate) {
+  if (reducedMotion()) { mutate(); return; }
+  const before = new Map();
+  for (const el of container.children) before.set(el, el.getBoundingClientRect().top);
+  mutate();
+  for (const el of container.children) {
+    const prevTop = before.get(el);
+    if (prevTop === undefined) {
+      el.animate(
+        [{ opacity: 0, transform: 'scale(0.97)' }, { opacity: 1, transform: 'none' }],
+        { duration: CFG.anim.flipInMs, easing: 'ease-out' }
+      );
+    } else {
+      const dy = prevTop - el.getBoundingClientRect().top;
+      if (dy) {
+        el.animate(
+          [{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
+          { duration: CFG.anim.flipMoveMs, easing: 'ease-out' }
+        );
+      }
+    }
+  }
+}
 
 const SETTINGS_FIELDS = [
   { id: 'settingsIgnoreNameCheck',    key: 'ignoreName',       type: 'check',  def: false, group: 'basic' },
@@ -143,9 +179,31 @@ const makeMediaName = (origName) => {
   return `${stem}_${makeId()}${ext}`;
 };
 const schemaDefault = f => (f.def && typeof f.def === 'object') ? structuredClone(f.def) : f.def;
-const snapshot = () => ({ lines: structuredClone(State.lines), selected: new Set(State.selected) });
+const snapshot = () => ({ lines: State.lines.map(l => ({ ...l })), selected: new Set(State.selected) });
+const historyCap = () => Math.max(CFG.historyMin, Math.min(CFG.historyMax, Math.floor(CFG.historyLineBudget / Math.max(1, State.lines.length))));
+const trimHistory = stack => { const cap = historyCap(); while (stack.length > cap) stack.shift(); };
+function pushHistory() {
+  State.undoStack.push(snapshot());
+  trimHistory(State.undoStack);
+  State.redoStack = [];
+}
 const assertJsZip = () => { if (typeof JSZip === 'undefined') throw new Error('JSZip is not available.'); };
 const yieldToEvent = () => new Promise(r => setTimeout(r, 0));
+
+async function serializeProjectJson(data) {
+  const lines = data.lines;
+  data.lines = undefined;
+  const head = JSON.stringify(data);
+  data.lines = lines;
+  if (!Array.isArray(lines) || !lines.length) return head.slice(0, -1) + ',"lines":[]}';
+  const parts = [];
+  for (let i = 0; i < lines.length; i += CFG.saveChunkLines) {
+    const chunk = JSON.stringify(lines.slice(i, i + CFG.saveChunkLines));
+    parts.push(chunk.slice(1, -1));
+    if (parts.length % 2 === 0) await yieldToEvent();
+  }
+  return head.slice(0, -1) + ',"lines":[' + parts.join(',') + ']' + head.slice(-1);
+}
 
 function normalizeLine(l) {
   if (l._n) return l;
@@ -374,7 +432,6 @@ const Storage = {
           throw e;
         }
       }
-      App.ensureSW();
     } catch (e) {
       if (w) { try { await w.abort(); } catch {} }
       if (e && /quota/i.test(String(e.name || e.message || ''))) {
@@ -571,11 +628,16 @@ const Storage = {
 
   async saveProject(projectId, data) {
     if (!data.updatedAt) data.updatedAt = Date.now();
+    const json = await serializeProjectJson(data);
+    return Storage.saveProjectJson(projectId, json);
+  },
+
+  async saveProjectJson(projectId, json) {
     return Storage._queued(() => Storage._withRootRetry(async root => {
       const dir = await Storage._projectDir(root, projectId, true);
       await dir.getDirectoryHandle(MEDIA_DIR, { create: true });
       await dir.getDirectoryHandle(DATA_DIR, { create: true });
-      await Storage._writeFile(dir, 'project.json', JSON.stringify(data));
+      await Storage._writeFile(dir, 'project.json', json);
     }));
   },
 
@@ -1093,11 +1155,15 @@ const OpfsExplorer = {
       await dir.removeEntry(name, { recursive: !!isDir });
       const row = [...els.opfsList.children].find(el => el.dataset.name === name);
       if (row) {
-        row.classList.add('is-removing');
-        setTimeout(() => {
-          row.remove();
+        const finish = () => {
+          flipList(els.opfsList, () => row.remove());
           if (!els.opfsList.children.length) this._showEmpty(true);
-        }, 280);
+        };
+        if (reducedMotion()) finish();
+        else {
+          row.classList.add('is-removing');
+          setTimeout(finish, CFG.anim.itemMs);
+        }
       } else if (!els.opfsList.children.length) {
         this._showEmpty(true);
       }
@@ -2134,6 +2200,7 @@ function cacheEls() {
     'opfsExplorerModal', 'btnOpfsExplorerOpen', 'btnOpfsExplorerClose',
     'opfsList', 'opfsEmpty', 'opfsEmptyText', 'opfsCrumbs', 'opfsLoading', 'btnOpfsRefresh',
     'busyOverlay', 'busyTitle', 'busyMsg', 'busyBarFill', 'busyActions', 'busyCancel',
+    'bootSplash',
     'btnBookmarks', 'bookmarkPanel',
     'bookmarkPanelCount', 'bookmarkList', 'btnBookmarkClear'
   ];
@@ -2250,6 +2317,10 @@ State.updateCount = () => {
   for (let i = 0, n = lines.length; i < n; i++) if (lines[i].is_translated) State.translatedCount++;
 };
 
+State.adjustCount = (was, now) => {
+  State.translatedCount += (now ? 1 : 0) - (was ? 1 : 0);
+};
+
 State.rebuild = () => {
   State.byNum.clear();
   State.fileLines.clear();
@@ -2314,24 +2385,29 @@ State.rebuild = () => {
   State.bookmarkSet = new Set(State.bookmarks);
 };
 
+State.persist = async (opts = {}) => {
+  const id = State.projectId;
+  if (!id) return;
+  try {
+    const data = State.toData();
+    if (!data.updatedAt) data.updatedAt = Date.now();
+    if (window.CSTL?.plugins) await CSTL.plugins.runHooks('beforeSave', data);
+    const json = await serializeProjectJson(data);
+    await Storage.saveProjectJson(id, json);
+    await Storage.upsertProjectIndexEntry(Storage.projectIndexEntry(id, data, data.updatedAt));
+    if (!opts.silent) App.flashSaved();
+    if (window.CSTL?.plugins) await CSTL.plugins.runHooks('afterSave', data);
+  } catch (e) {
+    if (e?.storage) { App.flash("Couldn't save: " + e.message, true); }
+    else { console.error('[autosave]', e); }
+  }
+};
+
 State.queueSave = () => {
   if (!State.projectId) return;
   clearTimeout(State.saveTimer);
   State.saveTimer = setTimeout(() => {
-    requestIdleCallback(async () => {
-      if (!State.projectId) return;
-      try {
-        const data = State.toData();
-        if (window.CSTL?.plugins) await CSTL.plugins.runHooks('beforeSave', data);
-        await Storage.saveProject(State.projectId, data);
-        await Storage.upsertProjectIndexEntry(Storage.projectIndexEntry(State.projectId, data, Date.now()));
-        App.flashSaved();
-        if (window.CSTL?.plugins) await CSTL.plugins.runHooks('afterSave', data);
-      } catch (e) {
-        if (e?.storage) { App.flash("Couldn't save: " + e.message, true); }
-        else { console.error('[autosave]', e); }
-      }
-    });
+    requestIdleCallback(() => State.persist());
   }, 500);
 };
 
@@ -2347,8 +2423,10 @@ class Scroller {
     this.heights = [];
     this.pos = [];
     this.els = [];
-    this.indices = [];
-    this.heightCache = new Map();
+    this.slots = [];
+    this.dirtySlots = [];
+    this.slotByKey = new Map();
+    this.heightByKey = new Map();
     this.measuredKeys = new Set();
     this.defaultH = CFG.scroller.defaultH;
     this.gap = CFG.scroller.gap;
@@ -2357,86 +2435,55 @@ class Scroller {
     this.headerH = CFG.scroller.headerH;
     this.overscan = CFG.scroller.overscan;
     this.recyclePos = CFG.scroller.recyclePos;
-    this.maxPasses = CFG.scroller.maxRenderPasses;
     this.defaultVH = CFG.scroller.defaultViewportH;
     this.scrollTop = 0;
     this.totalH = 0;
     this.scheduled = false;
     this.avgHeight = 0;
-    this._measuredCount = 0;
+    this.measuredCount = 0;
+    this.lastVpWidth = viewport.clientWidth;
 
     viewport.addEventListener('scroll', () => {
       this.scrollTop = viewport.scrollTop;
       this.schedule();
     }, { passive: true });
 
-    this.lastVpWidth = viewport.clientWidth;
-    new ResizeObserver(() => {
-      const w = viewport.clientWidth;
-      if (w !== this.lastVpWidth && this.lastVpWidth > 0 && w > 0) {
-        this.lastVpWidth = w;
-        this.heightCache.clear();
-        this.measuredKeys.clear();
-        this.avgHeight = 0;
-        this._measuredCount = 0;
-        this.invalidate();
-      } else {
-        this.lastVpWidth = w;
-      }
-      this.schedule();
-    }).observe(viewport);
-  }
-
-  _estHeight(it) {
-    if (it?.type === 'header') return this.headerH;
-    return this.avgHeight > 0 ? this.avgHeight : this.defaultH;
+    new ResizeObserver(() => this._onResize()).observe(viewport);
   }
 
   schedule() {
     if (this.scheduled) return;
     this.scheduled = true;
-    requestAnimationFrame(() => { this.scheduled = false; this.render(); });
+    requestAnimationFrame(() => {
+      this.scheduled = false;
+      this.render();
+    });
   }
 
   setItems(items, keep = false) {
     const prevScroll = keep ? this.vp.scrollTop : 0;
-    const prevHeightByKey = keep && this.keys.length === this.heights.length
-      ? new Map(this.keys.map((k, i) => [k, this.heights[i]]))
-      : null;
     this.items = items;
     this.keys = items.map((it, i) => this.keyOf(it, i));
-    if (!keep) {
-      this.heightCache.clear();
-      this.measuredKeys.clear();
-      this.avgHeight = 0;
-      this._measuredCount = 0;
-      this.heights = items.map(it => this._estHeight(it));
-    } else {
-      this.heights = items.map((it, i) => {
-        const cached = this.heightCache.get(this.keys[i]);
-        if (cached !== undefined) return cached;
-        const prev = prevHeightByKey?.get(this.keys[i]);
-        if (prev !== undefined) return prev;
-        return this._estHeight(it);
-      });
-    }
+    if (!keep) this._resetHeights();
+    this.heights = this.keys.map((k, i) => {
+      const cached = this.heightByKey.get(k);
+      return cached !== undefined ? cached : this._estHeight(items[i]);
+    });
     this.pos = new Array(items.length);
-    this.updatePos();
-    this.vp.scrollTop = keep ? Math.min(prevScroll, Math.max(0, this.totalH - this.vp.clientHeight)) : 0;
+    this._updatePos();
+    const maxScroll = Math.max(0, this.totalH - this.vp.clientHeight);
+    this.vp.scrollTop = keep ? Math.min(prevScroll, maxScroll) : 0;
     this.scrollTop = this.vp.scrollTop;
     this.invalidate();
     this.render();
   }
 
   invalidateHeights() {
-    this.heightCache.clear();
-    this.measuredKeys.clear();
-    this.avgHeight = 0;
-    this._measuredCount = 0;
+    this._resetHeights();
     this.heights = this.items.map(it => this._estHeight(it));
-    this.updatePos();
+    this._updatePos();
     const maxScroll = Math.max(0, this.totalH - this.vp.clientHeight);
-    if (this.vp.scrollTop > maxScroll) {
+    if (this.scrollTop > maxScroll) {
       this.vp.scrollTop = maxScroll;
       this.scrollTop = maxScroll;
     }
@@ -2444,147 +2491,45 @@ class Scroller {
   }
 
   invalidateHeight(key) {
-    this.heightCache.delete(key);
+    this.heightByKey.delete(key);
   }
 
-  invalidate() { this.indices.fill(-1); }
-
-  updatePos() {
-    let cur = this.topPad;
-    for (let i = 0; i < this.items.length; i++) {
-      this.pos[i] = cur;
-      cur += this.heights[i];
-    }
-    this.totalH = cur + this.botPad;
-    this.container.style.height = `${this.totalH}px`;
+  invalidate() {
+    this.slots.fill(-1);
+    this.slotByKey.clear();
   }
 
-  findStart(scrollTop) {
-    const n = this.items.length;
-    if (n === 0) return 0;
-    let lo = 0, hi = n - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (this.pos[mid] + this.heights[mid] <= scrollTop) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
+  patch(key, fn) {
+    const slot = this.slotByKey.get(key);
+    if (slot === undefined) return false;
+    const di = this.slots[slot];
+    if (di < 0) return false;
+    fn(this.els[slot], this.items[di], di);
+    return true;
   }
 
-  findEnd(start, vh) {
-    let i = start, acc = 0;
-    while (i < this.items.length && acc < vh) { acc += this.heights[i]; i++; }
-    return i;
-  }
-
-  render() {
-    let more = true, passes = 0;
-    while (more && passes < this.maxPasses) {
-      more = this._renderPass();
-      passes++;
-    }
-    if (more) this.schedule();
-  }
-
-  _renderPass() {
-    if (!this.items.length) {
-      for (let i = 0; i < this.els.length; i++) {
-        this.els[i].style.transform = `translateY(${this.recyclePos}px)`;
-        this.indices[i] = -1;
-      }
-      this.container.style.height = '0px';
-      this.totalH = 0;
-      return false;
-    }
-
-    const vh = this.vp.clientHeight || this.defaultVH;
-    const scrollTop = this.scrollTop;
-    const vStart = this.findStart(scrollTop);
-    const vEnd = this.findEnd(vStart, vh);
-    const rStart = Math.max(0, vStart - this.overscan);
-    const rEnd = Math.min(this.items.length, vEnd + this.overscan);
-    const need = rEnd - rStart;
-
-    while (this.els.length < need) {
-      const el = this.create();
-      el.style.transform = `translateY(${this.recyclePos}px)`;
-      this.els.push(el);
-      this.indices.push(-1);
-      this.container.appendChild(el);
-    }
-
-    const toMeasure = [];
-    for (let i = 0; i < need; i++) {
-      const di = rStart + i;
-      if (this.indices[i] !== di) {
-        this.update(this.els[i], this.items[di], di);
-        this.indices[i] = di;
-        toMeasure.push(i);
+  refreshItem(key) {
+    const slot = this.slotByKey.get(key);
+    if (slot === undefined) return false;
+    const di = this.slots[slot];
+    if (di < 0) return false;
+    this.update(this.els[slot], this.items[di], di);
+    const delta = this._measureSlot(slot, di);
+    if (delta) {
+      this._updatePos();
+      if (this.pos[di] < this.scrollTop) {
+        this.vp.scrollTop += delta;
+        this.scrollTop = this.vp.scrollTop;
       }
     }
-
-    let heightsChanged = false;
-    let adjust = 0;
-    for (const i of toMeasure) {
-      const di = rStart + i;
-      const h = this.els[i].offsetHeight;
-      if (h === 0) continue;
-      const isHeader = this.items[di]?.type === 'header';
-      const total = isHeader ? h : h + this.gap;
-      if (Math.abs(total - this.heights[di]) > 1) {
-        if (this.pos[di] < scrollTop) adjust += total - this.heights[di];
-        if (!isHeader) {
-          const pureH = h;
-          const wasMeasured = this.measuredKeys.has(this.keys[di]);
-          if (wasMeasured) {
-            const oldPure = this.heights[di] - this.gap;
-            this.avgHeight = this._measuredCount > 0
-              ? this.avgHeight + (pureH - oldPure) / this._measuredCount
-              : pureH;
-          } else {
-            this.avgHeight = (this.avgHeight * this._measuredCount + pureH) / (this._measuredCount + 1);
-            this._measuredCount++;
-            this.measuredKeys.add(this.keys[di]);
-          }
-        }
-        this.heights[di] = total;
-        this.heightCache.set(this.keys[di], total);
-        heightsChanged = true;
-      }
-    }
-
-    if (heightsChanged) {
-      this.updatePos();
-      if (adjust) { this.vp.scrollTop += adjust; this.scrollTop = this.vp.scrollTop; }
-    }
-
-    for (let i = 0; i < need; i++) {
-      this.els[i].style.transform = `translateY(${this.pos[rStart + i]}px)`;
-    }
-
-    for (let i = need; i < this.els.length; i++) {
-      if (this.indices[i] !== -1) {
-        this.els[i].style.transform = `translateY(${this.recyclePos}px)`;
-        this.indices[i] = -1;
-      }
-    }
-
-    if (heightsChanged) {
-      const vBot = this.scrollTop + vh;
-      const vTop = this.scrollTop;
-      const firstTop = this.pos[rStart];
-      const lastBot = rEnd < this.items.length
-        ? this.pos[rEnd - 1] + this.heights[rEnd - 1]
-        : this.totalH;
-      if (lastBot < vBot || firstTop > vTop + 1) return true;
-    }
-    return false;
+    this._positionAll();
+    return true;
   }
 
   scrollToIndex(idx) {
     if (idx < 0 || idx >= this.items.length) return;
     const vh = this.vp.clientHeight || this.defaultVH;
-    const center = (i) => Math.max(0, (this.pos[i] || 0) - (vh / 2) + (this.heights[i] / 2));
+    const center = i => Math.max(0, (this.pos[i] || 0) - (vh / 2) + (this.heights[i] / 2));
     const apply = () => {
       this.vp.scrollTop = center(idx);
       this.scrollTop = this.vp.scrollTop;
@@ -2594,7 +2539,205 @@ class Scroller {
     requestAnimationFrame(apply);
   }
 
-  forceUpdate() { this.invalidate(); this.render(); }
+  forceUpdate() {
+    this.invalidate();
+    this.render();
+  }
+
+  render() {
+    for (let pass = 0; pass < 2; pass++) {
+      if (!this._renderPass()) return;
+    }
+    this.schedule();
+  }
+
+  _estHeight(it) {
+    if (it?.type === 'header') return this.headerH;
+    return this.avgHeight > 0 ? this.avgHeight : this.defaultH;
+  }
+
+  _resetHeights() {
+    this.heightByKey.clear();
+    this.measuredKeys.clear();
+    this.avgHeight = 0;
+    this.measuredCount = 0;
+  }
+
+  _onResize() {
+    const w = this.vp.clientWidth;
+    const changed = this.lastVpWidth > 0 && w > 0 && w !== this.lastVpWidth;
+    this.lastVpWidth = w;
+    if (changed) this.invalidateHeights();
+    this.schedule();
+  }
+
+  _updatePos() {
+    const pos = this.pos;
+    const heights = this.heights;
+    let cur = this.topPad;
+    for (let i = 0; i < pos.length; i++) {
+      pos[i] = cur;
+      cur += heights[i];
+    }
+    this.totalH = cur + this.botPad;
+    this.container.style.height = `${this.totalH}px`;
+  }
+
+  _findStart(scrollTop) {
+    const pos = this.pos;
+    const heights = this.heights;
+    let lo = 0, hi = pos.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pos[mid] + heights[mid] <= scrollTop) lo = mid + 1;
+      else hi = mid;
+    }
+    return pos.length ? lo : 0;
+  }
+
+  _findEnd(start, vh) {
+    const heights = this.heights;
+    let i = start, acc = 0;
+    while (i < heights.length && acc < vh) {
+      acc += heights[i];
+      i++;
+    }
+    return i;
+  }
+
+  _renderPass() {
+    if (!this.items.length) {
+      this._releaseAll();
+      return false;
+    }
+    const vh = this.vp.clientHeight || this.defaultVH;
+    const vStart = this._findStart(this.scrollTop);
+    const vEnd = this._findEnd(vStart, vh);
+    const rStart = Math.max(0, vStart - this.overscan);
+    const rEnd = Math.min(this.items.length, vEnd + this.overscan);
+    this._ensurePool(rEnd - rStart);
+    this._assign(rStart, rEnd);
+    const heightsChanged = this._measure();
+    this._position(rStart, rEnd);
+    if (!heightsChanged) return false;
+    const firstTop = this.pos[rStart];
+    const lastBot = rEnd < this.items.length
+      ? this.pos[rEnd - 1] + this.heights[rEnd - 1]
+      : this.totalH;
+    return lastBot < this.scrollTop + vh || firstTop > this.scrollTop + 1;
+  }
+
+  _ensurePool(need) {
+    while (this.els.length < need) {
+      const el = this.create();
+      el.style.transform = `translateY(${this.recyclePos}px)`;
+      this.els.push(el);
+      this.slots.push(-1);
+      this.container.appendChild(el);
+    }
+  }
+
+  _assign(rStart, rEnd) {
+    const need = rEnd - rStart;
+    for (let i = 0; i < need; i++) {
+      const di = rStart + i;
+      if (this.slots[i] === di) continue;
+      if (this.slots[i] !== -1) {
+        const oldKey = this.keys[this.slots[i]];
+        if (this.slotByKey.get(oldKey) === i) this.slotByKey.delete(oldKey);
+      }
+      this.slots[i] = di;
+      this.slotByKey.set(this.keys[di], i);
+      this.update(this.els[i], this.items[di], di);
+      this.dirtySlots.push(i);
+    }
+    for (let i = need; i < this.slots.length; i++) {
+      if (this.slots[i] === -1) continue;
+      const oldKey = this.keys[this.slots[i]];
+      if (this.slotByKey.get(oldKey) === i) this.slotByKey.delete(oldKey);
+      this.slots[i] = -1;
+      this.els[i].style.transform = `translateY(${this.recyclePos}px)`;
+    }
+  }
+
+  _measure() {
+    if (!this.dirtySlots.length) return false;
+    let changed = false;
+    let adjust = 0;
+    for (const slot of this.dirtySlots) {
+      const di = this.slots[slot];
+      const delta = this._measureSlot(slot, di);
+      if (!delta) continue;
+      changed = true;
+      if (this.pos[di] < this.scrollTop) adjust += delta;
+    }
+    this.dirtySlots.length = 0;
+    if (changed) {
+      this._updatePos();
+      if (adjust) {
+        this.vp.scrollTop += adjust;
+        this.scrollTop = this.vp.scrollTop;
+      }
+    }
+    return changed;
+  }
+
+  _measureSlot(slot, di) {
+    const el = this.els[slot];
+    const h = el.offsetHeight;
+    if (!h) return 0;
+    const isHeader = this.items[di]?.type === 'header';
+    const total = isHeader ? h : h + this.gap;
+    const prev = this.heights[di];
+    const delta = total - prev;
+    if (Math.abs(delta) <= 1) return 0;
+    if (!isHeader) {
+      const key = this.keys[di];
+      if (this.measuredKeys.has(key)) {
+        if (this.measuredCount > 0) this.avgHeight += (h - (prev - this.gap)) / this.measuredCount;
+      } else {
+        this.avgHeight = (this.avgHeight * this.measuredCount + h) / (this.measuredCount + 1);
+        this.measuredCount++;
+        this.measuredKeys.add(key);
+      }
+    }
+    this.heights[di] = total;
+    this.heightByKey.set(this.keys[di], total);
+    return delta;
+  }
+
+  _position(rStart, rEnd) {
+    for (let i = 0; i < rEnd - rStart; i++) {
+      this._positionSlot(i, rStart + i);
+    }
+  }
+
+  _positionAll() {
+    for (let i = 0; i < this.slots.length; i++) {
+      const di = this.slots[i];
+      if (di >= 0) this._positionSlot(i, di);
+    }
+  }
+
+  _positionSlot(slot, di) {
+    const el = this.els[slot];
+    const t = `translateY(${this.pos[di]}px)`;
+    if (el._cstlT !== t) {
+      el.style.transform = t;
+      el._cstlT = t;
+    }
+  }
+
+  _releaseAll() {
+    for (let i = 0; i < this.els.length; i++) {
+      this.els[i].style.transform = `translateY(${this.recyclePos}px)`;
+      this.els[i]._cstlT = null;
+      this.slots[i] = -1;
+    }
+    this.slotByKey.clear();
+    this.container.style.height = '0px';
+    this.totalH = 0;
+  }
 }
 
 function positionDropdown(panelId) {
@@ -3077,7 +3220,6 @@ const App = {
   dashboardObserver: null,
   dashboardSentinel: null,
   dashboardFailed: false,
-  swRegistered: false,
   storageCheckBusy: false,
   storageWatchTimer: null,
   healScheduled: false,
@@ -3104,9 +3246,12 @@ const App = {
 
   async init() {
     cacheEls();
+    App.swReady = App.swFlow();
 
     if (!navigator.storage?.getDirectory) {
       els.projectList.innerHTML = `<p class="hint" style="grid-column:1/-1;color:var(--danger);">Browser doesn't support OPFS.</p>`;
+      await App.swReady;
+      App.hideBootSplash();
       return;
     }
 
@@ -3151,6 +3296,9 @@ const App = {
     window.addEventListener('pageshow', e => {
       if (e.persisted) App.checkStorageAlive();
     });
+
+    await App.swReady;
+    App.hideBootSplash();
   },
 
   bind() {
@@ -3172,14 +3320,8 @@ const App = {
     els.busyCancel.addEventListener('click', () => Progress.cancel());
     els.btnNewProject.addEventListener('click', App.createProject);
     els.btnBackToDashboard.addEventListener('click', App.closeProject);
-    els.btnToggleHeader.addEventListener('click', () => {
-      els.workspaceToolbar.classList.add('hidden');
-      els.btnShowHeader.classList.add('visible');
-    });
-    els.btnShowHeader.addEventListener('click', () => {
-      els.workspaceToolbar.classList.remove('hidden');
-      els.btnShowHeader.classList.remove('visible');
-    });
+    els.btnToggleHeader.addEventListener('click', () => App.setToolbarHidden(true));
+    els.btnShowHeader.addEventListener('click', () => App.setToolbarHidden(false));
     els.btnRestoreProject.addEventListener('click', () => els.restoreProjectInput.click());
     els.restoreProjectInput.addEventListener('change', App.restoreProject);
     els.btnOpenPlugins.addEventListener('click', () => {
@@ -3607,8 +3749,11 @@ const App = {
     els.previewContainer.addEventListener('change', e => {
       if (e.target.closest('.checkbox-cell') && e.target.type === 'checkbox') {
         const n = Number(e.target.dataset.num);
+        if (!n) return;
         if (e.target.checked) State.selected.add(n); else State.selected.delete(n);
-        App.syncCheckboxes();
+        App.patchSelectedRow(n);
+        App.updateFileBadge();
+        App.updateButtons();
       } else if (e.target.matches('.file-header-inner input[type="checkbox"][data-file]')) {
         App.toggleFileSelection(e.target);
       }
@@ -3677,10 +3822,7 @@ const App = {
         e.stopPropagation();
         const item = del.closest('.bookmark-item');
         const n = Number(item?.dataset.num);
-        if (n) {
-          if (item) item.classList.add('is-removing');
-          setTimeout(() => App.toggleBookmark(n, false), 220);
-        }
+        if (n) App.toggleBookmark(n, false);
         return;
       }
       const item = e.target.closest('.bookmark-item');
@@ -3694,10 +3836,11 @@ const App = {
     els.btnBookmarkClear.addEventListener('click', async () => {
       if (!State.bookmarks.length) return;
       if (!await App.dialogConfirm('Delete all bookmarks?', 'This action cannot be undone.')) return;
+      const nums = State.bookmarks.slice();
       State.bookmarks = [];
       State.bookmarkSet = new Set();
       App.syncBookmarkUI();
-      App.main.forceUpdate();
+      for (const n of nums) App.patchBookmarkRow(n);
       App.renderBookmarkList();
       State.queueSave();
     });
@@ -3725,20 +3868,35 @@ const App = {
     if (show) App.renderBookmarkList();
   },
 
+  patchBookmarkRow(num) {
+    App.main.patch(`l:${num}`, row => {
+      const isBm = State.bookmarkSet.has(num);
+      row.classList.toggle('row-bookmarked', isBm);
+      const bm = row._bm;
+      if (bm && Number(bm.dataset.num) === num) {
+        bm.setAttribute('aria-pressed', isBm ? 'true' : 'false');
+        bm.title = isBm ? 'Remove bookmark' : 'Add bookmark';
+      }
+    });
+  },
+
   toggleBookmark(num, force) {
     if (!num) return;
     const has = State.bookmarkSet.has(num);
     const next = force === undefined ? !has : force;
-    if (next && !has) { State.bookmarks.push(num); State.bookmarkSet.add(num); }
-    else if (!next && has) {
+    if (next === has) return;
+    if (next) { State.bookmarks.push(num); State.bookmarkSet.add(num); }
+    else {
       const idx = State.bookmarks.indexOf(num);
       State.bookmarks.splice(idx, 1);
       State.bookmarkSet.delete(num);
     }
-    else return;
     App.syncBookmarkUI();
-    App.main.forceUpdate();
-    if (els.bookmarkPanel.classList.contains('show')) App.renderBookmarkList();
+    App.patchBookmarkRow(num);
+    if (els.bookmarkPanel.classList.contains('show')) {
+      if (next) App.addBookmarkItem(num);
+      else App.removeBookmarkItem(num);
+    }
     State.queueSave();
   },
 
@@ -3749,6 +3907,41 @@ const App = {
     els.btnBookmarkClear.disabled = count === 0;
   },
 
+  buildBookmarkItem(num) {
+    const l = State.byNum.get(num);
+    if (!l) return null;
+    const item = document.createElement('div');
+    item.className = 'bookmark-item';
+    item.dataset.num = num;
+
+    const numEl = document.createElement('span');
+    numEl.className = 'bookmark-item-num';
+    numEl.textContent = num;
+
+    const meta = document.createElement('div');
+    meta.className = 'bookmark-item-meta';
+    const fileEl = document.createElement('span');
+    fileEl.className = 'bookmark-item-file';
+    fileEl.textContent = baseName(l.file);
+    fileEl.title = l.file;
+    const textEl = document.createElement('span');
+    textEl.className = 'bookmark-item-text';
+    const preview = l.message || (l.name ? `${l.name}: ` : '');
+    textEl.textContent = preview || '(empty)';
+    textEl.title = preview;
+    meta.append(fileEl, textEl);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'bookmark-item-del';
+    del.setAttribute('aria-label', `Delete bookmark for line ${num}`);
+    del.tabIndex = -1;
+    del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+    item.append(numEl, meta, del);
+    return item;
+  },
+
   renderBookmarkList() {
     const list = els.bookmarkList;
     list.replaceChildren();
@@ -3756,40 +3949,36 @@ const App = {
     if (!nums.length) return;
     const frag = document.createDocumentFragment();
     for (const num of nums) {
-      const l = State.byNum.get(num);
-      if (!l) continue;
-      const item = document.createElement('div');
-      item.className = 'bookmark-item';
-      item.dataset.num = num;
-
-      const numEl = document.createElement('span');
-      numEl.className = 'bookmark-item-num';
-      numEl.textContent = num;
-
-      const meta = document.createElement('div');
-      meta.className = 'bookmark-item-meta';
-      const fileEl = document.createElement('span');
-      fileEl.className = 'bookmark-item-file';
-      fileEl.textContent = baseName(l.file);
-      fileEl.title = l.file;
-      const textEl = document.createElement('span');
-      textEl.className = 'bookmark-item-text';
-      const preview = l.message || (l.name ? `${l.name}: ` : '');
-      textEl.textContent = preview || '(empty)';
-      textEl.title = preview;
-      meta.append(fileEl, textEl);
-
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'bookmark-item-del';
-      del.setAttribute('aria-label', `Delete bookmark for line ${num}`);
-      del.tabIndex = -1;
-      del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-
-      item.append(numEl, meta, del);
-      frag.appendChild(item);
+      const item = App.buildBookmarkItem(num);
+      if (item) frag.appendChild(item);
     }
     list.appendChild(frag);
+  },
+
+  addBookmarkItem(num) {
+    const list = els.bookmarkList;
+    if (list.querySelector(`.bookmark-item[data-num="${num}"]`)) return;
+    const item = App.buildBookmarkItem(num);
+    if (!item) return;
+    flipList(list, () => {
+      let anchor = null;
+      for (const el of list.children) {
+        if (Number(el.dataset.num) > num) { anchor = el; break; }
+      }
+      list.insertBefore(item, anchor);
+    });
+  },
+
+  removeBookmarkItem(num) {
+    const list = els.bookmarkList;
+    const item = list.querySelector(`.bookmark-item[data-num="${num}"]`);
+    if (!item) return;
+    if (reducedMotion()) {
+      item.remove();
+      return;
+    }
+    item.classList.add('is-removing');
+    setTimeout(() => flipList(list, () => item.remove()), CFG.anim.itemMs);
   },
 
   scrollToLine(num) {
@@ -3974,19 +4163,7 @@ const App = {
     if (State.saveTimer) {
       clearTimeout(State.saveTimer);
       State.saveTimer = null;
-      const id = State.projectId;
-      const data = State.toData();
-      (async () => {
-        try {
-          if (window.CSTL?.plugins) await CSTL.plugins.runHooks('beforeSave', data);
-          await Storage.saveProject(id, data);
-          await Storage.upsertProjectIndexEntry(Storage.projectIndexEntry(id, data, Date.now()));
-          if (window.CSTL?.plugins) await CSTL.plugins.runHooks('afterSave', data);
-        } catch (e) {
-          App.flash(friendlyError(e, "Couldn't save latest changes: "), true, 'error');
-        }
-        App.finishClose();
-      })();
+      State.persist({ silent: true }).then(() => App.finishClose());
     } else App.finishClose();
   },
 
@@ -4028,6 +4205,14 @@ const App = {
   applyHideTools() {
     els.split.classList.toggle('hide-tools', State.hideTools);
     requestAnimationFrame(() => App.main.forceUpdate());
+  },
+
+  setToolbarHidden(hidden) {
+    const tb = els.workspaceToolbar;
+    if (hidden === tb.classList.contains('hidden')) return;
+    if (hidden) tb.style.setProperty('--toolbar-h', tb.offsetHeight + 'px');
+    tb.classList.toggle('hidden', hidden);
+    els.btnShowHeader.classList.toggle('visible', hidden);
   },
 
   syncImportAccept() {
@@ -4113,10 +4298,43 @@ const App = {
     location.reload();
   },
 
-  ensureSW() {
-    if (App.swRegistered) return;
-    App.swRegistered = true;
-    navigator.serviceWorker.register('./sw.js').catch(() => { App.swRegistered = false; });
+  hideBootSplash() {
+    if (App.bootHidden || !els.bootSplash) return;
+    App.bootHidden = true;
+    els.bootSplash.classList.add('hidden');
+    setTimeout(() => els.bootSplash.remove(), 400);
+  },
+
+  onSwControllerChange() {
+    const last = Number(sessionStorage.getItem('swReloadAt')) || 0;
+    if (Date.now() - last < 5000) return;
+    sessionStorage.setItem('swReloadAt', String(Date.now()));
+    location.reload();
+  },
+
+  async swFlow() {
+    if (!('serviceWorker' in navigator)) return;
+    let reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) {
+      try { reg = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }); }
+      catch { return; }
+    }
+    navigator.serviceWorker.addEventListener('controllerchange', App.onSwControllerChange);
+    const hasActive = () => !!(navigator.serviceWorker.controller || reg.active);
+    if (!hasActive() || !navigator.onLine) return;
+    let updating = false;
+    reg.addEventListener('updatefound', () => {
+      if (!hasActive()) return;
+      updating = true;
+    });
+    try { await reg.update(); }
+    catch { return; }
+    if (!updating && !reg.waiting && !(reg.installing && hasActive())) {
+      navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).catch(() => {});
+      return;
+    }
+    await new Promise(r => setTimeout(r, 15000));
+    navigator.serviceWorker.removeEventListener('controllerchange', App.onSwControllerChange);
   },
 
   checkStorageAlive() {
@@ -4457,14 +4675,32 @@ const App = {
       if (!await App.dialogConfirm(`Delete "${p.name}"?`, 'This project and all its data will be permanently deleted.')) return;
       try {
         await Storage.deleteProject(p.id);
-        card.classList.add('is-removing');
-        setTimeout(() => App.loadDashboard(), 280);
+        App.removeProjectCard(card, p.id);
       } catch (e) {
         App.flash(friendlyError(e, "Couldn't delete: "), true, 'error');
         if (e?.storage) App.loadDashboard();
       }
     });
     return card;
+  },
+
+  removeProjectCard(card, id) {
+    App.dashboardAllItems = App.dashboardAllItems.filter(x => x.id !== id);
+    App.dashboardItems = App.dashboardItems.filter(x => x.id !== id);
+    const count = App.dashboardAllItems.length;
+    els.projectCount.textContent = count;
+    els.projectCount.hidden = count === 0;
+    els.heroActions.style.display = count ? '' : 'none';
+    if (count === 0) {
+      App.loadDashboard();
+      return;
+    }
+    if (reducedMotion()) {
+      card.remove();
+      return;
+    }
+    card.classList.add('is-removing');
+    setTimeout(() => flipList(els.projectList, () => card.remove()), CFG.anim.cardMs);
   },
 
   async backup(p) {
@@ -4528,7 +4764,7 @@ const App = {
     App.updateFileBadge();
     App.updateButtons();
     App.syncBookmarkUI();
-    if (State.namesDirty) { App.renderNames(); State.namesDirty = false; }
+    App.scheduleRenderNames();
     App.updateStatusBar();
     els.btnUndo.disabled = State.undoStack.length === 0;
     els.btnRedo.disabled = State.redoStack.length === 0;
@@ -4780,6 +5016,20 @@ const App = {
     }
   },
 
+  patchSelectedRow(num) {
+    App.main.patch(`l:${num}`, row => {
+      const l = State.byNum.get(num);
+      if (!l) return;
+      const sel = State.selected.has(num);
+      row.classList.toggle('row-selected', sel);
+      const cb = row._cb;
+      if (cb && Number(cb.dataset.num) === num) {
+        cb.checked = sel;
+        cb.disabled = isTrans(l);
+      }
+    });
+  },
+
   syncCheckboxes() {
     App.main.forceUpdate();
     App.updateFileBadge();
@@ -4792,7 +5042,19 @@ const App = {
     return Array.from(set).sort();
   },
 
-  renderNames() {
+  scheduleRenderNames() {
+    App._namesReq = (App._namesReq || 0) + 1;
+    if (App._namesScheduled) return;
+    App._namesScheduled = true;
+    requestIdleCallback(() => {
+      App._namesScheduled = false;
+      if (!State.namesDirty) return;
+      State.namesDirty = false;
+      App.renderNames(App._namesReq);
+    });
+  },
+
+  async renderNames(req) {
     const arr = App.uniqueNames();
     els.nameTotalCount.textContent = arr.length;
 
@@ -4808,11 +5070,16 @@ const App = {
     const body = els.nameTableBody;
     body.replaceChildren();
     const frag = document.createDocumentFragment();
-    for (const name of arr) {
+    for (let i = 0; i < arr.length; i++) {
+      if (req !== undefined && req !== App._namesReq) return;
+      if (i && i % CFG.chunkSize.namesBatch === 0) {
+        body.appendChild(frag);
+        await yieldToEvent();
+      }
       const tr = document.createElement('tr');
       const td = document.createElement('td');
       td.className = 'mono';
-      td.textContent = name;
+      td.textContent = arr[i];
       td.title = 'Click to copy';
       tr.appendChild(td);
       frag.appendChild(tr);
@@ -4999,7 +5266,7 @@ const App = {
 
     if (errors.length) return App.flash('REJECTED:\n' + errors.slice(0, CFG.warningDisplayMax).join('\n') + (errors.length > CFG.warningDisplayMax ? `\n+${errors.length - CFG.warningDisplayMax} more errors` : ''), true, 'error');
 
-    State.undoStack.push(snapshot()); State.redoStack = [];
+    pushHistory();
     updates.forEach(({ line, item }) => {
       line.trans_message = item.msg;
       line.is_translated = true;
@@ -5018,7 +5285,7 @@ const App = {
     App.updateFileBadge();
     App.updateButtons();
     App.syncBookmarkUI();
-    if (State.namesDirty) { App.renderNames(); State.namesDirty = false; }
+    App.scheduleRenderNames();
     State.updateCount();
     App.updateStatusBar();
     els.btnUndo.disabled = State.undoStack.length === 0;
@@ -5093,6 +5360,7 @@ const App = {
     const from = stack.pop();
     const oppStack = dir === 'undo' ? State.redoStack : State.undoStack;
     oppStack.push(snapshot());
+    trimHistory(oppStack);
     State.lines = from.lines.map(normalizeLine);
     State.selected = new Set(from.selected);
     State.namesDirty = true;
@@ -5128,18 +5396,30 @@ const App = {
     if (els.lineTranslatedCheck.checked && !msg && hasMsg) return App.flash('Empty message.', true, 'error');
     const before = { trans_message: l.trans_message, trans_name: l.trans_name, is_translated: l.is_translated };
 
-    State.undoStack.push(snapshot()); State.redoStack = [];
+    pushHistory();
     l.trans_message = msg || null;
     l.is_translated = els.lineTranslatedCheck.checked && (!!msg || !hasMsg);
     if (l.name) l.trans_name = els.lineNameInput.value.trim().replace(/\r?\n/g, '\\n') || null;
 
     State.namesDirty = true;
     State.contentVersion++;
+    State.adjustCount(before.is_translated, l.is_translated);
     toggleModal(els.lineEditorModal, false);
-    App.refresh(true, `l:${l.line_num}`);
+    App.refreshLine(l.line_num);
     if (els.proofreadModal.classList.contains('open')) App.renderProofread();
     State.queueSave();
     CSTL.plugins.runHooksSync('lineSave', l.line_num, l, before);
+  },
+
+  refreshLine(num) {
+    const key = `l:${num}`;
+    if (!App.main.refreshItem(key)) App.main.invalidateHeight(key);
+    App.updateFileBadge();
+    App.updateButtons();
+    App.updateStatusBar();
+    App.scheduleRenderNames();
+    els.btnUndo.disabled = State.undoStack.length === 0;
+    els.btnRedo.disabled = State.redoStack.length === 0;
   },
 
   highlight(text, re) {
@@ -5268,7 +5548,7 @@ const App = {
 
     if (!result.count) return App.flash('No matches.', true, 'info');
 
-    State.undoStack.push(snapshot()); State.redoStack = [];
+    pushHistory();
     const modMap = new Map(result.modified.map(m => [m.line_num, m]));
     for (const l of State.lines) {
       const m = modMap.get(l.line_num);
@@ -5469,7 +5749,7 @@ const App = {
   updateLineExternal(num, changes) {
     const l = State.byNum.get(num);
     if (!l || !isPlainObject(changes)) return false;
-    State.undoStack.push(snapshot()); State.redoStack = [];
+    pushHistory();
     if ('message' in changes) l.message = String(changes.message ?? '');
     if ('name' in changes) l.name = changes.name == null ? null : stripNewlines(changes.name);
     if ('trans_message' in changes) l.trans_message = changes.trans_message == null ? null : String(changes.trans_message);
@@ -5495,7 +5775,7 @@ const App = {
       is_translated: false,
       _n: 1
     };
-    State.undoStack.push(snapshot()); State.redoStack = [];
+    pushHistory();
     State.lines.push(newLine);
     if (!State.files.includes(newLine.file)) State.files.push(newLine.file);
     State.namesDirty = true;
@@ -5508,7 +5788,7 @@ const App = {
   removeLineExternal(num) {
     const l = State.byNum.get(num);
     if (!l) return false;
-    State.undoStack.push(snapshot()); State.redoStack = [];
+    pushHistory();
     State.lines = State.lines.filter(x => x.line_num !== num);
     State.selected.delete(num);
     State.bookmarks = State.bookmarks.filter(b => b !== num);
@@ -5523,7 +5803,7 @@ const App = {
   markTranslatedExternal(num, transMsg, transName) {
     const l = State.byNum.get(num);
     if (!l) return false;
-    State.undoStack.push(snapshot()); State.redoStack = [];
+    pushHistory();
     l.trans_message = String(transMsg ?? '').replace(/\r?\n/g, '\\n').trim() || null;
     l.is_translated = true;
     if (transName != null) l.trans_name = stripNewlines(transName);

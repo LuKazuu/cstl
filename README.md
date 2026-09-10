@@ -450,7 +450,7 @@ A single project backup is a `.cstl` file containing a zip whose `project/` entr
 
 The app CSP allows `unsafe-inline`, `unsafe-eval`, and `wasm-unsafe-eval` scripts, `blob:` workers, and any HTTP/HTTPS/WebSocket connections. There is no `frame-src` since nothing needs iframes. `unsafe-eval` and `wasm-unsafe-eval` are what let plugin code and WASM modules actually run at all, they aren't there by accident.
 
-The service worker also serves the app cross-origin isolated (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`), so `SharedArrayBuffer` and threaded WASM are available to plugins. On first visit, or after a service worker update, the page reloads once automatically to pick this up.
+The service worker also serves the app cross-origin isolated (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`), so `SharedArrayBuffer` and threaded WASM are available to plugins. On every visit a full-screen loading screen covers the app while it checks for a newer build; if one is found it downloads and activates behind that screen, and the page reloads once so the new version is live on that same visit. This needs a connection, offline the cached version boots straight away.
 
 ### A note on trust
 
