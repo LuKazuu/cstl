@@ -58,6 +58,7 @@ const CFG = {
     cardMs: 200,
     flipMoveMs: 260,
     flipInMs: 180,
+    scrollToMs: 420,
   },
   saveChunkLines: 2000,
   delay: {
@@ -2202,7 +2203,8 @@ function cacheEls() {
     'busyOverlay', 'busyTitle', 'busyMsg', 'busyBarFill', 'busyActions', 'busyCancel',
     'bootSplash',
     'btnBookmarks', 'bookmarkPanel',
-    'bookmarkPanelCount', 'bookmarkList', 'btnBookmarkClear'
+    'bookmarkPanelCount', 'bookmarkList', 'btnBookmarkClear',
+    'imageLightbox', 'imageLightboxImg'
   ];
   for (const id of ids) els[id] = $(id);
   els.split = document.querySelector('.split');
@@ -2526,17 +2528,31 @@ class Scroller {
     return true;
   }
 
-  scrollToIndex(idx) {
+  scrollToIndex(idx, onDone) {
     if (idx < 0 || idx >= this.items.length) return;
     const vh = this.vp.clientHeight || this.defaultVH;
     const center = i => Math.max(0, (this.pos[i] || 0) - (vh / 2) + (this.heights[i] / 2));
-    const apply = () => {
+    const finish = () => {
       this.vp.scrollTop = center(idx);
       this.scrollTop = this.vp.scrollTop;
       this.render();
+      onDone?.();
     };
-    apply();
-    requestAnimationFrame(apply);
+    if (reducedMotion()) { finish(); return; }
+    const start = this.vp.scrollTop;
+    const startTime = performance.now();
+    const duration = CFG.anim.scrollToMs;
+    const ease = t => 1 - Math.pow(1 - t, 3);
+    const step = now => {
+      const t = Math.min(1, (now - startTime) / duration);
+      const target = center(idx);
+      this.vp.scrollTop = start + (target - start) * ease(t);
+      this.scrollTop = this.vp.scrollTop;
+      this.render();
+      if (t < 1) requestAnimationFrame(step);
+      else finish();
+    };
+    requestAnimationFrame(step);
   }
 
   forceUpdate() {
@@ -3771,6 +3787,8 @@ const App = {
         if (n) App.toggleBookmark(n);
         return;
       }
+      const imgEl = e.target.closest('.row-image-el');
+      if (imgEl && imgEl.src) { App.openImageLightbox(imgEl.src); return; }
       const wrap = e.target.closest('.text-content');
       if (!wrap) return;
       const row = wrap.closest('.preview-row');
@@ -3880,6 +3898,11 @@ const App = {
     });
   },
 
+  openImageLightbox(src) {
+    els.imageLightboxImg.src = src;
+    toggleModal(els.imageLightbox, true);
+  },
+
   toggleBookmark(num, force) {
     if (!num) return;
     const has = State.bookmarkSet.has(num);
@@ -3983,7 +4006,16 @@ const App = {
 
   scrollToLine(num) {
     const idx = State.indexOfLine(num);
-    if (idx !== -1) App.main.scrollToIndex(idx);
+    if (idx === -1) return;
+    App.main.scrollToIndex(idx, () => App.flashRow(num));
+  },
+
+  flashRow(num) {
+    App.main.patch(`l:${num}`, row => {
+      row.classList.remove('row-flash');
+      void row.offsetWidth;
+      row.classList.add('row-flash');
+    });
   },
 
   syncSettingsModal() {
