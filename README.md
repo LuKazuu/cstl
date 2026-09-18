@@ -45,6 +45,7 @@ Everything is stored in the browser's Origin Private File System (OPFS), which i
 OPFS root
 ├── app/
 │   ├── shortcuts.json         keyboard shortcut bindings
+│   ├── reader.json            immersive mode preferences (mode, text size, width, theme)
 │   └── plugin-settings.json   global plugin settings (project-scoped plugin settings live in each project)
 ├── plugins/
 │   ├── index.json             installed plugin list (cache, rebuildable)
@@ -94,6 +95,7 @@ All shortcuts are rebindable from the Shortcuts panel. Defaults while a project 
 | Alt+X | Open context |
 | Alt+S | Open project settings |
 | Alt+T | Show/hide toolbar |
+| Alt+I | Open immersive mode |
 | Alt+B | Back to dashboard |
 | Alt+A | Select all lines |
 | Alt+Q | Clear selection |

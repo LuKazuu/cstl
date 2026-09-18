@@ -28,6 +28,7 @@ const MEDIA_DIR = 'media';
 const DATA_DIR = 'data';
 const APP_SHORTCUTS_FILE = 'shortcuts.json';
 const APP_PLUGIN_SETTINGS_FILE = 'plugin-settings.json';
+const READER_FILE = 'reader.json';
 const BACKUP_FORMAT_PROJECT = 'cstl-project';
 const BACKUP_FORMAT_ALL = 'cstl-all';
 const BACKUP_VERSION = 1;
@@ -35,6 +36,14 @@ const DEFAULT_PROMPT = `Translate entire text to Native English. Euphemism prohi
 const DEFAULT_SUMMARY_PROMPT = `Outside the <translate> and </translate> tags (placed above or below the translated lines), include updated summary of the characters and overall story so far. Any characters and story need to be preserved even though they don't appear again for context.`;
 const FIXED_FORMAT_PROMPT = `Format:\n<translate>\ntext\n</translate>`;
 const DECODERS = ['utf-8', 'shift_jis', 'windows-31j', 'cp932'];
+
+const READER = {
+  modes: ['original', 'translation'],
+  widths: ['narrow', 'medium', 'wide'],
+  themes: ['dark', 'sepia', 'light'],
+  defaults: { mode: 'original', fontSize: 19, width: 'medium', theme: 'dark' },
+  font: { min: 14, max: 30 }
+};
 
 const CFG = {
   toastTimeoutMs: 3000,
@@ -50,6 +59,16 @@ const CFG = {
     topPad: 8,
     botPad: 12,
     headerH: 32,
+    defaultViewportH: 800,
+    recyclePos: -10000,
+  },
+  reader: {
+    overscan: 8,
+    defaultH: 132,
+    gap: 20,
+    topPad: 28,
+    botPad: 108,
+    headerH: 56,
     defaultViewportH: 800,
     recyclePos: -10000,
   },
@@ -517,6 +536,13 @@ const Storage = {
   },
   writeGlobalPluginSettings(value) {
     return Storage.writeAppJson(APP_PLUGIN_SETTINGS_FILE, value);
+  },
+
+  async readReaderPrefs() {
+    return Storage.readAppJson(READER_FILE);
+  },
+  writeReaderPrefs(value) {
+    return Storage.writeAppJson(READER_FILE, value);
   },
 
   async readPluginIndex() {
@@ -1953,6 +1979,7 @@ const SHORTCUT_ACTIONS = [
   { id: 'work.context', label: 'Open Context', scope: 'workspace', def: 'Alt+X', run: () => els.btnContext.click() },
   { id: 'work.settings', label: 'Open Project Settings', scope: 'workspace', def: 'Alt+S', run: () => els.btnSettings.click() },
   { id: 'work.toggleToolbar', label: 'Show/Hide Toolbar', scope: 'workspace', def: 'Alt+T', run: () => els.btnToggleHeader.click() },
+  { id: 'work.immersive', label: 'Open Immersive Mode', scope: 'workspace', def: 'Alt+I', run: () => Immersive.open() },
   { id: 'work.back', label: 'Back to Dashboard', scope: 'workspace', def: 'Alt+B', run: () => App.closeProject() },
   { id: 'work.selectAll', label: 'Select All Lines', scope: 'workspace', def: 'Alt+A', run: () => els.btnSelectAll.click() },
   { id: 'work.clearSelection', label: 'Clear Selection', scope: 'workspace', def: 'Alt+Q', run: () => els.btnClearSelection.click() },
@@ -2170,7 +2197,12 @@ function cacheEls() {
     'importTranslationInput', 'importUntranslatedInput', 'importOriginalInput',
     'restoreProjectInput',
     'btnExport', 'exportDropdown', 'btnExportProject', 'btnExportTranslation', 'btnExportUntranslated', 'btnExportOriginal',
-    'btnProofread', 'btnGlossary', 'btnContext', 'btnSettings',
+    'btnProofread', 'btnGlossary', 'btnContext', 'btnSettings', 'btnImmersive',
+    'immersiveView', 'immersiveViewport', 'immersiveContainer', 'immersiveTitle',
+    'btnShowImmersiveHeader', 'btnHideImmersiveHeader',
+    'btnImmersiveMode', 'btnImmersiveStyle', 'immersiveStylePanel', 'btnImmersiveClose',
+    'btnImmersiveFontDown', 'immersiveFontValue', 'btnImmersiveFontUp', 'immersiveWidthGroup', 'immersiveThemeGroup',
+    'btnImmersiveBookmarks', 'immersiveBookmarkPanel', 'immersiveBookmarkCount', 'immersiveBookmarkList',
     'previewViewport', 'previewContainer', 'stickyFileBar', 'stickyFileName', 'stickyFileRange', 'stickyFileCheckbox',
     'progressText',
     'rangeFromInput', 'rangeToInput', 'btnSelectRange', 'btnClearSelection', 'btnSelectAll', 'btnCopyForAi',
@@ -2414,7 +2446,7 @@ State.queueSave = () => {
 };
 
 class Scroller {
-  constructor(viewport, container, create, update, keyOf) {
+  constructor(viewport, container, create, update, keyOf, layout = CFG.scroller) {
     this.vp = viewport;
     this.container = container;
     this.create = create;
@@ -2430,14 +2462,14 @@ class Scroller {
     this.slotByKey = new Map();
     this.heightByKey = new Map();
     this.measuredKeys = new Set();
-    this.defaultH = CFG.scroller.defaultH;
-    this.gap = CFG.scroller.gap;
-    this.topPad = CFG.scroller.topPad;
-    this.botPad = CFG.scroller.botPad;
-    this.headerH = CFG.scroller.headerH;
-    this.overscan = CFG.scroller.overscan;
-    this.recyclePos = CFG.scroller.recyclePos;
-    this.defaultVH = CFG.scroller.defaultViewportH;
+    this.defaultH = layout.defaultH;
+    this.gap = layout.gap;
+    this.topPad = layout.topPad;
+    this.botPad = layout.botPad;
+    this.headerH = layout.headerH;
+    this.overscan = layout.overscan;
+    this.recyclePos = layout.recyclePos;
+    this.defaultVH = layout.defaultViewportH;
     this.scrollTop = 0;
     this.totalH = 0;
     this.scheduled = false;
@@ -2526,6 +2558,16 @@ class Scroller {
     }
     this._positionAll();
     return true;
+  }
+
+  firstVisibleIndex() {
+    if (!this.items.length) return -1;
+    return this._findStart(this.scrollTop);
+  }
+
+  setScrollTop(px) {
+    this.vp.scrollTop = Math.max(0, px);
+    this.scrollTop = this.vp.scrollTop;
   }
 
   scrollToIndex(idx, onDone) {
@@ -2627,7 +2669,8 @@ class Scroller {
       return false;
     }
     const vh = this.vp.clientHeight || this.defaultVH;
-    const vStart = this._findStart(this.scrollTop);
+    const scrollTop = this.scrollTop = this.vp.scrollTop;
+    const vStart = this._findStart(scrollTop);
     const vEnd = this._findEnd(vStart, vh);
     const rStart = Math.max(0, vStart - this.overscan);
     const rEnd = Math.min(this.items.length, vEnd + this.overscan);
@@ -2635,18 +2678,16 @@ class Scroller {
     this._assign(rStart, rEnd);
     const heightsChanged = this._measure();
     this._position(rStart, rEnd);
-    if (!heightsChanged) return false;
-    const firstTop = this.pos[rStart];
-    const lastBot = rEnd < this.items.length
-      ? this.pos[rEnd - 1] + this.heights[rEnd - 1]
-      : this.totalH;
-    return lastBot < this.scrollTop + vh || firstTop > this.scrollTop + 1;
+    const covered = rEnd >= this.items.length
+      || this.pos[rEnd - 1] + this.heights[rEnd - 1] >= scrollTop + vh;
+    if (!covered) return true;
+    return heightsChanged && this.pos[rStart] > scrollTop + 1;
   }
 
   _ensurePool(need) {
     while (this.els.length < need) {
       const el = this.create();
-      el.style.transform = `translateY(${this.recyclePos}px)`;
+      this._park(el);
       this.els.push(el);
       this.slots.push(-1);
       this.container.appendChild(el);
@@ -2672,7 +2713,7 @@ class Scroller {
       const oldKey = this.keys[this.slots[i]];
       if (this.slotByKey.get(oldKey) === i) this.slotByKey.delete(oldKey);
       this.slots[i] = -1;
-      this.els[i].style.transform = `translateY(${this.recyclePos}px)`;
+      this._park(this.els[i]);
     }
   }
 
@@ -2710,9 +2751,9 @@ class Scroller {
     if (!isHeader) {
       const key = this.keys[di];
       if (this.measuredKeys.has(key)) {
-        if (this.measuredCount > 0) this.avgHeight += (h - (prev - this.gap)) / this.measuredCount;
+        if (this.measuredCount > 0) this.avgHeight += (total - prev) / this.measuredCount;
       } else {
-        this.avgHeight = (this.avgHeight * this.measuredCount + h) / (this.measuredCount + 1);
+        this.avgHeight = (this.avgHeight * this.measuredCount + total) / (this.measuredCount + 1);
         this.measuredCount++;
         this.measuredKeys.add(key);
       }
@@ -2735,6 +2776,14 @@ class Scroller {
     }
   }
 
+  _park(el) {
+    const t = `translateY(${this.recyclePos}px)`;
+    if (el._cstlT !== t) {
+      el.style.transform = t;
+      el._cstlT = t;
+    }
+  }
+
   _positionSlot(slot, di) {
     const el = this.els[slot];
     const t = `translateY(${this.pos[di]}px)`;
@@ -2746,8 +2795,7 @@ class Scroller {
 
   _releaseAll() {
     for (let i = 0; i < this.els.length; i++) {
-      this.els[i].style.transform = `translateY(${this.recyclePos}px)`;
-      this.els[i]._cstlT = null;
+      this._park(this.els[i]);
       this.slots[i] = -1;
     }
     this.slotByKey.clear();
@@ -3217,6 +3265,545 @@ const Exporter = {
   }
 };
 
+const Immersive = {
+  scroller: null,
+  prefs: { ...READER.defaults },
+  barEl: null,
+
+  async init() {
+    Immersive.barEl = document.querySelector('.immersive-bar');
+    Immersive.scroller = new Scroller(
+      els.immersiveViewport, els.immersiveContainer,
+      Immersive.createRow, Immersive.updateRow, Immersive.identityOf, CFG.reader
+    );
+    Immersive.bind();
+    Immersive.loadPrefs(await Storage.readReaderPrefs());
+    Immersive.applyPrefs();
+  },
+
+  bind() {
+    els.btnImmersiveMode.addEventListener('click', () => Immersive.setMode(Immersive.prefs.mode === 'translation' ? 'original' : 'translation'));
+    els.btnImmersiveClose.addEventListener('click', () => Immersive.close());
+    els.btnImmersiveStyle.addEventListener('click', () => Immersive.setStylePanel(!Immersive.stylePanelOpen()));
+    els.btnImmersiveFontDown.addEventListener('click', () => Immersive.setFont(Immersive.prefs.fontSize - 1, 'down'));
+    els.btnImmersiveFontUp.addEventListener('click', () => Immersive.setFont(Immersive.prefs.fontSize + 1, 'up'));
+    els.immersiveWidthGroup.addEventListener('click', e => {
+      const btn = e.target.closest('[data-width]');
+      if (btn) Immersive.setWidth(btn.dataset.width);
+    });
+    els.immersiveThemeGroup.addEventListener('click', e => {
+      const btn = e.target.closest('[data-theme]');
+      if (btn) Immersive.setTheme(btn.dataset.theme);
+    });
+    els.btnHideImmersiveHeader.addEventListener('click', () => Immersive.setHeaderHidden(true));
+    els.btnShowImmersiveHeader.addEventListener('click', () => Immersive.setHeaderHidden(false));
+    els.btnImmersiveBookmarks.addEventListener('click', () => Immersive.setBookmarkPanel(!Immersive.bookmarkPanelOpen()));
+    els.immersiveBookmarkList.addEventListener('click', e => {
+      const del = e.target.closest('.immersive-bookmark-item-del');
+      if (del) {
+        e.stopPropagation();
+        const num = Number(del.closest('.immersive-bookmark-item')?.dataset.num);
+        if (num) App.toggleBookmark(num, false);
+        return;
+      }
+      const item = e.target.closest('.immersive-bookmark-item');
+      if (!item) return;
+      const num = Number(item.dataset.num);
+      if (num) Immersive.scrollToLine(num);
+    });
+    els.immersiveContainer.addEventListener('click', e => {
+      const bm = e.target.closest('.immersive-bookmark-toggle');
+      if (bm) {
+        const num = Number(bm.dataset.num);
+        if (num) App.toggleBookmark(num);
+        return;
+      }
+      const img = e.target.closest('.immersive-image');
+      if (img?.src) App.openImageLightbox(img.src);
+    });
+    els.immersiveContainer.addEventListener('animationend', () => els.immersiveContainer.classList.remove('is-switching'));
+    els.immersiveView.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      if (Immersive.stylePanelOpen()) { e.stopPropagation(); Immersive.setStylePanel(false); return; }
+      if (Immersive.bookmarkPanelOpen()) { e.stopPropagation(); Immersive.setBookmarkPanel(false); }
+    }, true);
+    document.addEventListener('click', e => {
+      if (Immersive.stylePanelOpen() && !e.target.closest('#immersiveStylePanel') && !e.target.closest('#btnImmersiveStyle')) {
+        Immersive.setStylePanel(false);
+      }
+      if (Immersive.bookmarkPanelOpen() && !e.target.closest('#immersiveBookmarkPanel') && !e.target.closest('#btnImmersiveBookmarks')) {
+        Immersive.setBookmarkPanel(false);
+      }
+    });
+    window.addEventListener('resize', () => {
+      Immersive.positionSegThumb(els.immersiveWidthGroup);
+      Immersive.positionSegThumb(els.immersiveThemeGroup);
+    });
+  },
+
+  isOpen() {
+    return els.immersiveView.classList.contains('open');
+  },
+
+  open() {
+    if (Immersive.isOpen() || !State.lines.length) return;
+    els.immersiveTitle.textContent = State.projectName || '';
+    Immersive.setStylePanel(false);
+    Immersive.setBookmarkPanel(false);
+    Immersive.setHeaderHidden(false);
+    Immersive.updateBookmarkCount();
+    toggleModal(els.immersiveView, true);
+    Immersive.refresh(false);
+    els.immersiveViewport.focus({ preventScroll: true });
+  },
+
+  close() {
+    if (!Immersive.isOpen()) return;
+    Immersive.setStylePanel(false);
+    Immersive.setBookmarkPanel(false);
+    Immersive.setHeaderHidden(false);
+    toggleModal(els.immersiveView, false);
+    Immersive.scroller.setItems([], true);
+  },
+
+  stylePanelOpen() {
+    return els.immersiveStylePanel.classList.contains('show');
+  },
+
+  setStylePanel(show) {
+    els.immersiveStylePanel.classList.toggle('show', !!show);
+    if (show) {
+      Immersive.setBookmarkPanel(false);
+      requestAnimationFrame(() => {
+        Immersive.positionSegThumb(els.immersiveWidthGroup);
+        Immersive.positionSegThumb(els.immersiveThemeGroup);
+      });
+    }
+  },
+
+  bookmarkPanelOpen() {
+    return els.immersiveBookmarkPanel.classList.contains('show');
+  },
+
+  setBookmarkPanel(show) {
+    els.immersiveBookmarkPanel.classList.toggle('show', !!show);
+    els.btnImmersiveBookmarks.setAttribute('aria-expanded', show ? 'true' : 'false');
+    if (show) {
+      Immersive.setStylePanel(false);
+      Immersive.renderBookmarkList();
+    }
+  },
+
+  setHeaderHidden(hidden) {
+    const bar = Immersive.barEl;
+    if (!bar || hidden === bar.classList.contains('hidden')) return;
+    if (hidden) {
+      bar.style.setProperty('--im-bar-h', bar.offsetHeight + 'px');
+      Immersive.setStylePanel(false);
+      Immersive.setBookmarkPanel(false);
+    }
+    bar.classList.toggle('hidden', hidden);
+    els.btnShowImmersiveHeader.classList.toggle('visible', hidden);
+  },
+
+  refresh(keepPosition = true) {
+    const scroller = Immersive.scroller;
+    const anchor = keepPosition ? Immersive.captureAnchor() : null;
+    scroller.setItems(State.rows, true);
+    if (anchor) Immersive.anchorTo(anchor);
+    else {
+      scroller.setScrollTop(0);
+      scroller.forceUpdate();
+    }
+  },
+
+  _reflowRaf: 0,
+
+  reflow() {
+    if (!Immersive.isOpen()) return;
+    if (Immersive._reflowRaf) cancelAnimationFrame(Immersive._reflowRaf);
+    const scroller = Immersive.scroller;
+    const anchor = Immersive.captureAnchor();
+    scroller.heightByKey.clear();
+    scroller.measuredKeys.clear();
+    scroller.measuredCount = 0;
+    scroller.heights = scroller.items.map(it => scroller._estHeight(it));
+    scroller._updatePos();
+    if (!anchor) { scroller.forceUpdate(); return; }
+    const index = scroller.items.findIndex(it => Immersive.identityOf(it) === anchor.id);
+    if (index < 0) { scroller.forceUpdate(); return; }
+    scroller.setScrollTop(scroller.pos[index] + anchor.offset);
+    scroller.forceUpdate();
+    for (let i = 0; i < scroller.slots.length; i++) {
+      if (scroller.slots[i] === -1) scroller._park(scroller.els[i]);
+    }
+    Immersive._reflowRaf = requestAnimationFrame(() => {
+      Immersive._reflowRaf = 0;
+      const slot = scroller.slotByKey.get(scroller.keys[index]);
+      if (slot !== undefined) {
+        const drift = scroller.els[slot].getBoundingClientRect().top - scroller.vp.getBoundingClientRect().top + anchor.offset;
+        if (Math.abs(drift) > 0.5) {
+          scroller.setScrollTop(scroller.vp.scrollTop + drift);
+          scroller.render();
+          for (let i = 0; i < scroller.slots.length; i++) {
+            if (scroller.slots[i] === -1) scroller._park(scroller.els[i]);
+          }
+        }
+      }
+    });
+  },
+
+  captureAnchor() {
+    const scroller = Immersive.scroller;
+    const index = scroller.firstVisibleIndex();
+    if (index < 0) return null;
+    return {
+      id: Immersive.identityOf(scroller.items[index]),
+      offset: Math.max(0, scroller.scrollTop - scroller.pos[index])
+    };
+  },
+
+  anchorTo(anchor, tries = 3) {
+    const scroller = Immersive.scroller;
+    const index = anchor ? scroller.items.findIndex(it => Immersive.identityOf(it) === anchor.id) : -1;
+    if (index < 0) return;
+    scroller.setScrollTop(scroller.pos[index] + anchor.offset);
+    scroller.forceUpdate();
+    const slot = scroller.slotByKey.get(scroller.keys[index]);
+    if (slot !== undefined) {
+      const drift = scroller.els[slot].getBoundingClientRect().top - scroller.vp.getBoundingClientRect().top + anchor.offset;
+      if (Math.abs(drift) > 0.5) scroller.setScrollTop(scroller.vp.scrollTop + drift);
+    }
+    if (tries > 0) requestAnimationFrame(() => Immersive.anchorTo(anchor, tries - 1));
+  },
+
+  identityOf(item) {
+    if (item.type === 'header') return `h:${item.file}`;
+    if (item.type === 'image') {
+      const im = item.img;
+      return `i:${im.isCover ? 'cover' : im.file || ''}:${im.zipPath || im.mediaPath}:${im.insertAfter ?? 'c'}`;
+    }
+    return `l:${item.line.line_num}`;
+  },
+
+  createRow() {
+    const row = document.createElement('div');
+    row.className = 'immersive-row';
+
+    const divider = document.createElement('div');
+    divider.className = 'immersive-divider';
+    const dividerName = document.createElement('span');
+    divider.append(dividerName);
+
+    const figure = document.createElement('figure');
+    figure.className = 'immersive-figure';
+    const img = document.createElement('img');
+    img.className = 'immersive-image';
+    img.alt = '';
+    img.decoding = 'async';
+    figure.append(img);
+
+    const block = document.createElement('div');
+    block.className = 'immersive-block';
+    const body = document.createElement('div');
+    body.className = 'immersive-block-body';
+    const name = document.createElement('span');
+    name.className = 'immersive-name';
+    const text = document.createElement('p');
+    text.className = 'immersive-text';
+    body.append(name, text);
+
+    const bm = document.createElement('button');
+    bm.type = 'button';
+    bm.className = 'immersive-bookmark-toggle';
+    bm.setAttribute('aria-label', 'Toggle bookmark');
+    bm.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
+
+    block.append(body, bm);
+    row.append(divider, figure, block);
+    row._divider = divider;
+    row._dividerName = dividerName;
+    row._figure = figure;
+    row._img = img;
+    row._block = block;
+    row._bm = bm;
+    row._name = name;
+    row._text = text;
+    row._imgToken = 0;
+    return row;
+  },
+
+  updateRow(row, item) {
+    row._divider.hidden = true;
+    row._figure.hidden = true;
+    row._block.hidden = true;
+    row._imgToken++;
+
+    if (item.type === 'header') {
+      row._dividerName.textContent = baseName(item.file);
+      row._divider.hidden = false;
+      return;
+    }
+    if (item.type === 'image') {
+      row._figure.hidden = false;
+      Immersive.loadImage(row, item);
+      return;
+    }
+
+    const l = item.line;
+    const translated = Immersive.prefs.mode === 'translation' && isTrans(l);
+    const name = translated ? (l.trans_name || l.name) : l.name;
+    row._name.textContent = name || '';
+    row._name.hidden = !name;
+    row._text.textContent = translated ? l.trans_message : l.message;
+    row._block.classList.toggle('is-untranslated', Immersive.prefs.mode === 'translation' && !translated);
+    row._block.hidden = false;
+
+    const isBm = State.bookmarkSet.has(l.line_num);
+    row._bm.classList.toggle('is-active', isBm);
+    row._bm.dataset.num = l.line_num;
+    row._bm.setAttribute('aria-pressed', isBm ? 'true' : 'false');
+    row._bm.title = isBm ? 'Remove bookmark' : 'Add bookmark';
+  },
+
+  loadImage(row, item) {
+    const entry = item.img;
+    const cached = EpubImages.peekUrl(State.projectId, entry.mediaPath || entry.zipPath);
+    if (cached && row._img.getAttribute('src') === cached) return;
+
+    const key = Immersive.identityOf(item);
+    const token = ++row._imgToken;
+    row._img.removeAttribute('src');
+    row._figure.classList.remove('is-error');
+
+    const show = url => {
+      if (row._imgToken !== token) return;
+      row._figure.classList.remove('is-loading');
+      if (!url) {
+        row._figure.classList.add('is-error');
+        Immersive.scroller.refreshItem(key);
+        return;
+      }
+      row._img.onload = () => {
+        row._img.onload = null;
+        row._img.onerror = null;
+        if (row._imgToken === token) Immersive.scroller.refreshItem(key);
+      };
+      row._img.onerror = () => {
+        row._img.onerror = null;
+        if (row._imgToken !== token) return;
+        row._img.removeAttribute('src');
+        row._figure.classList.add('is-error');
+        Immersive.scroller.refreshItem(key);
+      };
+      row._img.src = url;
+    };
+
+    if (cached !== undefined) { show(cached); return; }
+    row._figure.classList.add('is-loading');
+    const promise = entry.mediaPath
+      ? EpubImages.getUrlFromMediaPath(State.projectId, entry.mediaPath)
+      : EpubImages.getUrl(State.projectId, entry.zipPath);
+    promise.then(show).catch(e => { console.error('[reader] image failed:', e); show(null); });
+  },
+
+  loadPrefs(raw) {
+    if (!isPlainObject(raw)) return;
+    const p = Immersive.prefs;
+    if (READER.modes.includes(raw.mode)) p.mode = raw.mode;
+    if (READER.widths.includes(raw.width)) p.width = raw.width;
+    if (READER.themes.includes(raw.theme)) p.theme = raw.theme;
+    const size = Number(raw.fontSize);
+    if (Number.isFinite(size)) p.fontSize = Math.min(READER.font.max, Math.max(READER.font.min, Math.round(size)));
+  },
+
+  save() {
+    Storage.writeReaderPrefs({ ...Immersive.prefs }).catch(e => console.error('[reader] save failed:', e));
+  },
+
+  applyPrefs() {
+    const p = Immersive.prefs;
+    const view = els.immersiveView;
+    READER.widths.forEach(w => view.classList.toggle(`is-${w}`, p.width === w));
+    READER.themes.forEach(t => view.classList.toggle(`theme-${t}`, p.theme === t));
+    view.style.setProperty('--im-size', `${p.fontSize}px`);
+    els.immersiveFontValue.textContent = String(p.fontSize);
+    els.immersiveWidthGroup.querySelectorAll('[data-width]').forEach(b => b.classList.toggle('active', b.dataset.width === p.width));
+    els.immersiveThemeGroup.querySelectorAll('[data-theme]').forEach(b => b.classList.toggle('active', b.dataset.theme === p.theme));
+    Immersive.positionSegThumb(els.immersiveWidthGroup);
+    Immersive.positionSegThumb(els.immersiveThemeGroup);
+    Immersive.applyMode();
+  },
+
+  positionSegThumb(group) {
+    const thumb = group.querySelector('.immersive-seg-thumb');
+    const active = group.querySelector('.immersive-seg-btn.active');
+    if (!thumb || !active) return;
+    thumb.style.left = `${active.offsetLeft}px`;
+    thumb.style.width = `${active.offsetWidth}px`;
+  },
+
+  applyMode() {
+    const translated = Immersive.prefs.mode === 'translation';
+    els.btnImmersiveMode.setAttribute('aria-pressed', translated ? 'true' : 'false');
+    els.btnImmersiveMode.title = translated ? 'Translation (click for original)' : 'Original (click for translation)';
+  },
+
+  setMode(mode) {
+    if (!READER.modes.includes(mode) || mode === Immersive.prefs.mode) return;
+    Immersive.prefs.mode = mode;
+    Immersive.save();
+    Immersive.applyMode();
+    if (!Immersive.isOpen()) return;
+    Immersive.refresh();
+    const container = els.immersiveContainer;
+    container.classList.remove('is-switching');
+    void container.offsetWidth;
+    container.classList.add('is-switching');
+  },
+
+  setFont(size, dir) {
+    const clamped = Math.min(READER.font.max, Math.max(READER.font.min, Math.round(size)));
+    if (clamped === Immersive.prefs.fontSize) return;
+    Immersive.prefs.fontSize = clamped;
+    Immersive.save();
+    Immersive.applyPrefs();
+    Immersive.reflow();
+    const span = els.immersiveFontValue;
+    span.classList.remove('is-up', 'is-down');
+    void span.offsetWidth;
+    span.classList.add(dir === 'up' ? 'is-up' : 'is-down');
+  },
+
+  setWidth(width) {
+    if (!READER.widths.includes(width) || width === Immersive.prefs.width) return;
+    Immersive.prefs.width = width;
+    Immersive.save();
+    Immersive.applyPrefs();
+    Immersive.reflow();
+  },
+
+  setTheme(theme) {
+    if (!READER.themes.includes(theme) || theme === Immersive.prefs.theme) return;
+    Immersive.prefs.theme = theme;
+    Immersive.save();
+    Immersive.applyPrefs();
+  },
+
+  syncBookmark(num, added) {
+    if (!Immersive.isOpen()) return;
+    Immersive.scroller.patch(Immersive.identityOf({ type: 'line', line: { line_num: num } }), row => {
+      if (!row._bm) return;
+      row._bm.classList.toggle('is-active', added);
+      row._bm.setAttribute('aria-pressed', added ? 'true' : 'false');
+      row._bm.title = added ? 'Remove bookmark' : 'Add bookmark';
+    });
+    if (Immersive.bookmarkPanelOpen()) {
+      if (added) Immersive.addBookmarkItem(num);
+      else Immersive.removeBookmarkItem(num);
+    }
+  },
+
+  syncAllBookmarks() {
+    if (!Immersive.isOpen()) return;
+    Immersive.updateBookmarkCount();
+    Immersive.scroller.forceUpdate();
+    if (Immersive.bookmarkPanelOpen()) Immersive.renderBookmarkList();
+  },
+
+  updateBookmarkCount() {
+    els.immersiveBookmarkCount.textContent = `(${State.bookmarks.length})`;
+  },
+
+  buildBookmarkItem(num) {
+    const l = State.byNum.get(num);
+    if (!l) return null;
+    const item = document.createElement('div');
+    item.className = 'immersive-bookmark-item';
+    item.dataset.num = num;
+
+    const numEl = document.createElement('span');
+    numEl.className = 'immersive-bookmark-item-num';
+    numEl.textContent = num;
+
+    const meta = document.createElement('div');
+    meta.className = 'immersive-bookmark-item-meta';
+    const fileEl = document.createElement('span');
+    fileEl.className = 'immersive-bookmark-item-file';
+    fileEl.textContent = baseName(l.file);
+    fileEl.title = l.file;
+    const textEl = document.createElement('span');
+    textEl.className = 'immersive-bookmark-item-text';
+    const preview = l.message || (l.name ? `${l.name}: ` : '');
+    textEl.textContent = preview || '(empty)';
+    textEl.title = preview;
+    meta.append(fileEl, textEl);
+    if (isTrans(l) && l.trans_message) {
+      const transEl = document.createElement('span');
+      transEl.className = 'immersive-bookmark-item-trans';
+      transEl.textContent = l.trans_message;
+      transEl.title = l.trans_message;
+      meta.append(transEl);
+    }
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'immersive-bookmark-item-del';
+    del.setAttribute('aria-label', `Delete bookmark for line ${num}`);
+    del.tabIndex = -1;
+    del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+    item.append(numEl, meta, del);
+    return item;
+  },
+
+  renderBookmarkList() {
+    const list = els.immersiveBookmarkList;
+    list.replaceChildren();
+    const nums = [...State.bookmarks].sort((a, b) => a - b);
+    if (!nums.length) return;
+    const frag = document.createDocumentFragment();
+    for (const num of nums) {
+      const item = Immersive.buildBookmarkItem(num);
+      if (item) frag.appendChild(item);
+    }
+    list.appendChild(frag);
+  },
+
+  addBookmarkItem(num) {
+    const list = els.immersiveBookmarkList;
+    if (list.querySelector(`.immersive-bookmark-item[data-num="${num}"]`)) return;
+    const item = Immersive.buildBookmarkItem(num);
+    if (!item) return;
+    flipList(list, () => {
+      let anchor = null;
+      for (const el of list.children) {
+        if (Number(el.dataset.num) > num) { anchor = el; break; }
+      }
+      list.insertBefore(item, anchor);
+    });
+  },
+
+  removeBookmarkItem(num) {
+    const list = els.immersiveBookmarkList;
+    const item = list.querySelector(`.immersive-bookmark-item[data-num="${num}"]`);
+    if (!item) return;
+    if (reducedMotion()) {
+      item.remove();
+      return;
+    }
+    item.classList.add('is-removing');
+    setTimeout(() => flipList(list, () => item.remove()), CFG.anim.itemMs);
+  },
+
+  scrollToLine(num) {
+    const idx = State.indexOfLine(num);
+    if (idx === -1) return;
+    Immersive.scroller.scrollToIndex(idx);
+    Immersive.setBookmarkPanel(false);
+  }
+};
+
 const App = {
   main: null,
   pr: null,
@@ -3298,6 +3885,7 @@ const App = {
 
     App.bind();
     await Shortcuts.init();
+    await Immersive.init();
     CSTL.plugins.attach(PluginHost);
     await CSTL.plugins.init();
     App.syncImportAccept();
@@ -3344,6 +3932,7 @@ const App = {
       closeDropdowns();
       document.getElementById('btnPluginManagerOpen').click();
     });
+    els.btnImmersive.addEventListener('click', () => { closeDropdowns(); Immersive.open(); });
 
     let searchTimer = null;
     els.projectSearch.addEventListener('input', () => {
@@ -3860,6 +4449,7 @@ const App = {
       App.syncBookmarkUI();
       for (const n of nums) App.patchBookmarkRow(n);
       App.renderBookmarkList();
+      Immersive.syncAllBookmarks();
       State.queueSave();
     });
 
@@ -3920,6 +4510,7 @@ const App = {
       if (next) App.addBookmarkItem(num);
       else App.removeBookmarkItem(num);
     }
+    Immersive.syncBookmark(num, next);
     State.queueSave();
   },
 
@@ -3928,6 +4519,7 @@ const App = {
     els.bookmarkPanelCount.textContent = `(${count})`;
     els.btnBookmarks.disabled = !State.lines.length;
     els.btnBookmarkClear.disabled = count === 0;
+    Immersive.updateBookmarkCount();
   },
 
   buildBookmarkItem(num) {
@@ -3953,6 +4545,13 @@ const App = {
     textEl.textContent = preview || '(empty)';
     textEl.title = preview;
     meta.append(fileEl, textEl);
+    if (isTrans(l) && l.trans_message) {
+      const transEl = document.createElement('span');
+      transEl.className = 'bookmark-item-trans';
+      transEl.textContent = l.trans_message;
+      transEl.title = l.trans_message;
+      meta.append(transEl);
+    }
 
     const del = document.createElement('button');
     del.type = 'button';
@@ -4201,6 +4800,7 @@ const App = {
 
   finishClose() {
     CSTL.plugins.onProjectClosed();
+    Immersive.close();
     EpubImages.clear();
     State.resetTransient();
     App.syncImportAccept();
@@ -4800,12 +5400,13 @@ const App = {
     App.updateStatusBar();
     els.btnUndo.disabled = State.undoStack.length === 0;
     els.btnRedo.disabled = State.redoStack.length === 0;
+    if (Immersive.isOpen()) Immersive.refresh();
   },
 
   updateButtons() {
     const has = State.lines.length > 0;
     const sel = State.selected.size > 0;
-    [els.btnExport, els.btnProofread, els.btnSelectAll, els.pasteArea, els.btnApply, els.rangeFromInput, els.rangeToInput, els.btnSelectRange].forEach(b => { b.disabled = !has; });
+    [els.btnExport, els.btnProofread, els.btnSelectAll, els.pasteArea, els.btnApply, els.rangeFromInput, els.rangeToInput, els.btnSelectRange, els.btnImmersive].forEach(b => { b.disabled = !has; });
     els.btnClearSelection.disabled = !sel;
     els.btnCopyForAi.disabled = !sel;
     const n = State.selected.size;

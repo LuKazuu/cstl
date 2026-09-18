@@ -167,6 +167,9 @@
             <button id="btnContext" class="btn" title="Context" aria-label="Context">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             </button>
+            <button id="btnImmersive" class="btn" title="Immersive Mode" aria-label="Immersive Mode" disabled>
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
+            </button>
             <button id="btnOpenPlugins" class="btn" title="Plugin" aria-label="Plugin">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h4.5a2.5 2.5 0 1 1 5 0H19v4.5a2.5 2.5 0 1 1 0 5V19h-4.5a2.5 2.5 0 1 0-5 0H5v-4.5a2.5 2.5 0 1 0 0-5z"/></svg>
             </button>
@@ -604,6 +607,72 @@
       <div class="modal-actions">
         <span class="grow"></span>
         <button id="btnShortcutsClose" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="immersiveView" class="backdrop immersive-backdrop">
+    <div class="immersive-shell" role="dialog" aria-modal="true" aria-label="Immersive Mode">
+      <button id="btnShowImmersiveHeader" class="immersive-show-header" type="button" aria-label="Show Header">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <header class="immersive-bar">
+        <button id="btnImmersiveMode" class="immersive-mode-btn" type="button" aria-pressed="false" title="Original (click for translation)">
+          <svg class="immersive-mode-icon icon-original" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+          <svg class="immersive-mode-icon icon-translation" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+        </button>
+        <span id="immersiveTitle" class="immersive-title"></span>
+        <div class="immersive-bar-actions">
+          <button id="btnImmersiveBookmarks" class="immersive-icon-btn" type="button" title="Bookmarks" aria-label="Bookmarks" aria-haspopup="dialog" aria-expanded="false">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
+          </button>
+          <button id="btnImmersiveStyle" class="immersive-icon-btn" type="button" title="Reading Style" aria-label="Reading Style">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h11"/><path d="M18 5h3"/><circle cx="16" cy="5" r="2"/><path d="M3 12h5"/><path d="M12 12h9"/><circle cx="10" cy="12" r="2"/><path d="M3 19h13"/><path d="M20 19h1"/><circle cx="18" cy="19" r="2"/></svg>
+          </button>
+          <button id="btnHideImmersiveHeader" class="immersive-icon-btn" type="button" title="Hide Header" aria-label="Hide Header">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+          </button>
+          <button id="btnImmersiveClose" class="immersive-icon-btn" type="button" title="Close Immersive Mode" aria-label="Close Immersive Mode">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+        <div id="immersiveStylePanel" class="immersive-style-panel">
+          <div class="immersive-style-row">
+            <span class="immersive-style-label">Text Size</span>
+            <div class="immersive-stepper">
+              <button id="btnImmersiveFontDown" type="button" aria-label="Decrease text size">A−</button>
+              <span id="immersiveFontValue" class="mono">19</span>
+              <button id="btnImmersiveFontUp" type="button" aria-label="Increase text size">A+</button>
+            </div>
+          </div>
+          <div class="immersive-style-row">
+            <span class="immersive-style-label">Width</span>
+            <div id="immersiveWidthGroup" class="immersive-seg">
+              <span class="immersive-seg-thumb" aria-hidden="true"></span>
+              <button type="button" class="immersive-seg-btn" data-width="narrow">Narrow</button>
+              <button type="button" class="immersive-seg-btn" data-width="medium">Medium</button>
+              <button type="button" class="immersive-seg-btn" data-width="wide">Wide</button>
+            </div>
+          </div>
+          <div class="immersive-style-row">
+            <span class="immersive-style-label">Theme</span>
+            <div id="immersiveThemeGroup" class="immersive-seg">
+              <span class="immersive-seg-thumb" aria-hidden="true"></span>
+              <button type="button" class="immersive-seg-btn" data-theme="dark">Dark</button>
+              <button type="button" class="immersive-seg-btn" data-theme="sepia">Sepia</button>
+              <button type="button" class="immersive-seg-btn" data-theme="light">Light</button>
+            </div>
+          </div>
+        </div>
+        <div id="immersiveBookmarkPanel" class="immersive-bookmark-panel" role="dialog" aria-modal="false" aria-label="Bookmarks">
+          <div class="immersive-bookmark-head">
+            <span class="immersive-bookmark-title">Bookmarks <span id="immersiveBookmarkCount" class="immersive-bookmark-count">(0)</span></span>
+          </div>
+          <div id="immersiveBookmarkList" class="immersive-bookmark-list"></div>
+        </div>
+      </header>
+      <div id="immersiveViewport" class="immersive-viewport" tabindex="-1">
+        <div id="immersiveContainer" class="immersive-container"></div>
       </div>
     </div>
   </div>
