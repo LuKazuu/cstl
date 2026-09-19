@@ -104,6 +104,8 @@ function flipList(container, mutate) {
   const before = new Map();
   for (const el of container.children) before.set(el, el.getBoundingClientRect().top);
   mutate();
+  const after = new Map();
+  for (const el of container.children) after.set(el, el.getBoundingClientRect().top);
   for (const el of container.children) {
     const prevTop = before.get(el);
     if (prevTop === undefined) {
@@ -112,7 +114,7 @@ function flipList(container, mutate) {
         { duration: CFG.anim.flipInMs, easing: 'ease-out' }
       );
     } else {
-      const dy = prevTop - el.getBoundingClientRect().top;
+      const dy = prevTop - after.get(el);
       if (dy) {
         el.animate(
           [{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
@@ -185,6 +187,10 @@ const $ = id => document.getElementById(id);
 const { escapeHtml, humanBytes, validDataKey, sanitizeName, stripNewlines, isPlainObject } = CSTL.util;
 const baseName = p => String(p || '').replace(/\\/g, '/').split('/').pop();
 const fileExt = name => { const bn = baseName(name); const i = bn.lastIndexOf('.'); return i > 0 ? bn.slice(i).toLowerCase() : ''; };
+
+const _NEWLINE_RE = /\r?\n/g;
+const _JSON_EXT_SUFFIX_RE = /\.(?:json|xhtml|html)$/i;
+const _JSON_EXT_SUFFIX_GLOBAL_RE = /\.(?:xhtml|html|json)$/g;
 const readHead = async (file, n = 512) => new Uint8Array(await file.slice(0, n).arrayBuffer());
 const countFiles = files => (Array.isArray(files) ? files : []).length;
 const isTrans = l => !!l.is_translated;
@@ -209,6 +215,86 @@ function pushHistory() {
 }
 const assertJsZip = () => { if (typeof JSZip === 'undefined') throw new Error('JSZip is not available.'); };
 const yieldToEvent = () => new Promise(r => setTimeout(r, 0));
+
+const SVG_ICON = {
+  bookmark: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>',
+  close: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  reset: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>'
+};
+
+function buildBookmarkItemEl(num, prefix) {
+  const l = State.byNum.get(num);
+  if (!l) return null;
+  const item = document.createElement('div');
+  item.className = `${prefix}-item`;
+  item.dataset.num = num;
+  const numEl = document.createElement('span');
+  numEl.className = `${prefix}-item-num`;
+  numEl.textContent = num;
+  const meta = document.createElement('div');
+  meta.className = `${prefix}-item-meta`;
+  const fileEl = document.createElement('span');
+  fileEl.className = `${prefix}-item-file`;
+  fileEl.textContent = baseName(l.file);
+  fileEl.title = l.file;
+  const textEl = document.createElement('span');
+  textEl.className = `${prefix}-item-text`;
+  const preview = l.message || (l.name ? `${l.name}: ` : '');
+  textEl.textContent = preview || '(empty)';
+  textEl.title = preview;
+  meta.append(fileEl, textEl);
+  if (isTrans(l) && l.trans_message) {
+    const transEl = document.createElement('span');
+    transEl.className = `${prefix}-item-trans`;
+    transEl.textContent = l.trans_message;
+    transEl.title = l.trans_message;
+    meta.append(transEl);
+  }
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = `${prefix}-item-del`;
+  del.setAttribute('aria-label', `Delete bookmark for line ${num}`);
+  del.tabIndex = -1;
+  del.innerHTML = SVG_ICON.close;
+  item.append(numEl, meta, del);
+  return item;
+}
+
+function renderBookmarkListInto(list, prefix) {
+  list.replaceChildren();
+  const nums = [...State.bookmarks].sort((a, b) => a - b);
+  if (!nums.length) return;
+  const frag = document.createDocumentFragment();
+  for (const num of nums) {
+    const item = buildBookmarkItemEl(num, prefix);
+    if (item) frag.appendChild(item);
+  }
+  list.appendChild(frag);
+}
+
+function addBookmarkItemTo(list, num, prefix) {
+  if (list.querySelector(`.${prefix}-item[data-num="${num}"]`)) return;
+  const item = buildBookmarkItemEl(num, prefix);
+  if (!item) return;
+  flipList(list, () => {
+    let anchor = null;
+    for (const el of list.children) {
+      if (Number(el.dataset.num) > num) { anchor = el; break; }
+    }
+    list.insertBefore(item, anchor);
+  });
+}
+
+function removeBookmarkItemFrom(list, num, prefix) {
+  const item = list.querySelector(`.${prefix}-item[data-num="${num}"]`);
+  if (!item) return;
+  if (reducedMotion()) {
+    item.remove();
+    return;
+  }
+  item.classList.add('is-removing');
+  setTimeout(() => flipList(list, () => item.remove()), CFG.anim.itemMs);
+}
 
 async function serializeProjectJson(data) {
   const lines = data.lines;
@@ -340,7 +426,6 @@ async function withProgress(title, initialMsg, fn, failMsg) {
   });
   Progress.hide();
   if (err) {
-    els.copyStatus.classList.add('empty');
     const msg = err?.storage ? err.message : (failMsg ? failMsg(err) : err.message);
     App.flash(msg, true, 'error');
     if (err?.storage) App.loadDashboard();
@@ -1259,7 +1344,7 @@ const Html = {
         const zipPath = resolveZipPath(baseDir, src);
         if (zipPath) images.push({ afterIndex: texts.length - 1, zipPath });
       } else {
-        const txt = el.textContent.replace(/\r?\n/g, ' ').trim();
+        const txt = el.textContent.replace(_NEWLINE_RE, ' ').trim();
         if (txt) texts.push(txt);
       }
     });
@@ -1269,7 +1354,7 @@ const Html = {
     const doc = new DOMParser().parseFromString(html, isXhtml ? 'application/xhtml+xml' : 'text/html');
     let idx = 0;
     doc.querySelectorAll(tags).forEach(el => {
-      if (el.textContent.replace(/\r?\n/g, ' ').trim() === '') return;
+      if (el.textContent.replace(_NEWLINE_RE, ' ').trim() === '') return;
       const r = replacements[idx++];
       if (r != null) el.textContent = r;
     });
@@ -1386,7 +1471,7 @@ function parseJsonArray(arr, file, start) {
       line_num: n++,
       file,
       name: stripNewlines(e.name),
-      message: String(e.message || '').replace(/\r?\n/g, '\\n').trim(),
+      message: String(e.message || '').replace(_NEWLINE_RE, '\\n').trim(),
       trans_name: null,
       trans_message: null,
       is_translated: false
@@ -1410,7 +1495,7 @@ async function parseFilesList(files, existing, start, onProgress, label = 'file'
     const parsed = parseJsonArray(arr, bn, cur);
     if (parsed.lines.length) {
       existing.add(bn);
-      imported.push(...parsed.lines);
+      for (let j = 0; j < parsed.lines.length; j++) imported.push(parsed.lines[j]);
       cur += parsed.lines.length;
     }
     invalidEntries += parsed.skipped;
@@ -1432,7 +1517,7 @@ async function parseZipJson(buffer, existing, start, onProgress) {
   return parseFilesList(files, existing, start, onProgress, 'file');
 }
 
-const fileKeyOf = name => baseName(name).replace(/\.(json|xhtml|html)$/i, '').toLowerCase();
+const fileKeyOf = name => baseName(name).replace(_JSON_EXT_SUFFIX_RE, '').toLowerCase();
 
 async function readJsonInputs(files) {
   const out = [];
@@ -1550,13 +1635,15 @@ async function parseEpub(buffer, tags, existing, start, projectId, onProgress) {
   return { imported, skipped, nextStart: cur, existing: Array.from(existing), images };
 }
 
+const _NEWLINE_LITERAL_RE = /\\n/g;
+
 function lineToJsonEntry(l, forceOriginal) {
   const isT = forceOriginal ? false : !!l.is_translated;
   const name = isT ? (l.trans_name != null ? l.trans_name : l.name) : l.name;
   const msg = isT ? l.trans_message : l.message;
   const entry = {};
-  if (name != null) entry.name = name.replace(/\\n/g, '\n');
-  entry.message = (msg || '').replace(/\\n/g, '\n');
+  if (name != null) entry.name = name.replace(_NEWLINE_LITERAL_RE, '\n');
+  entry.message = (msg || '').replace(_NEWLINE_LITERAL_RE, '\n');
   return entry;
 }
 
@@ -1570,7 +1657,7 @@ async function buildExportJson(lines, projectName, onProgress, suffix = 'export'
     const kept = keepIf ? fileLines.filter(keepIf) : fileLines;
     if (kept.length) {
       results.push({
-        name: `${file.replace(/\.(xhtml|html|json)$/g, '')}.json`,
+        name: `${file.replace(_JSON_EXT_SUFFIX_GLOBAL_RE, '')}.json`,
         content: JSON.stringify(kept.map(l => lineToJsonEntry(l, forceOriginal)), null, 2)
       });
     }
@@ -2003,13 +2090,16 @@ const CODE_MAP = {
   NumpadDivide: '/', NumpadMultiply: '*', NumpadSubtract: '-', NumpadAdd: '+', NumpadDecimal: '.'
 };
 
+const _KEY_CODE_RE = /^(?:Key([A-Z])|Digit(\d))$/;
+const _FN_KEY_RE = /^F\d{1,2}$/;
+
 function normalizeKey(e) {
   if (IGNORED_KEYS.has(e.key)) return null;
   const code = e.code || '';
-  const m = code.match(/^(?:Key([A-Z])|Digit(\d))$/);
+  const m = _KEY_CODE_RE.exec(code);
   if (m) return m[1] || m[2];
   if (CODE_MAP[code]) return CODE_MAP[code];
-  if (/^F\d{1,2}$/.test(code)) return code;
+  if (_FN_KEY_RE.test(code)) return code;
   const k = e.key || '';
   if (k.length === 1) return k.toUpperCase();
   return null;
@@ -2184,6 +2274,7 @@ const els = {};
 
 function cacheEls() {
   const ids = [
+    'globalToast',
     'dashboardView', 'workspaceView', 'projectList',
     'projectCount', 'projectSearch', 'projectSearchClear', 'projectSort', 'projectSortBox', 'projectSortTrigger', 'projectSortMenu', 'projectSortLabel',
     'btnNewProject', 'btnRestoreProject', 'btnDashboardSettings', 'btnDashboardSettingsClose',
@@ -2206,7 +2297,7 @@ function cacheEls() {
     'previewViewport', 'previewContainer', 'stickyFileBar', 'stickyFileName', 'stickyFileRange', 'stickyFileCheckbox',
     'progressText',
     'rangeFromInput', 'rangeToInput', 'btnSelectRange', 'btnClearSelection', 'btnSelectAll', 'btnCopyForAi',
-    'copyStatus', 'pasteArea', 'btnUndo', 'btnApply', 'btnRedo',
+    'pasteArea', 'btnUndo', 'btnApply', 'btnRedo',
     'nameTotalCount', 'nameTableBody',
     'btnCopyAllNames', 'copyNamesDropdown',
     'btnCopyNamesPlain', 'btnCopyNamesWithGlossary', 'btnCopyNamesMissingGlossary',
@@ -2496,14 +2587,26 @@ class Scroller {
 
   setItems(items, keep = false) {
     const prevScroll = keep ? this.vp.scrollTop : 0;
-    this.items = items;
-    this.keys = items.map((it, i) => this.keyOf(it, i));
+    const n = items.length;
+    if (keep && items === this.items && this.keys.length === n) {
+      const maxScroll = Math.max(0, this.totalH - this.vp.clientHeight);
+      this.vp.scrollTop = Math.min(prevScroll, maxScroll);
+      this.scrollTop = this.vp.scrollTop;
+      this.invalidate();
+      this.render();
+      return;
+    }
     if (!keep) this._resetHeights();
-    this.heights = this.keys.map((k, i) => {
-      const cached = this.heightByKey.get(k);
-      return cached !== undefined ? cached : this._estHeight(items[i]);
-    });
-    this.pos = new Array(items.length);
+    if (this.keys.length !== n) this.keys = new Array(n);
+    if (this.heights.length !== n) this.heights = new Array(n);
+    if (this.pos.length !== n) this.pos = new Array(n);
+    this.items = items;
+    const keys = this.keys;
+    for (let i = 0; i < n; i++) keys[i] = this.keyOf(items[i], i);
+    for (let i = 0; i < n; i++) {
+      const cached = this.heightByKey.get(keys[i]);
+      this.heights[i] = cached !== undefined ? cached : this._estHeight(items[i]);
+    }
     this._updatePos();
     const maxScroll = Math.max(0, this.totalH - this.vp.clientHeight);
     this.vp.scrollTop = keep ? Math.min(prevScroll, maxScroll) : 0;
@@ -2514,7 +2617,10 @@ class Scroller {
 
   invalidateHeights() {
     this._resetHeights();
-    this.heights = this.items.map(it => this._estHeight(it));
+    const n = this.items.length;
+    if (this.heights.length !== n) this.heights = new Array(n);
+    const items = this.items, heights = this.heights;
+    for (let i = 0; i < n; i++) heights[i] = this._estHeight(items[i]);
     this._updatePos();
     const maxScroll = Math.max(0, this.totalH - this.vp.clientHeight);
     if (this.scrollTop > maxScroll) {
@@ -2550,7 +2656,7 @@ class Scroller {
     this.update(this.els[slot], this.items[di], di);
     const delta = this._measureSlot(slot, di);
     if (delta) {
-      this._updatePos();
+      this._updatePosFrom(di);
       if (this.pos[di] < this.scrollTop) {
         this.vp.scrollTop += delta;
         this.scrollTop = this.vp.scrollTop;
@@ -2573,26 +2679,28 @@ class Scroller {
   scrollToIndex(idx, onDone) {
     if (idx < 0 || idx >= this.items.length) return;
     const vh = this.vp.clientHeight || this.defaultVH;
-    const center = i => Math.max(0, (this.pos[i] || 0) - (vh / 2) + (this.heights[i] / 2));
-    const finish = () => {
-      this.vp.scrollTop = center(idx);
+    const computeTarget = () => Math.max(0, (this.pos[idx] || 0) - (vh / 2) + (this.heights[idx] / 2));
+    if (reducedMotion()) {
+      this.vp.scrollTop = computeTarget();
       this.scrollTop = this.vp.scrollTop;
       this.render();
       onDone?.();
-    };
-    if (reducedMotion()) { finish(); return; }
+      return;
+    }
     const start = this.vp.scrollTop;
     const startTime = performance.now();
     const duration = CFG.anim.scrollToMs;
     const ease = t => 1 - Math.pow(1 - t, 3);
     const step = now => {
       const t = Math.min(1, (now - startTime) / duration);
-      const target = center(idx);
+      const target = computeTarget();
       this.vp.scrollTop = start + (target - start) * ease(t);
       this.scrollTop = this.vp.scrollTop;
-      this.render();
       if (t < 1) requestAnimationFrame(step);
-      else finish();
+      else {
+        this.render();
+        onDone?.();
+      }
     };
     requestAnimationFrame(step);
   }
@@ -2634,6 +2742,26 @@ class Scroller {
     const heights = this.heights;
     let cur = this.topPad;
     for (let i = 0; i < pos.length; i++) {
+      pos[i] = cur;
+      cur += heights[i];
+    }
+    this.totalH = cur + this.botPad;
+    this.container.style.height = `${this.totalH}px`;
+  }
+
+  _updatePosFrom(startIdx) {
+    const pos = this.pos;
+    const heights = this.heights;
+    const n = pos.length;
+    if (startIdx < 0) startIdx = 0;
+    if (startIdx >= n) {
+      const last = n > 0 ? pos[n - 1] + heights[n - 1] : this.topPad;
+      this.totalH = last + this.botPad;
+      this.container.style.height = `${this.totalH}px`;
+      return;
+    }
+    let cur = startIdx > 0 ? pos[startIdx - 1] + heights[startIdx - 1] : this.topPad;
+    for (let i = startIdx; i < n; i++) {
       pos[i] = cur;
       cur += heights[i];
     }
@@ -2721,16 +2849,18 @@ class Scroller {
     if (!this.dirtySlots.length) return false;
     let changed = false;
     let adjust = 0;
+    let firstChangedIdx = -1;
     for (const slot of this.dirtySlots) {
       const di = this.slots[slot];
       const delta = this._measureSlot(slot, di);
       if (!delta) continue;
       changed = true;
+      if (firstChangedIdx === -1 || di < firstChangedIdx) firstChangedIdx = di;
       if (this.pos[di] < this.scrollTop) adjust += delta;
     }
     this.dirtySlots.length = 0;
     if (changed) {
-      this._updatePos();
+      this._updatePosFrom(firstChangedIdx);
       if (adjust) {
         this.vp.scrollTop += adjust;
         this.scrollTop = this.vp.scrollTop;
@@ -2786,7 +2916,8 @@ class Scroller {
 
   _positionSlot(slot, di) {
     const el = this.els[slot];
-    const t = `translateY(${this.pos[di]}px)`;
+    const y = Math.round(this.pos[di]);
+    const t = `translateY(${y}px)`;
     if (el._cstlT !== t) {
       el.style.transform = t;
       el._cstlT = t;
@@ -2827,7 +2958,7 @@ function toggleModal(el, show) {
 }
 
 function anyModalOpen() {
-  return document.querySelectorAll('.backdrop.open').length > 0;
+  return document.querySelector('.backdrop.open') !== null;
 }
 
 function topModal() {
@@ -3012,7 +3143,7 @@ const Importer = {
       }
 
       if (result.imported.length || (result.images && result.images.length)) {
-        State.lines.push(...result.imported);
+        for (let i = 0; i < result.imported.length; i++) State.lines.push(result.imported[i]);
         State.files = Array.from(result.existing || existing);
         if (result.images && result.images.length) {
           const known = new Set(State.images.map(im => `${im.zipPath}|${im.isCover ? 1 : 0}`));
@@ -3037,10 +3168,8 @@ const Importer = {
       } else if (result.cancelled) {
         App.flash('Import cancelled.');
       } else if (result.skipped.length) {
-        els.copyStatus.classList.add('empty');
         App.flash(`Import failed: Duplicate files.\n- ${result.skipped.slice(0, CFG.skippedFilesDisplayMax).join('\n- ')}`, true, 'error');
       } else if (result.invalidEntries) {
-        els.copyStatus.classList.add('empty');
         App.flash(`No valid lines could be imported. ${result.invalidEntries} entries do not have a "message" field.`, true, 'error');
       } else {
         App.flash('No valid data.');
@@ -3139,7 +3268,7 @@ const Importer = {
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           const l = targets[i];
-          const msg = e.message.replace(/\r?\n/g, '\\n').trim();
+          const msg = e.message.replace(_NEWLINE_RE, '\\n').trim();
           const nm = e.name == null ? null : stripNewlines(e.name);
           if (isTransMode) {
             l.trans_message = msg;
@@ -3166,6 +3295,20 @@ const Importer = {
 };
 
 const Exporter = {
+  async _runJsonExport(label, suffix, forceOriginal, keepIf, filterCheck, emptyMsg, emitMode) {
+    if (!State.lines.length) return;
+    if (filterCheck && !State.lines.some(filterCheck)) { App.flash(emptyMsg, true, 'error'); return; }
+    await withProgress(`Creating ${label.toLowerCase()}...`, 'Grouping lines...', async () => {
+      Progress.determinate(`Creating ${label}`, `0 file`);
+      const result = await buildExportJson(State.lines, State.projectName, Progress.update, suffix, forceOriginal, keepIf);
+      download(URL.createObjectURL(result.blob), result.name);
+      App.flash(`${label} export successful!`);
+      const payload = { filename: result.name };
+      if (emitMode) payload.mode = emitMode;
+      CSTL.plugins.emit('export', payload);
+    }, e => 'JSON export failed: ' + e.message);
+  },
+
   async runEpub() {
     await withProgress('Creating EPUB...', 'Loading archive...', async () => {
       Progress.determinate('Creating EPUB', `0 file`);
@@ -3176,50 +3319,10 @@ const Exporter = {
     }, e => 'EPUB export failed: ' + e.message);
   },
 
-  async runJson() {
-    await withProgress('Creating JSON...', 'Grouping lines...', async () => {
-      Progress.determinate('Creating JSON', `0 file`);
-      const result = await buildExportJson(State.lines, State.projectName, Progress.update, 'export', false);
-      download(URL.createObjectURL(result.blob), result.name);
-      App.flash('JSON export successful!');
-      CSTL.plugins.emit('export', { filename: result.name });
-    }, e => 'JSON export failed: ' + e.message);
-  },
-
-  async runTranslationJson() {
-    if (!State.lines.length) return;
-    if (!State.lines.some(isTrans)) { App.flash('No translated lines.', true, 'error'); return; }
-    await withProgress('Creating translation JSON...', 'Grouping lines...', async () => {
-      Progress.determinate('Creating translation JSON', `0 file`);
-      const result = await buildExportJson(State.lines, State.projectName, Progress.update, 'translation', false, isTrans);
-      download(URL.createObjectURL(result.blob), result.name);
-      App.flash('Translation export successful!');
-      CSTL.plugins.emit('export', { filename: result.name, mode: 'translation' });
-    }, e => 'JSON export failed: ' + e.message);
-  },
-
-  async runUntranslatedJson() {
-    if (!State.lines.length) return;
-    if (!State.lines.some(l => !isTrans(l))) { App.flash('No untranslated lines.', true, 'error'); return; }
-    await withProgress('Creating untranslated JSON...', 'Grouping lines...', async () => {
-      Progress.determinate('Creating untranslated JSON', `0 file`);
-      const result = await buildExportJson(State.lines, State.projectName, Progress.update, 'untranslated', false, l => !isTrans(l));
-      download(URL.createObjectURL(result.blob), result.name);
-      App.flash('Untranslated export successful!');
-      CSTL.plugins.emit('export', { filename: result.name, mode: 'untranslated' });
-    }, e => 'JSON export failed: ' + e.message);
-  },
-
-  async runOriginalJson() {
-    if (!State.lines.length) return;
-    await withProgress('Creating original text JSON...', 'Grouping lines...', async () => {
-      Progress.determinate('Creating original text JSON', `0 file`);
-      const result = await buildExportJson(State.lines, State.projectName, Progress.update, 'original', true);
-      download(URL.createObjectURL(result.blob), result.name);
-      App.flash('Original text export successful!');
-      CSTL.plugins.emit('export', { filename: result.name, mode: 'original' });
-    }, e => 'JSON export failed: ' + e.message);
-  },
+  runJson() { return this._runJsonExport('JSON', 'export', false, null, null, null, null); },
+  runTranslationJson() { return this._runJsonExport('translation', 'translation', false, isTrans, isTrans, 'No translated lines.', 'translation'); },
+  runUntranslatedJson() { return this._runJsonExport('untranslated', 'untranslated', false, l => !isTrans(l), l => !isTrans(l), 'No untranslated lines.', 'untranslated'); },
+  runOriginalJson() { return this._runJsonExport('original text', 'original', true, null, null, null, 'original'); },
 
   async runPlugin() {
     await withProgress('Creating file via plugin...', 'Loading plugin...', async () => {
@@ -3427,10 +3530,17 @@ const Immersive = {
     scroller.heightByKey.clear();
     scroller.measuredKeys.clear();
     scroller.measuredCount = 0;
-    scroller.heights = scroller.items.map(it => scroller._estHeight(it));
+    const items = scroller.items;
+    const n = items.length;
+    if (scroller.heights.length !== n) scroller.heights = new Array(n);
+    for (let i = 0; i < n; i++) scroller.heights[i] = scroller._estHeight(items[i]);
     scroller._updatePos();
     if (!anchor) { scroller.forceUpdate(); return; }
-    const index = scroller.items.findIndex(it => Immersive.identityOf(it) === anchor.id);
+    const anchorId = anchor.id;
+    let index = -1;
+    for (let i = 0; i < items.length; i++) {
+      if (Immersive.identityOf(items[i]) === anchorId) { index = i; break; }
+    }
     if (index < 0) { scroller.forceUpdate(); return; }
     scroller.setScrollTop(scroller.pos[index] + anchor.offset);
     scroller.forceUpdate();
@@ -3517,7 +3627,7 @@ const Immersive = {
     bm.type = 'button';
     bm.className = 'immersive-bookmark-toggle';
     bm.setAttribute('aria-label', 'Toggle bookmark');
-    bm.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
+    bm.innerHTML = SVG_ICON.bookmark;
 
     block.append(body, bm);
     row.append(divider, figure, block);
@@ -3715,86 +3825,13 @@ const Immersive = {
     els.immersiveBookmarkCount.textContent = `(${State.bookmarks.length})`;
   },
 
-  buildBookmarkItem(num) {
-    const l = State.byNum.get(num);
-    if (!l) return null;
-    const item = document.createElement('div');
-    item.className = 'immersive-bookmark-item';
-    item.dataset.num = num;
+  buildBookmarkItem(num) { return buildBookmarkItemEl(num, 'immersive-bookmark'); },
 
-    const numEl = document.createElement('span');
-    numEl.className = 'immersive-bookmark-item-num';
-    numEl.textContent = num;
+  renderBookmarkList() { renderBookmarkListInto(els.immersiveBookmarkList, 'immersive-bookmark'); },
 
-    const meta = document.createElement('div');
-    meta.className = 'immersive-bookmark-item-meta';
-    const fileEl = document.createElement('span');
-    fileEl.className = 'immersive-bookmark-item-file';
-    fileEl.textContent = baseName(l.file);
-    fileEl.title = l.file;
-    const textEl = document.createElement('span');
-    textEl.className = 'immersive-bookmark-item-text';
-    const preview = l.message || (l.name ? `${l.name}: ` : '');
-    textEl.textContent = preview || '(empty)';
-    textEl.title = preview;
-    meta.append(fileEl, textEl);
-    if (isTrans(l) && l.trans_message) {
-      const transEl = document.createElement('span');
-      transEl.className = 'immersive-bookmark-item-trans';
-      transEl.textContent = l.trans_message;
-      transEl.title = l.trans_message;
-      meta.append(transEl);
-    }
+  addBookmarkItem(num) { addBookmarkItemTo(els.immersiveBookmarkList, num, 'immersive-bookmark'); },
 
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'immersive-bookmark-item-del';
-    del.setAttribute('aria-label', `Delete bookmark for line ${num}`);
-    del.tabIndex = -1;
-    del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-
-    item.append(numEl, meta, del);
-    return item;
-  },
-
-  renderBookmarkList() {
-    const list = els.immersiveBookmarkList;
-    list.replaceChildren();
-    const nums = [...State.bookmarks].sort((a, b) => a - b);
-    if (!nums.length) return;
-    const frag = document.createDocumentFragment();
-    for (const num of nums) {
-      const item = Immersive.buildBookmarkItem(num);
-      if (item) frag.appendChild(item);
-    }
-    list.appendChild(frag);
-  },
-
-  addBookmarkItem(num) {
-    const list = els.immersiveBookmarkList;
-    if (list.querySelector(`.immersive-bookmark-item[data-num="${num}"]`)) return;
-    const item = Immersive.buildBookmarkItem(num);
-    if (!item) return;
-    flipList(list, () => {
-      let anchor = null;
-      for (const el of list.children) {
-        if (Number(el.dataset.num) > num) { anchor = el; break; }
-      }
-      list.insertBefore(item, anchor);
-    });
-  },
-
-  removeBookmarkItem(num) {
-    const list = els.immersiveBookmarkList;
-    const item = list.querySelector(`.immersive-bookmark-item[data-num="${num}"]`);
-    if (!item) return;
-    if (reducedMotion()) {
-      item.remove();
-      return;
-    }
-    item.classList.add('is-removing');
-    setTimeout(() => flipList(list, () => item.remove()), CFG.anim.itemMs);
-  },
+  removeBookmarkItem(num) { removeBookmarkItemFrom(els.immersiveBookmarkList, num, 'immersive-bookmark'); },
 
   scrollToLine(num) {
     const idx = State.indexOfLine(num);
@@ -3830,13 +3867,13 @@ const App = {
   _storageCriticalShown: false,
 
   flash(msg, keep = false, kind = '') {
-    const el = els.copyStatus;
+    const el = els.globalToast;
     el.textContent = msg;
-    el.className = 'toast' + (kind ? ' ' + kind : '');
+    el.className = 'global-toast show' + (kind ? ' ' + kind : '');
     const t = ++App.toastToken;
     const timeout = keep ? 6000 : CFG.toastTimeoutMs;
     clearTimeout(App.toastTimer);
-    App.toastTimer = setTimeout(() => { if (App.toastToken === t) el.classList.add('empty'); }, timeout);
+    App.toastTimer = setTimeout(() => { if (App.toastToken === t) el.classList.remove('show'); }, timeout);
   },
 
   flashSaved() {
@@ -4158,10 +4195,15 @@ const App = {
       });
     });
 
-    els.btnExportProject.addEventListener('click', () => { closeDropdowns(); Exporter.run(); });
-    els.btnExportTranslation.addEventListener('click', () => { closeDropdowns(); Exporter.runTranslationJson(); });
-    els.btnExportUntranslated.addEventListener('click', () => { closeDropdowns(); Exporter.runUntranslatedJson(); });
-    els.btnExportOriginal.addEventListener('click', () => { closeDropdowns(); Exporter.runOriginalJson(); });
+    const exportBindings = [
+      ['btnExportProject', Exporter.run],
+      ['btnExportTranslation', Exporter.runTranslationJson],
+      ['btnExportUntranslated', Exporter.runUntranslatedJson],
+      ['btnExportOriginal', Exporter.runOriginalJson]
+    ];
+    for (const [id, fn] of exportBindings) {
+      els[id].addEventListener('click', () => { closeDropdowns(); fn.call(Exporter); });
+    }
 
     els.btnCopyForAi.addEventListener('click', App.copyForAi);
     els.btnApply.addEventListener('click', App.applyTranslation);
@@ -4522,86 +4564,13 @@ const App = {
     Immersive.updateBookmarkCount();
   },
 
-  buildBookmarkItem(num) {
-    const l = State.byNum.get(num);
-    if (!l) return null;
-    const item = document.createElement('div');
-    item.className = 'bookmark-item';
-    item.dataset.num = num;
+  buildBookmarkItem(num) { return buildBookmarkItemEl(num, 'bookmark'); },
 
-    const numEl = document.createElement('span');
-    numEl.className = 'bookmark-item-num';
-    numEl.textContent = num;
+  renderBookmarkList() { renderBookmarkListInto(els.bookmarkList, 'bookmark'); },
 
-    const meta = document.createElement('div');
-    meta.className = 'bookmark-item-meta';
-    const fileEl = document.createElement('span');
-    fileEl.className = 'bookmark-item-file';
-    fileEl.textContent = baseName(l.file);
-    fileEl.title = l.file;
-    const textEl = document.createElement('span');
-    textEl.className = 'bookmark-item-text';
-    const preview = l.message || (l.name ? `${l.name}: ` : '');
-    textEl.textContent = preview || '(empty)';
-    textEl.title = preview;
-    meta.append(fileEl, textEl);
-    if (isTrans(l) && l.trans_message) {
-      const transEl = document.createElement('span');
-      transEl.className = 'bookmark-item-trans';
-      transEl.textContent = l.trans_message;
-      transEl.title = l.trans_message;
-      meta.append(transEl);
-    }
+  addBookmarkItem(num) { addBookmarkItemTo(els.bookmarkList, num, 'bookmark'); },
 
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'bookmark-item-del';
-    del.setAttribute('aria-label', `Delete bookmark for line ${num}`);
-    del.tabIndex = -1;
-    del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-
-    item.append(numEl, meta, del);
-    return item;
-  },
-
-  renderBookmarkList() {
-    const list = els.bookmarkList;
-    list.replaceChildren();
-    const nums = [...State.bookmarks].sort((a, b) => a - b);
-    if (!nums.length) return;
-    const frag = document.createDocumentFragment();
-    for (const num of nums) {
-      const item = App.buildBookmarkItem(num);
-      if (item) frag.appendChild(item);
-    }
-    list.appendChild(frag);
-  },
-
-  addBookmarkItem(num) {
-    const list = els.bookmarkList;
-    if (list.querySelector(`.bookmark-item[data-num="${num}"]`)) return;
-    const item = App.buildBookmarkItem(num);
-    if (!item) return;
-    flipList(list, () => {
-      let anchor = null;
-      for (const el of list.children) {
-        if (Number(el.dataset.num) > num) { anchor = el; break; }
-      }
-      list.insertBefore(item, anchor);
-    });
-  },
-
-  removeBookmarkItem(num) {
-    const list = els.bookmarkList;
-    const item = list.querySelector(`.bookmark-item[data-num="${num}"]`);
-    if (!item) return;
-    if (reducedMotion()) {
-      item.remove();
-      return;
-    }
-    item.classList.add('is-removing');
-    setTimeout(() => flipList(list, () => item.remove()), CFG.anim.itemMs);
-  },
+  removeBookmarkItem(num) { removeBookmarkItemFrom(els.bookmarkList, num, 'bookmark'); },
 
   scrollToLine(num) {
     const idx = State.indexOfLine(num);
@@ -4810,7 +4779,7 @@ const App = {
     els.pasteArea.value = '';
     els.rangeFromInput.value = '';
     els.rangeToInput.value = '';
-    els.copyStatus.classList.add('empty');
+    els.globalToast.classList.remove('show');
     els.progressText.textContent = '0/0 (0%)';
     els.progressText.classList.remove('saved');
     els.stickyFileName.textContent = '';
@@ -4889,7 +4858,7 @@ const App = {
     reset.type = 'button';
     reset.className = 'shortcut-reset';
     reset.title = 'Reset to default';
-    reset.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>';
+    reset.innerHTML = SVG_ICON.reset;
     const isCustom = (action.id in bindings) && bindings[action.id] !== (action.def || '');
     reset.hidden = !isCustom;
     reset.addEventListener('click', () => {
@@ -5544,7 +5513,7 @@ const App = {
     bm.className = 'row-bookmark-btn';
     bm.setAttribute('aria-label', 'Toggle bookmark');
     bm.tabIndex = -1;
-    bm.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
+    bm.innerHTML = SVG_ICON.bookmark;
     const imgBox = document.createElement('div');
     imgBox.className = 'row-image-box';
     const imgSpinner = document.createElement('div');
@@ -5810,11 +5779,18 @@ const App = {
   },
 
   parseAi(raw, byNum) {
-    const fenceLines = raw.split(/\r?\n/).filter(l => /^\s*```\w*\s*$/.test(l));
-    if (fenceLines.length !== 0 && fenceLines.length !== 2) {
+    const allLines = raw.split(_NEWLINE_RE);
+    const _fenceRe = /^\s*```\w*\s*$/;
+    let fenceCount = 0;
+    const textLines = [];
+    for (let i = 0; i < allLines.length; i++) {
+      if (_fenceRe.test(allLines[i])) fenceCount++;
+      else textLines.push(allLines[i]);
+    }
+    if (fenceCount !== 0 && fenceCount !== 2) {
       return { results: [], errors: ['There must be both an opening and closing ``` together, or none at all.'], seen: new Set(), summary: null };
     }
-    const text = raw.split(/\r?\n/).filter(l => !/^\s*```\w*\s*$/.test(l)).join('\n');
+    const text = textLines.join('\n');
     const tagMatch = text.match(/<translate>([\s\S]*?)<\/translate>/i);
     if (!tagMatch) {
       return { results: [], errors: ['<translate>...</translate> tag not found.'], seen: new Set(), summary: null };
@@ -5825,7 +5801,7 @@ const App = {
     const before = text.slice(0, tagMatch.index).trim();
     const after = text.slice(tagMatch.index + tagMatch[0].length).trim();
     const summary = [before, after].filter(Boolean).join('\n\n').trim() || null;
-    const lines = tagMatch[1].split(/\r?\n/);
+    const lines = tagMatch[1].split(_NEWLINE_RE);
 
     const results = [];
     const errors = [];
@@ -6024,7 +6000,7 @@ const App = {
   saveLineEditor() {
     const l = State.byNum.get(App.activeLine);
     if (!l) return;
-    const msg = els.lineMessageInput.value.trim().replace(/\r?\n/g, '\\n');
+    const msg = els.lineMessageInput.value.trim().replace(_NEWLINE_RE, '\\n');
     const hasMsg = !!(l.message || '').trim();
     if (els.lineTranslatedCheck.checked && !msg && hasMsg) return App.flash('Empty message.', true, 'error');
     const before = { trans_message: l.trans_message, trans_name: l.trans_name, is_translated: l.is_translated };
@@ -6032,7 +6008,7 @@ const App = {
     pushHistory();
     l.trans_message = msg || null;
     l.is_translated = els.lineTranslatedCheck.checked && (!!msg || !hasMsg);
-    if (l.name) l.trans_name = els.lineNameInput.value.trim().replace(/\r?\n/g, '\\n') || null;
+    if (l.name) l.trans_name = els.lineNameInput.value.trim().replace(_NEWLINE_RE, '\\n') || null;
 
     State.namesDirty = true;
     State.contentVersion++;
@@ -6402,7 +6378,7 @@ const App = {
       line_num: num,
       file: String(line.file || State.files[0] || 'plugin'),
       name: line.name == null ? null : stripNewlines(line.name),
-      message: String(line.message).replace(/\r?\n/g, '\\n').trim(),
+      message: String(line.message).replace(_NEWLINE_RE, '\\n').trim(),
       trans_name: null,
       trans_message: null,
       is_translated: false,
@@ -6437,7 +6413,7 @@ const App = {
     const l = State.byNum.get(num);
     if (!l) return false;
     pushHistory();
-    l.trans_message = String(transMsg ?? '').replace(/\r?\n/g, '\\n').trim() || null;
+    l.trans_message = String(transMsg ?? '').replace(_NEWLINE_RE, '\\n').trim() || null;
     l.is_translated = true;
     if (transName != null) l.trans_name = stripNewlines(transName);
     State.namesDirty = true;

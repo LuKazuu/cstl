@@ -8,8 +8,11 @@ CSTL.util = {
   },
   isPlainObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); },
   escapeHtml(s) {
-    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    s = String(s ?? '');
+    if (!s) return s;
+    if (s.indexOf('&') === -1 && s.indexOf('<') === -1 && s.indexOf('>') === -1 &&
+        s.indexOf('"') === -1 && s.indexOf("'") === -1) return s;
+    return s.replace(_HTML_ESCAPE_RE, c => _HTML_ESCAPES[c]);
   },
   sanitizeName(s, { maxLen = 200, stripTrailing = true, fallback = 'untitled' } = {}) {
     let n = String(s ?? '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
@@ -34,6 +37,10 @@ CSTL.util = {
     return true;
   }
 };
+
+const _HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const _HTML_ESCAPE_RE = /[&<>"']/g;
+
 const { stripNewlines, isPlainObject, escapeHtml, humanBytes, validDataKey, sanitizeName } = CSTL.util;
 const esc = escapeHtml;
 
@@ -72,54 +79,17 @@ function fnv1a(bytes) {
 }
 
 const Sha256 = (() => {
-  const K = new Uint32Array([
-    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-  ]);
-  const rotr = (n, x) => (x >>> n) | (x << (32 - n));
-
+  const HEX_CHARS = '0123456789abcdef';
   return {
     async hex(bytes) {
       if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes || []);
-      const view = new Uint8Array(bytes.length + 8 + 64 - ((bytes.length + 8) & 63));
-      view.set(bytes);
-      view[bytes.length] = 0x80;
-      const bitLen = BigInt(bytes.length) * 8n;
-      const dv = new DataView(view.buffer);
-      dv.setUint32(view.length - 4, Number(bitLen >> 32n), false);
-      dv.setUint32(view.length - 8, Number(bitLen & 0xffffffffn), false);
-      const H = new Uint32Array([
-        0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
-      ]);
-      const W = new Uint32Array(64);
-      for (let i = 0; i < view.length; i += 64) {
-        for (let t = 0; t < 16; t++) W[t] = dv.getUint32(i + t * 4, false);
-        for (let t = 16; t < 64; t++) {
-          const s0 = rotr(7, W[t-15]) ^ rotr(18, W[t-15]) ^ (W[t-15] >>> 3);
-          const s1 = rotr(17, W[t-2]) ^ rotr(19, W[t-2]) ^ (W[t-2] >>> 10);
-          W[t] = (W[t-16] + s0 + W[t-7] + s1) | 0;
-        }
-        let a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
-        for (let t = 0; t < 64; t++) {
-          const S1 = rotr(6, e) ^ rotr(11, e) ^ rotr(25, e);
-          const ch = (e & f) ^ (~e & g);
-          const temp1 = (h + S1 + ch + K[t] + W[t]) | 0;
-          const S0 = rotr(2, a) ^ rotr(13, a) ^ rotr(22, a);
-          const mj = (a & b) ^ (a & c) ^ (b & c);
-          const temp2 = (S0 + mj) | 0;
-          h=g; g=f; f=e; e=(d + temp1)|0; d=c; c=b; b=a; a=(temp1 + temp2)|0;
-        }
-        H[0]=(H[0]+a)|0; H[1]=(H[1]+b)|0; H[2]=(H[2]+c)|0; H[3]=(H[3]+d)|0;
-        H[4]=(H[4]+e)|0; H[5]=(H[5]+f)|0; H[6]=(H[6]+g)|0; H[7]=(H[7]+h)|0;
-      }
+      const hash = await crypto.subtle.digest('SHA-256', bytes);
+      const u8 = new Uint8Array(hash);
       let out = '';
-      for (const v of H) out += v.toString(16).padStart(8, '0');
+      for (let i = 0; i < u8.length; i++) {
+        const b = u8[i];
+        out += HEX_CHARS[(b >>> 4) & 0xf] + HEX_CHARS[b & 0xf];
+      }
       return out;
     }
   };
@@ -759,6 +729,7 @@ let ui = null;
 
 const Runtime = {
   _index: [],
+  _indexById: new Map(),
   _instances: new Map(),
   _sigCache: new WeakMap(),
   _hooks: new Map(),
@@ -769,8 +740,13 @@ const Runtime = {
   _dashboardCards: [],
   _styles: new Map(),
 
+  _reindex() {
+    Runtime._indexById = new Map();
+    for (const p of Runtime._index) Runtime._indexById.set(p.id, p);
+  },
+
   listMeta() { return Runtime._index.slice(); },
-  getMeta(id) { return Runtime._index.find(p => p.id === id) || null; },
+  getMeta(id) { return Runtime._indexById.get(id) || null; },
 
   hook(name, fn, inst) {
     if (typeof name !== 'string' || !name || typeof fn !== 'function') return null;
@@ -977,6 +953,7 @@ const Runtime = {
       console.warn(`[plugins] dropped ${dropped.length} plugin(s) with invalid metadata: ${dropped.join(', ')}.`);
     }
     Runtime._index = valid;
+    Runtime._reindex();
     await Runtime._sweepOrphanPacks();
     if (dropped.length) await Runtime.persistPluginIndex();
     await Runtime.sync();
@@ -1009,6 +986,7 @@ const Runtime = {
     }
     if (!changed) return false;
     Runtime._index = alive;
+    Runtime._reindex();
     await Runtime.persistPluginIndex();
     host.ui.onPluginsChanged();
     return true;
@@ -1223,8 +1201,9 @@ const Runtime = {
     try {
       await host.storage.installPluginFiles(meta.id, manifestText, pluginCode, assetFiles);
       meta.enabled = existing ? existing.enabled === true : true;
-      const i = Runtime._index.findIndex(p => p.id === meta.id);
+      const i = Runtime._indexById.has(meta.id) ? Runtime._index.findIndex(p => p.id === meta.id) : -1;
       if (i >= 0) Runtime._index[i] = meta; else Runtime._index.push(meta);
+      Runtime._indexById.set(meta.id, meta);
 
       await Runtime.deactivatePlugin(meta.id);
       if (meta.enabled) {
@@ -1275,6 +1254,7 @@ const Runtime = {
     delete Runtime._store[id];
     await Runtime.saveGlobalPluginSettings();
     Runtime._index = Runtime._index.filter(p => p.id !== id);
+    Runtime._indexById.delete(id);
     await Runtime.persistPluginIndex();
     host.ui.onPluginsChanged();
     return true;

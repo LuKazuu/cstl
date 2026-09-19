@@ -600,6 +600,8 @@ a:focus-visible,
   gap: 14px;
   overflow: hidden;
   animation: cardIn 0.4s var(--ease-out) both;
+  content-visibility: auto;
+  contain-intrinsic-size: 160px;
 }
 .project-card::before {
   content: '';
@@ -1274,6 +1276,7 @@ a:focus-visible,
   flex: 1;
   overflow: hidden;
   min-height: 0;
+  contain: layout style paint;
 }
 .split.hide-tools { grid-template-columns: 1fr; grid-template-rows: 1fr; }
 .split.hide-tools .panel-right { display: none; }
@@ -1700,6 +1703,44 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   border-color: transparent;
   pointer-events: none;
 }
+
+.global-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translate(-50%, 16px);
+  z-index: 250;
+  max-width: min(92vw, 560px);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 12px 18px;
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 600;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--t-2) var(--ease), transform var(--t-2) var(--ease), visibility 0s linear var(--t-2);
+  contain: layout style paint;
+  backdrop-filter: blur(12px);
+}
+.global-toast.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+  transition: opacity var(--t-2) var(--ease), transform var(--t-2) var(--ease), visibility 0s linear 0s;
+}
+.global-toast.info { border-color: rgba(10, 132, 255, 0.45); color: #66b3ff; }
+.global-toast.error { border-color: rgba(255, 69, 58, 0.45); color: #ff8a80; background: rgba(255, 69, 58, 0.12); }
+.global-toast.success { border-color: rgba(48, 209, 88, 0.45); color: #5ee07e; background: rgba(48, 209, 88, 0.12); }
 
 .name-table-wrap {
   border: 1px solid var(--hairline);
@@ -2185,6 +2226,8 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   background: var(--surface);
   position: relative;
   transition: background-color var(--t-1) var(--ease), border-color var(--t-1) var(--ease);
+  content-visibility: auto;
+  contain-intrinsic-size: 56px;
 }
 .bookmark-item:active {
   background: var(--accent-soft);
@@ -2320,6 +2363,8 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   gap: 10px;
   padding: 10px 13px;
   border-bottom: 1px solid var(--hairline);
+  content-visibility: auto;
+  contain-intrinsic-size: 56px;
 }
 .opfs-item:last-child { border-bottom: none; }
 .opfs-item-icon {
