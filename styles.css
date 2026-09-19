@@ -600,8 +600,6 @@ a:focus-visible,
   gap: 14px;
   overflow: hidden;
   animation: cardIn 0.4s var(--ease-out) both;
-  content-visibility: auto;
-  contain-intrinsic-size: 160px;
 }
 .project-card::before {
   content: '';
@@ -1276,7 +1274,6 @@ a:focus-visible,
   flex: 1;
   overflow: hidden;
   min-height: 0;
-  contain: layout style paint;
 }
 .split.hide-tools { grid-template-columns: 1fr; grid-template-rows: 1fr; }
 .split.hide-tools .panel-right { display: none; }
@@ -1729,7 +1726,6 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   pointer-events: none;
   transition: opacity var(--t-2) var(--ease), transform var(--t-2) var(--ease), visibility 0s linear var(--t-2);
   contain: layout style paint;
-  backdrop-filter: blur(12px);
 }
 .global-toast.show {
   opacity: 1;
@@ -2226,8 +2222,6 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   background: var(--surface);
   position: relative;
   transition: background-color var(--t-1) var(--ease), border-color var(--t-1) var(--ease);
-  content-visibility: auto;
-  contain-intrinsic-size: 56px;
 }
 .bookmark-item:active {
   background: var(--accent-soft);
@@ -2363,8 +2357,6 @@ select:hover:not(:disabled) { border-color: var(--hairline-3); }
   gap: 10px;
   padding: 10px 13px;
   border-bottom: 1px solid var(--hairline);
-  content-visibility: auto;
-  contain-intrinsic-size: 56px;
 }
 .opfs-item:last-child { border-bottom: none; }
 .opfs-item-icon {

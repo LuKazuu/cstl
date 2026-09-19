@@ -729,7 +729,6 @@ let ui = null;
 
 const Runtime = {
   _index: [],
-  _indexById: new Map(),
   _instances: new Map(),
   _sigCache: new WeakMap(),
   _hooks: new Map(),
@@ -740,13 +739,8 @@ const Runtime = {
   _dashboardCards: [],
   _styles: new Map(),
 
-  _reindex() {
-    Runtime._indexById = new Map();
-    for (const p of Runtime._index) Runtime._indexById.set(p.id, p);
-  },
-
   listMeta() { return Runtime._index.slice(); },
-  getMeta(id) { return Runtime._indexById.get(id) || null; },
+  getMeta(id) { return Runtime._index.find(p => p.id === id) || null; },
 
   hook(name, fn, inst) {
     if (typeof name !== 'string' || !name || typeof fn !== 'function') return null;
@@ -953,7 +947,6 @@ const Runtime = {
       console.warn(`[plugins] dropped ${dropped.length} plugin(s) with invalid metadata: ${dropped.join(', ')}.`);
     }
     Runtime._index = valid;
-    Runtime._reindex();
     await Runtime._sweepOrphanPacks();
     if (dropped.length) await Runtime.persistPluginIndex();
     await Runtime.sync();
@@ -986,7 +979,6 @@ const Runtime = {
     }
     if (!changed) return false;
     Runtime._index = alive;
-    Runtime._reindex();
     await Runtime.persistPluginIndex();
     host.ui.onPluginsChanged();
     return true;
@@ -1201,9 +1193,8 @@ const Runtime = {
     try {
       await host.storage.installPluginFiles(meta.id, manifestText, pluginCode, assetFiles);
       meta.enabled = existing ? existing.enabled === true : true;
-      const i = Runtime._indexById.has(meta.id) ? Runtime._index.findIndex(p => p.id === meta.id) : -1;
+      const i = Runtime._index.findIndex(p => p.id === meta.id);
       if (i >= 0) Runtime._index[i] = meta; else Runtime._index.push(meta);
-      Runtime._indexById.set(meta.id, meta);
 
       await Runtime.deactivatePlugin(meta.id);
       if (meta.enabled) {
@@ -1254,7 +1245,6 @@ const Runtime = {
     delete Runtime._store[id];
     await Runtime.saveGlobalPluginSettings();
     Runtime._index = Runtime._index.filter(p => p.id !== id);
-    Runtime._indexById.delete(id);
     await Runtime.persistPluginIndex();
     host.ui.onPluginsChanged();
     return true;
